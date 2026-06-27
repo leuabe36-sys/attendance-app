@@ -1149,7 +1149,7 @@ def register_face():
         file_path = os.path.join(IMAGE_DIR, filename)
 
         if "," in image_data:
-            image_data = image_data.split(",")
+            image_data = image_data.split(",")[1]
         image_data = image_data.replace(" ", "+")
         missing_padding = len(image_data) % 4
         if missing_padding:
@@ -1163,10 +1163,9 @@ def register_face():
             return jsonify({"success": False, "message": "Invalid image matrix array decoder mapping"})
 
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        face_locations = face_recognition.face_locations(rgb_frame)
-        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+        embedding = _get_face_embedding(rgb_frame)
 
-        if len(face_encodings) == 0:
+        if embedding is None:
             return jsonify({"success": False, "message": "No human faces found in frame context. Please try again."})
 
         cv2.imwrite(file_path, frame)
@@ -2247,7 +2246,7 @@ def teacher_scan_frame_matrix_lookup(class_id):
 
         image_data = data["image"]
         if "," in image_data:
-            image_data = image_data.split(",")
+            image_data = image_data.split(",")[1]
         image_data = image_data.replace(" ", "+")
         missing_padding = len(image_data) % 4
         if missing_padding:
@@ -2457,7 +2456,7 @@ def student_scan_frame_matrix_lookup():
 
         image_data = data["image"]
         if "," in image_data:
-            image_data = image_data.split(",")
+            image_data = image_data.split(",")[1]
         image_data = image_data.replace(" ", "+")
         missing_padding = len(image_data) % 4
         if missing_padding:
