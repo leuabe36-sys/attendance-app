@@ -1367,7 +1367,7 @@ def admin_dashboard():
                     <td class="p-3 text-xs text-slate-500">{s["registered_at"]}</td>
                     <td class="p-3">
                         <a class="text-blue-500 hover:underline mr-2" href="/admin/edit-student/{s['id']}">Edit</a>
-                        <form method="POST" action="/admin/delete-student/{s['student_id']}" style="display:inline;" onsubmit="return confirm('Delete student entirely?')">
+                        <form method="POST" action="/admin/delete-student/{s['id']}" style="display:inline;" onsubmit="return confirm('Delete student entirely?')">
                             <button type="submit" style="background:none;border:none;padding:0;color:#ef4444;font-weight:600;cursor:pointer;text-decoration:underline;">Delete</button>
                         </form>
                     </td>
@@ -1683,17 +1683,17 @@ def admin_edit_student(student_db_id):
     return page_wrapper("Edit Student Account Data", body, is_admin=True)
 
 
-@app.route("/admin/delete-student/<student_id>", methods=["GET", "POST"])
-def admin_delete_student(student_id):
+@app.route("/admin/delete-student/<int:db_id>", methods=["GET", "POST"])
+def admin_delete_student(db_id):
     protect = admin_required()
     if protect:
         return protect
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, image_file FROM students WHERE student_id=%s", (student_id,))
+    cur.execute("SELECT id, student_id, image_file FROM students WHERE id=%s", (db_id,))
     row = cur.fetchone()
     if row:
-        db_id = row["id"]
+        student_id = row["student_id"]
         img = row["image_file"]
         cur.execute("DELETE FROM attendance WHERE student_id=%s", (student_id,))
         cur.execute("DELETE FROM student_classes WHERE student_id_fk=%s", (db_id,))
