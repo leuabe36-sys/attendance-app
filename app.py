@@ -1098,38 +1098,44 @@ async function startCamera() {
             stream.getTracks().forEach(t => t.stop());
             stream = null;
         }
-        try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: { ideal: currentFacingMode },
-                    width: { ideal: 640 },
-                    height: { ideal: 480 }
-                },
-                audio: false
-            });
-        } catch (constraintErr) {
-            stream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: false
-            });
-        }
-        video.srcObject = stream;
-        video.addEventListener('loadedmetadata', async function onMeta() {
-            video.removeEventListener('loadedmetadata', onMeta);
+        // Try exact facingMode first, then ideal, then any
+        let constraints = [
+            { video: { facingMode: { exact: currentFacingMode }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false },
+            { video: { facingMode: { ideal: currentFacingMode }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false },
+            { video: true, audio: false }
+        ];
+        let lastErr = null;
+        for (let c of constraints) {
             try {
-                await video.play();
-                statusDiv.innerText = "Camera ready";
-            } catch (playErr) {
-                statusDiv.innerText = "Tap the video area frame to play";
-                video.onclick = async () => {
-                    await video.play();
-                    statusDiv.innerText = "Camera ready";
-                    video.onclick = null;
-                };
+                stream = await navigator.mediaDevices.getUserMedia(c);
+                break;
+            } catch (e) {
+                lastErr = e;
+                stream = null;
             }
-        }, { once: true });
+        }
+        if (!stream) throw lastErr;
+        video.srcObject = stream;
+        await new Promise((resolve) => {
+            video.onloadedmetadata = () => resolve();
+        });
+        try {
+            await video.play();
+            statusDiv.innerText = "✅ Camera ready (" + (currentFacingMode === "user" ? "Front" : "Back") + ")";
+        } catch (playErr) {
+            statusDiv.innerText = "Tap the video to start";
+            video.onclick = async () => { await video.play(); statusDiv.innerText = "✅ Camera ready"; video.onclick = null; };
+        }
     } catch (err) {
-        if (err.name === "NotAllowedError") { statusDiv.innerText = "❌ Camera permission denied. Please allow camera access in your browser settings and reload."; } else if (err.name === "NotFoundError") { statusDiv.innerText = "❌ No camera found on this device."; } else if (location.protocol !== "https:") { statusDiv.innerText = "❌ Camera requires HTTPS. Please open this site using https://"; } else { statusDiv.innerText = "❌ Camera error: " + err.message; }
+        if (err.name === "NotAllowedError") {
+            statusDiv.innerText = "❌ Camera permission denied. Please allow camera access in your browser settings and reload.";
+        } else if (err.name === "NotFoundError") {
+            statusDiv.innerText = "❌ No camera found on this device.";
+        } else if (location.protocol !== "https:") {
+            statusDiv.innerText = "❌ Camera requires HTTPS. Please open this site using https://";
+        } else {
+            statusDiv.innerText = "❌ Camera error: " + err.message;
+        }
     }
 }
 
@@ -2204,34 +2210,40 @@ let intervalId = null;
 
 async function startCamera() {{
     try {{
-        statusDiv.innerText = "Initializing target camera device array sequence...";
+        statusDiv.innerText = "Starting camera...";
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
-            statusDiv.innerText = "Browser core lacks MediaDevices API standard integration layer definitions";
+            statusDiv.innerText = "Camera not supported. Please use HTTPS and a modern browser.";
             return;
         }}
         if (stream) {{
             stream.getTracks().forEach(track => track.stop());
+            stream = null;
         }}
-        try {{
-            stream = await navigator.mediaDevices.getUserMedia({{
-                video: {{ facingMode: {{ ideal: currentFacingMode }}, width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }},
-                audio: false
-            }});
-        }} catch (err) {{
-            stream = await navigator.mediaDevices.getUserMedia({{ video: true, audio: false }});
+        let constraints = [
+            {{ video: {{ facingMode: {{ exact: currentFacingMode }}, width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }}, audio: false }},
+            {{ video: {{ facingMode: {{ ideal: currentFacingMode }}, width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }}, audio: false }},
+            {{ video: true, audio: false }}
+        ];
+        let lastErr = null;
+        for (let c of constraints) {{
+            try {{ stream = await navigator.mediaDevices.getUserMedia(c); break; }}
+            catch (e) {{ lastErr = e; stream = null; }}
         }}
+        if (!stream) throw lastErr;
         video.srcObject = stream;
-        video.onloadedmetadata = async () => {{
-            try {{
-                await video.play();
-                statusDiv.innerText = "Active camera connection stream streaming pipeline established.";
-                startScanningLoops();
-            }} catch (e) {{
-                statusDiv.innerText = "Camera decoded buffer but play permission got standard block exceptions";
-            }}
-        }};
+        await new Promise((resolve) => {{ video.onloadedmetadata = () => resolve(); }});
+        try {{
+            await video.play();
+            statusDiv.innerText = "✅ Camera ready (" + (currentFacingMode === "user" ? "Front" : "Back") + ")";
+            startScanningLoops();
+        }} catch (e) {{
+            statusDiv.innerText = "Tap the video to start";
+        }}
     }} catch (err) {{
-        statusDiv.innerText = "Camera framework pipeline hook connection failure context: " + err.message;
+        if (err.name === "NotAllowedError") {{ statusDiv.innerText = "❌ Camera permission denied. Please allow camera access and reload."; }}
+        else if (err.name === "NotFoundError") {{ statusDiv.innerText = "❌ No camera found on this device."; }}
+        else if (location.protocol !== "https:") {{ statusDiv.innerText = "❌ Camera requires HTTPS."; }}
+        else {{ statusDiv.innerText = "❌ Camera error: " + err.message; }}
     }}
 }}
 
@@ -2408,34 +2420,40 @@ let intervalId = null;
 
 async function startCamera() {{
     try {{
-        statusDiv.innerText = "Initializing targeting system hardware loop...";
+        statusDiv.innerText = "Starting camera...";
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
-            statusDiv.innerText = "Browser lacks MediaDevices API permissions layout.";
+            statusDiv.innerText = "Camera not supported. Please use HTTPS and a modern browser.";
             return;
         }}
         if (stream) {{
             stream.getTracks().forEach(track => track.stop());
+            stream = null;
         }}
-        try {{
-            stream = await navigator.mediaDevices.getUserMedia({{
-                video: {{ facingMode: {{ ideal: currentFacingMode }}, width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }},
-                audio: false
-            }});
-        }} catch (err) {{
-            stream = await navigator.mediaDevices.getUserMedia({{ video: true, audio: false }});
+        let constraints = [
+            {{ video: {{ facingMode: {{ exact: currentFacingMode }}, width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }}, audio: false }},
+            {{ video: {{ facingMode: {{ ideal: currentFacingMode }}, width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }}, audio: false }},
+            {{ video: true, audio: false }}
+        ];
+        let lastErr = null;
+        for (let c of constraints) {{
+            try {{ stream = await navigator.mediaDevices.getUserMedia(c); break; }}
+            catch (e) {{ lastErr = e; stream = null; }}
         }}
+        if (!stream) throw lastErr;
         video.srcObject = stream;
-        video.onloadedmetadata = async () => {{
-            try {{
-                await video.play();
-                statusDiv.innerText = "Streaming canvas sequence pipeline online.";
-                startScanningLoops();
-            }} catch (e) {{
-                statusDiv.innerText = "Play permissions locked by hardware profile error.";
-            }}
-        }};
+        await new Promise((resolve) => {{ video.onloadedmetadata = () => resolve(); }});
+        try {{
+            await video.play();
+            statusDiv.innerText = "✅ Camera ready (" + (currentFacingMode === "user" ? "Front" : "Back") + ")";
+            startScanningLoops();
+        }} catch (e) {{
+            statusDiv.innerText = "Tap the video to start";
+        }}
     }} catch (err) {{
-        statusDiv.innerText = "Stream initialization failure: " + err.message;
+        if (err.name === "NotAllowedError") {{ statusDiv.innerText = "❌ Camera permission denied. Please allow camera access and reload."; }}
+        else if (err.name === "NotFoundError") {{ statusDiv.innerText = "❌ No camera found on this device."; }}
+        else if (location.protocol !== "https:") {{ statusDiv.innerText = "❌ Camera requires HTTPS."; }}
+        else {{ statusDiv.innerText = "❌ Camera error: " + err.message; }}
     }}
 }}
 
