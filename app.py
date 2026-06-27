@@ -61,6 +61,14 @@ DB_FILE = "attendance.db"
 IMAGE_DIR = "student_images"
 TEACHER_IMAGE_DIR = "teacher_images"
 
+
+# Force HTTPS — camera (getUserMedia) requires a secure context in all browsers
+@app.before_request
+def force_https():
+    # Only redirect on deployed platforms (they set X-Forwarded-Proto)
+    if request.headers.get("X-Forwarded-Proto", "https") == "http":
+        return redirect(request.url.replace("http://", "https://", 1), code=301)
+
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin123"
 
@@ -1069,7 +1077,8 @@ def student_register():
                 <button class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-semibold" onclick="switchCamera()">Switch Orientation</button>
             </div>
 
-            <div id="status" class="text-sm font-semibold text-slate-700 mt-2">Please allow camera access camera hardware controls</div>
+            <div id="https-warning" style="display:none;background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;padding:10px 16px;border-radius:8px;margin-bottom:12px;font-weight:600;">⚠️ Camera requires HTTPS. Please open this page using <b>https://</b> — the camera will not work over plain http://</div>
+            <div id="status" class="text-sm font-semibold text-slate-700 mt-2">Starting camera...</div>
         </div>
 
 <script>
@@ -1120,7 +1129,7 @@ async function startCamera() {
             }
         }, { once: true });
     } catch (err) {
-        statusDiv.innerText = "Camera system initialization mapping failure: " + err.message;
+        if (err.name === "NotAllowedError") { statusDiv.innerText = "❌ Camera permission denied. Please allow camera access in your browser settings and reload."; } else if (err.name === "NotFoundError") { statusDiv.innerText = "❌ No camera found on this device."; } else if (location.protocol !== "https:") { statusDiv.innerText = "❌ Camera requires HTTPS. Please open this site using https://"; } else { statusDiv.innerText = "❌ Camera error: " + err.message; }
     }
 }
 
@@ -1163,7 +1172,7 @@ async function registerFace() {
         statusDiv.innerText = "Registration failed: " + err.message;
     }
 }
-startCamera();
+if (location.protocol !== "https:") { document.getElementById("https-warning").style.display = "block"; document.getElementById("status").innerText = "❌ Camera unavailable — HTTPS required."; } else { startCamera(); }
 </script>
 """, is_admin=is_admin_logged_in())
 
