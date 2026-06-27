@@ -11,8 +11,11 @@ except AttributeError:
     pass
 import os
 import base64
-import sqlite3
+import psycopg2
+import psycopg2.extras
 from datetime import datetime, timedelta
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:123%40Fi%24%23%26100@db.qsiedryjuusemdwkvcyf.supabase.co:5432/postgres")
 
 # MediaPipe face mesh for embeddings
 from mediapipe.tasks import python as mp_python
@@ -66,8 +69,7 @@ known_students = []
 # DATABASE
 # =========================================================
 def get_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     return conn
 
 
@@ -79,7 +81,7 @@ def init_db():
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS teachers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             teacher_name TEXT NOT NULL,
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
@@ -90,7 +92,7 @@ def init_db():
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS students (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             student_id TEXT UNIQUE NOT NULL,
             full_name TEXT NOT NULL,
             password TEXT NOT NULL,
@@ -101,7 +103,7 @@ def init_db():
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS classes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             class_name TEXT NOT NULL,
             department TEXT,
             course TEXT,
@@ -116,7 +118,7 @@ def init_db():
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS student_classes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             student_id_fk INTEGER NOT NULL,
             class_id_fk INTEGER NOT NULL,
             UNIQUE(student_id_fk, class_id_fk),
@@ -127,7 +129,7 @@ def init_db():
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS attendance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             student_id TEXT NOT NULL,
             full_name TEXT NOT NULL,
             class_id INTEGER NOT NULL,
