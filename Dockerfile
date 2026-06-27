@@ -11,6 +11,6 @@ WORKDIR /app
 COPY . .
 
 RUN pip install --upgrade pip
-RUN pip install flask werkzeug numpy opencv-python-headless mediapipe
+RUN pip install flask werkzeug numpy opencv-python-headless mediapipe==0.10.9
 
 CMD ["python", "app.py"]
