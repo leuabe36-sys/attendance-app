@@ -15,7 +15,7 @@ import psycopg2
 import psycopg2.extras
 from datetime import datetime, timedelta
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:123%40Fi%24%23%26100@db.qsiedryjuusemdwkvcyf.supabase.co:5432/postgres")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres.qsiedryjuusemdwkvcyf:Attendance%40School2026!@aws-0-eu-west-1.pooler.supabase.com:6543/postgres")
 
 # MediaPipe face mesh for embeddings
 from mediapipe.tasks import python as mp_python
