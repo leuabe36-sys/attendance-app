@@ -442,7 +442,6 @@ def student_belongs_to_class(student_db_id, class_id):
 
 
 def mark_attendance(student_row, class_row, status="Present"):
-    # Fetches local system date and time
     today = datetime.now().strftime("%Y-%m-%d")
     now_time = datetime.now().strftime("%H:%M:%S")
 
@@ -577,7 +576,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
     elif is_student and student_context:
         sidebar_html = f"""
         <div class="sidebar-header center">
-            <img class="student-photo" style="width:70px; height:70px; border-radius:50%; margin-bottom:10px; border:2px solid #2563eb;" src="/student-image/{student_context['image_file']}">
+            <img class="student-photo" style="width:70px; height:70px; border-radius:50%; margin-bottom:10px; border:2px solid #2563eb; object-fit: cover;" src="/student-image/{student_context['image_file']}">
             <div style="font-size: 16px; font-weight:600;">{student_context['full_name']}</div>
             <div style="font-size: 12px; color:#9ca3af; margin-top:2px;">ID: {student_context['student_id']}</div>
         </div>
@@ -1031,100 +1030,97 @@ def student_register():
             <div id="status" class="text-sm font-semibold text-slate-700 mt-2">Please allow camera access camera hardware controls</div>
         </div>
 
-<script>
-const video = document.getElementById('video');
-const statusDiv = document.getElementById('status');
-let stream = null;
-let currentFacingMode = "user";
+        <script>
+        const video = document.getElementById('video');
+        const statusDiv = document.getElementById('status');
+        let stream = null;
+        let currentFacingMode = "user";
 
-async function startCamera() {
-    try {
-        statusDiv.innerText = "Starting camera...";
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            statusDiv.innerText = "Camera not supported. Please use HTTPS and a modern browser.";
-            return;
-        }
-        if (stream) {
-            stream.getTracks().forEach(t => t.stop());
-            stream = null;
-        }
-        try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: { ideal: currentFacingMode },
-                    width: { ideal: 640 },
-                    height: { ideal: 480 }
-                },
-                audio: false
-            });
-        } catch (constraintErr) {
-            stream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: false
-            });
-        }
-        video.srcObject = stream;
-        video.addEventListener('loadedmetadata', async function onMeta() {
-            video.removeEventListener('loadedmetadata', onMeta);
+        async function startCamera() {
             try {
-                await video.play();
-                statusDiv.innerText = "Camera ready";
-            } catch (playErr) {
-                statusDiv.innerText = "Tap the video area frame to play";
-                video.onclick = async () => {
-                    await video.play();
-                    statusDiv.innerText = "Camera ready";
-                    video.onclick = null;
-                };
+                statusDiv.innerText = "Starting camera...";
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    statusDiv.innerText = "Camera not supported. Please use HTTPS and a modern browser.";
+                    return;
+                }
+                if (stream) {
+                    stream.getTracks().forEach(t => t.stop());
+                    stream = null;
+                }
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            facingMode: { ideal: currentFacingMode },
+                            width: { ideal: 640 },
+                            height: { ideal: 480 }
+                        },
+                        audio: false
+                    });
+                } catch (constraintErr) {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: true,
+                        audio: false
+                    });
+                }
+                video.srcObject = stream;
+                video.addEventListener('loadedmetadata', async function onMeta() {
+                    video.removeEventListener('loadedmetadata', onMeta);
+                    try {
+                        await video.play();
+                        statusDiv.innerText = "Camera ready";
+                    } catch (playErr) {
+                        statusDiv.innerText = "Tap the video area frame to play";
+                        video.onclick = async () => {
+                            await video.play();
+                            statusDiv.innerText = "Camera ready";
+                            video.onclick = null;
+                        };
+                    }
+                }, { once: true });
+            } catch (err) {
+                statusDiv.innerText = "Camera system initialization mapping failure: " + err.message;
             }
-        }, { once: true });
-    } catch (err) {
-        statusDiv.innerText = "Camera system initialization mapping failure: " + err.message;
-    }
-}
-
-function switchCamera() {
-    currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
-    startCamera();
-}
-
-async function registerFace() {
-    try {
-        const studentId = document.getElementById('studentId').value.trim();
-        const fullName = document.getElementById('fullName').value.trim();
-        const password = document.getElementById('password').value.trim();
-        
-        if (!studentId || !fullName || !password) {
-            alert("All values are required prior to scanning");
-            return;
         }
 
-        statusDiv.innerText = "Capturing canvas frame matrix...";
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 480;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const image = canvas.toDataURL('image/jpeg');
-
-        statusDiv.innerText = "Uploading credentials to database registry...";
-        const response = await fetch('/register-face', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ student_id: studentId, full_name: fullName, password: password, image: image })
-        });
-        const data = await response.json();
-        statusDiv.innerText = data.message;
-        if (data.success) {
-            alert(data.message);
+        function switchCamera() {
+            currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
+            startCamera();
         }
-    } catch (err) {
-        statusDiv.innerText = "Registration failed: " + err.message;
-    }
-}
-startCamera();
-</script>
-""", is_admin=is_admin_logged_in())
+
+        async function registerFace() {
+            try {
+                const studentId = document.getElementById('studentId').value.trim();
+                const fullName = document.getElementById('fullName').value.trim();
+                const password = document.getElementById('password').value.trim();
+                if (!studentId || !fullName || !password) {
+                    alert("All values are required prior to scanning");
+                    return;
+                }
+                statusDiv.innerText = "Capturing canvas frame matrix...";
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth || 640;
+                canvas.height = video.videoHeight || 480;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const image = canvas.toDataURL('image/jpeg');
+                statusDiv.innerText = "Uploading credentials to database registry...";
+                const response = await fetch('/register-face', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ student_id: studentId, full_name: fullName, password: password, image: image })
+                });
+                const data = await response.json();
+                statusDiv.innerText = data.message;
+                if (data.success) {
+                    alert(data.message);
+                }
+            } catch (err) {
+                statusDiv.innerText = "Registration failed: " + err.message;
+            }
+        }
+        startCamera();
+        </script>
+    """, is_admin=is_admin_logged_in())
 
 
 @app.route("/register-face", methods=["POST"])
@@ -1140,6 +1136,7 @@ def register_face():
 
         if not student_id or not full_name or not password or not image_data:
             return jsonify({"success": False, "message": "All database fields are required"})
+
         if student_exists(student_id):
             return jsonify({"success": False, "message": "This Student ID already holds a target map registry record"})
 
@@ -1164,7 +1161,6 @@ def register_face():
 
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         embedding = _get_face_embedding(rgb_frame)
-
         if embedding is None:
             return jsonify({"success": False, "message": "No human faces found in frame context. Please try again."})
 
@@ -1186,7 +1182,7 @@ def register_face():
 
 
 # =========================================================
-# ADMIN CONTROLLER DASHBOARD
+# CENTRAL ADMINISTRATION PANEL DASHBOARD VIEW
 # =========================================================
 @app.route("/admin")
 def admin_dashboard():
@@ -1197,217 +1193,137 @@ def admin_dashboard():
     students = get_all_students()
     teachers = get_all_teachers()
     classes = get_all_classes()
-    attendance = get_all_attendance()
+
+    student_table_rows = ""
+    for s in students:
+        student_table_rows += f"""
+        <tr>
+            <td>{s['student_id']}</td>
+            <td>{s['full_name']}</td>
+            <td>{s['registered_at']}</td>
+            <td>
+                <form method="POST" action="/admin/delete-student/{s['id']}" onsubmit="return confirm('Are you sure you want to permanently delete this student profile and revoke class links?');" style="display:inline;">
+                    <button type="submit" class="btn red" style="padding: 4px 10px; font-size:12px; margin:0;">Delete</button>
+                </form>
+            </td>
+        </tr>
+        """
+
+    teacher_table_rows = ""
+    for t in teachers:
+        teacher_table_rows += f"""
+        <tr>
+            <td>{t['id']}</td>
+            <td>{t['teacher_name']}</td>
+            <td>{t['username']}</td>
+            <td>
+                <form method="POST" action="/admin/delete-teacher/{t['id']}" onsubmit="return confirm('Are you sure you want to delete this teacher profile?');" style="display:inline;">
+                    <button type="submit" class="btn red" style="padding: 4px 10px; font-size:12px; margin:0;">Delete</button>
+                </form>
+            </td>
+        </tr>
+        """
+
+    class_options_html = ""
+    for c in classes:
+        class_options_html += f'<option value="{c["id"]}">{c["class_name"]} - {c["subject_name"] or ""} ({c["teacher_name"] or "No Teacher"})</option>'
+
+    teacher_options_html = ""
+    for t in teachers:
+        teacher_options_html += f'<option value="{t["id"]}">{t["teacher_name"]} ({t["username"]})</option>'
+
+    student_options_html = ""
+    for s in students:
+        student_options_html += f'<option value="{s["id"]}">{s["full_name"]} (ID: {s["student_id"]})</option>'
 
     body = f"""
     <div class="space-y-6">
         <div>
             <h1 class="text-3xl font-extrabold text-slate-800">🛡️ System Administration Console</h1>
-            <p class="text-sm text-slate-500">Configure global classes, assign instructor roles, and view records metrics logs.</p>
+            <p class="text-sm text-slate-500">Configure core metrics matrices, link proctors, manage users, and view database rosters.</p>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div class="p-6 bg-slate-50 border border-slate-200 rounded-xl">
+            <div class="p-6 bg-slate-50 border rounded-xl">
                 <h2 class="text-xl font-bold text-slate-800 mb-3">Register New Instructor Profile</h2>
                 <form method="POST" action="/admin/create-teacher" class="space-y-3">
-                    <input type="text" name="teacher_name" placeholder="Instructor Display Full Name" class="w-full px-3 py-2 border rounded-lg" required>
-                    <input type="text" name="username" placeholder="Login Account Username" class="w-full px-3 py-2 border rounded-lg" required>
-                    <input type="text" name="password" placeholder="System Access Password" class="w-full px-3 py-2 border rounded-lg" required>
-                    <button class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700" type="submit">Create Profile</button>
+                    <input type="text" name="teacher_name" placeholder="Instructor Display Full Name" class="w-full" required>
+                    <input type="text" name="username" placeholder="Login Account Username" class="w-full" required>
+                    <input type="text" name="password" placeholder="System Access Password" class="w-full" required>
+                    <button type="submit">Create Profile</button>
                 </form>
             </div>
 
-            <div class="p-6 bg-slate-50 border border-slate-200 rounded-xl">
+            <div class="p-6 bg-slate-50 border rounded-xl">
                 <h2 class="text-xl font-bold text-slate-800 mb-3">Create Dynamic Course Classroom</h2>
                 <form method="POST" action="/admin/create-class" class="space-y-2">
-                    <input type="text" name="class_name" placeholder="Class Target Label" class="w-full px-3 py-2 border rounded-lg" required>
-                    <input type="text" name="department" placeholder="Department Stream Name" class="w-full px-3 py-2 border rounded-lg">
-                    <input type="text" name="course" placeholder="Course ID Reference" class="w-full px-3 py-2 border rounded-lg">
-                    <input type="text" name="section_name" placeholder="Section Identity Identifier" class="w-full px-3 py-2 border rounded-lg">
-                    <input type="text" name="subject_name" placeholder="Subject Topic Code Name" class="w-full px-3 py-2 border rounded-lg">
-                    <select name="teacher_id" class="w-full px-3 py-2 border rounded-lg" required>
+                    <input type="text" name="class_name" placeholder="Class Target Label" class="w-full" required>
+                    <input type="text" name="department" placeholder="Department Stream Name" class="w-full">
+                    <input type="text" name="course" placeholder="Course ID Reference" class="w-full">
+                    <input type="text" name="section_name" placeholder="Section Identity" class="w-full">
+                    <input type="text" name="subject_name" placeholder="Subject Topic Code" class="w-full">
+                    <select name="teacher_id" class="w-full" required>
                         <option value="">Assign Proctor Profile</option>
-    """
-    for t in teachers:
-        body += f'<option value="{t["id"]}">{t["teacher_name"]} ({t["username"]})</option>'
-    body += """
+                        {teacher_options_html}
                     </select>
-                    <button class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 mt-2" type="submit">Create Classroom Matrix</button>
+                    <button type="submit" class="mt-2">Create Classroom Matrix</button>
                 </form>
             </div>
         </div>
 
-        <div class="p-6 bg-slate-50 border border-slate-200 rounded-xl">
-            <h2 class="text-xl font-bold text-slate-800 mb-3">Assign Registered Student to Course Class</h2>
-            <form method="POST" action="/admin/assign-student-class" class="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-                <select name="student_db_id" class="w-full px-3 py-2 border rounded-lg" required>
+        <div class="p-6 bg-slate-50 border rounded-xl">
+            <h2 class="text-xl font-bold text-slate-800 mb-3">Link Student to Classroom Matrix</h2>
+            <form method="POST" action="/admin/assign-student-class" class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                <select name="student_db_id" required>
                     <option value="">Select Student Profile</option>
-    """
-    for s in students:
-        body += f'<option value="{s["id"]}">{s["student_id"]} - {s["full_name"]}</option>'
-    body += """
+                    {student_options_html}
                 </select>
-                <select name="class_id" class="w-full px-3 py-2 border rounded-lg" required>
-                    <option value="">Select Target Class</option>
-    """
-    for c in classes:
-        teacher_name = c["teacher_display_name"] or c["teacher_name"] or ""
-        body += f'<option value="{c["id"]}">{c["class_name"]} | {c["subject_name"] or ""} | {teacher_name}</option>'
-    body += """
+                <select name="class_id" required>
+                    <option value="">Select Classroom Target Slot</option>
+                    {class_options_html}
                 </select>
-                <button class="bg-emerald-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-emerald-700 w-full md:w-auto" type="submit">Enroll Map Student</button>
+                <button type="submit">Complete Allocation</button>
             </form>
         </div>
 
-        <div class="overflow-x-auto bg-white rounded-xl shadow-sm border">
-            <div class="p-4 border-b bg-slate-50 font-bold text-slate-800 text-lg">Active Instructors Registry</div>
-            <table class="w-full text-left">
-                <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">ID</th>
-                        <th class="p-3">Teacher Name</th>
-                        <th class="p-3">Username</th>
-                        <th class="p-3">Password</th>
-                        <th class="p-3">Action Controls</th>
-                    </tr>
-                </thead>
-                <tbody>
-    """
-    if teachers:
-        for t in teachers:
-            body += f"""
-                <tr class="border-b">
-                    <td class="p-3">{t["id"]}</td>
-                    <td class="p-3 font-medium">{t["teacher_name"]}</td>
-                    <td class="p-3">{t["username"]}</td>
-                    <td class="p-3 font-mono">{t["password"]}</td>
-                    <td class="p-3">
-                        <a class="text-blue-600 hover:underline mr-2" href="/admin/edit-teacher/{t['id']}">Edit</a>
-                        <a class="text-red-600 hover:underline" href="/admin/delete-teacher/{t['id']}" onclick="return confirm('Purge data profile matrix?')">Delete</a>
-                    </td>
-                </tr>
-            """
-    else:
-        body += "<tr><td colspan='5' class='p-4 text-center text-slate-400'>No instructor records present inside system state.</td></tr>"
-    body += """
-                </tbody>
-            </table>
-        </div>
-
-        <div class="overflow-x-auto bg-white rounded-xl shadow-sm border">
-            <div class="p-4 border-b bg-slate-50 font-bold text-slate-800 text-lg">Course Classes Registry</div>
-            <table class="w-full text-left">
-                <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">ID</th>
-                        <th class="p-3">Class Target Label</th>
-                        <th class="p-3">Subject Code Title</th>
-                        <th class="p-3">Assigned Teacher</th>
-                        <th class="p-3">Action Control Triggers</th>
-                    </tr>
-                </thead>
-                <tbody>
-    """
-    if classes:
-        for c in classes:
-            t_name = c["teacher_display_name"] or c["teacher_name"] or "Unassigned"
-            body += f"""
-                <tr class="border-b">
-                    <td class="p-3">{c["id"]}</td>
-                    <td class="p-3 font-semibold"><a class="text-blue-600 hover:underline" href="/admin/class/{c["id"]}">{c["class_name"]}</a></td>
-                    <td class="p-3">{c["subject_name"] or "None"}</td>
-                    <td class="p-3 text-slate-600">{t_name}</td>
-                    <td class="p-3">
-                        <a class="text-blue-500 hover:underline mr-2" href="/admin/edit-class/{c['id']}">Edit</a>
-                        <a class="text-red-500 hover:underline" href="/admin/delete-class/{c['id']}" onclick="return confirm('Delete classroom mapping?')">Delete</a>
-                    </td>
-                </tr>
-            """
-    else:
-        body += "<tr><td colspan='5' class='p-4 text-center text-slate-400'>No classroom instances instantiated inside system database state.</td></tr>"
-    body += """
-                </tbody>
-            </table>
-        </div>
-
-        <div class="overflow-x-auto bg-white rounded-xl shadow-sm border">
-            <div class="p-4 border-b bg-slate-50 font-bold text-slate-800 text-lg">Global Student Enrolled Registry Matrix</div>
-            <table class="w-full text-left">
-                <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">Face Capture Link</th>
-                        <th class="p-3">Student Identifier ID</th>
-                        <th class="p-3">Full Registered Name</th>
-                        <th class="p-3">Portal Pass Key</th>
-                        <th class="p-3">Registered At</th>
-                        <th class="p-3">Action Overrides</th>
-                    </tr>
-                </thead>
-                <tbody>
-    """
-    if students:
-        for s in students:
-            body += f"""
-                <tr class="border-b">
-                    <td class="p-3"><img class="w-10 h-10 object-cover rounded-full border shadow-sm" src="/student-image/{s["image_file"]}"></td>
-                    <td class="p-3 font-mono text-xs">{s["student_id"]}</td>
-                    <td class="p-3 font-medium">{s["full_name"]}</td>
-                    <td class="p-3 font-mono text-xs">{s["password"]}</td>
-                    <td class="p-3 text-xs text-slate-500">{s["registered_at"]}</td>
-                    <td class="p-3">
-                        <a class="text-blue-500 hover:underline mr-2" href="/admin/edit-student/{s['id']}">Edit</a>
-                        <a class="text-red-500 hover:underline" href="/admin/delete-student/{s['student_id']}" onclick="return confirm('Delete student entirely?')">Delete</a>
-                    </td>
-                </tr>
-            """
-    else:
-        body += "<tr><td colspan='6' class='p-4 text-center text-slate-400'>No profiles detected.</td></tr>"
-    body += """
-                </tbody>
-            </table>
-        </div>
-
-        <div class="overflow-x-auto bg-white rounded-xl shadow-sm border">
-            <div class="p-4 border-b bg-slate-50 flex justify-between items-center flex-wrap gap-2">
-                <span class="font-bold text-slate-800 text-lg">Historical Records Logs</span>
-                <a class="bg-emerald-600 text-white font-semibold text-xs px-3 py-1.5 rounded-lg hover:bg-emerald-700 transition" href="/export-attendance">📥 Export Sheet (.CSV)</a>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="box p-4 border border-slate-200 rounded-xl">
+                <h3 class="text-lg font-bold text-slate-800 mb-2">🧑‍🎓 Registered Students List</h3>
+                <div class="overflow-x-auto">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Student ID</th>
+                                <th>Full Name</th>
+                                <th>Registered At</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {student_table_rows if student_table_rows else '<tr><td colspan="4" class="text-center text-slate-400">No students found.</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
             </div>
-            <table class="w-full text-left">
-                <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">Date</th>
-                        <th class="p-3">Timestamp</th>
-                        <th class="p-3">ID</th>
-                        <th class="p-3">Student Name</th>
-                        <th class="p-3">Classroom Target</th>
-                        <th class="p-3">Section</th>
-                        <th class="p-3">Subject Topic</th>
-                        <th class="p-3">Status Log</th>
-                        <th class="p-3">Authorized Proctor</th>
-                    </tr>
-                </thead>
-                <tbody>
-    """
-    if attendance:
-        for a in attendance:
-            body += f"""
-                <tr class="border-b text-xs">
-                    <td class="p-3 whitespace-nowrap">{a["date"]}</td>
-                    <td class="p-3 text-slate-500">{a["time"]}</td>
-                    <td class="p-3 font-mono">{a["student_id"]}</td>
-                    <td class="p-3 font-medium text-slate-800">{a["full_name"]}</td>
-                    <td class="p-3 font-semibold">{a["class_name"]}</td>
-                    <td class="p-3">{a["section_name"] or ""}</td>
-                    <td class="p-3">{a["subject_name"] or ""}</td>
-                    <td class="p-3"><span class="px-2 py-0.5 rounded-full text-xs font-bold {'bg-emerald-100 text-emerald-800' if a['status']=='Present' else 'bg-rose-100 text-rose-800'}">{a["status"]}</span></td>
-                    <td class="p-3 text-slate-500">{a["teacher_name"] or ""}</td>
-                </tr>
-            """
-    else:
-        body += "<tr><td colspan='9' class='p-4 text-center text-slate-400'>No historical logs have been populated.</td></tr>"
-    body += """
-                </tbody>
-            </table>
+
+            <div class="box p-4 border border-slate-200 rounded-xl">
+                <h3 class="text-lg font-bold text-slate-800 mb-2">👨‍🏫 System Instructors List</h3>
+                <div class="overflow-x-auto">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>DB ID</th>
+                                <th>Teacher Name</th>
+                                <th>Username</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {teacher_table_rows if teacher_table_rows else '<tr><td colspan="4" class="text-center text-slate-400">No instructors found.</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
     """
@@ -1415,21 +1331,23 @@ def admin_dashboard():
 
 
 # =========================================================
-# ADMIN CONTROLLERS IMPLEMENTATION MUTATION ROUTING
+# ADMIN CONTROLLER PROCESSORS & DELETIONS
 # =========================================================
 @app.route("/admin/create-teacher", methods=["POST"])
 def admin_create_teacher():
     protect = admin_required()
     if protect:
         return protect
+
     teacher_name = request.form.get("teacher_name", "").strip()
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "").strip()
 
     if not teacher_name or not username or not password:
-        return "<script>alert('All instructor fields are required');window.location.href='/admin';</script>"
+        return "<script>alert('All parameters are mandatory!'); window.location.href='/admin';</script>"
+
     if teacher_username_exists(username):
-        return "<script>alert('Teacher login username already occupies registry namespace');window.location.href='/admin';</script>"
+        return "<script>alert('Error: Instructor username already registered!'); window.location.href='/admin';</script>"
 
     conn = get_db()
     cur = conn.cursor()
@@ -1439,74 +1357,8 @@ def admin_create_teacher():
     """, (teacher_name, username, password, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
-    return "<script>alert('Instructor profile instantiated successfully');window.location.href='/admin';</script>"
 
-
-@app.route("/admin/edit-teacher/<int:teacher_id>", methods=["GET", "POST"])
-def admin_edit_teacher(teacher_id):
-    protect = admin_required()
-    if protect:
-        return protect
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
-    teacher = cur.fetchone()
-    if not teacher:
-        conn.close()
-        return "Teacher target row index match not located inside dynamic memory state", 404
-
-    if request.method == "POST":
-        teacher_name = request.form.get("teacher_name", "").strip()
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "").strip()
-
-        cur.execute("""
-            UPDATE teachers SET teacher_name=%s, username=%s, password=%s WHERE id=%s
-        """, (teacher_name, username, password, teacher_id))
-        conn.commit()
-        
-        cur.execute("UPDATE classes SET teacher_display_name=%s WHERE teacher_id=%s", (teacher_name, teacher_id))
-        conn.commit()
-        
-        conn.close()
-        return "<script>alert('Teacher entity parameters updated successfully');window.location.href='/admin';</script>"
-
-    body = f"""
-    <div class="max-w-md">
-        <h1 class="text-2xl font-bold mb-4">Modify Instructor Record</h1>
-        <form method="POST" class="space-y-4">
-            <div>
-                <label class="block text-sm font-medium">Instructor Display Full Name</label>
-                <input type="text" name="teacher_name" value="{teacher["teacher_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
-            </div>
-            <div>
-                <label class="block text-sm font-medium">Login Username Reference</label>
-                <input type="text" name="username" value="{teacher["username"]}" class="w-full px-3 py-2 border rounded-lg" required>
-            </div>
-            <div>
-                <label class="block text-sm font-medium">Access Pass Key Token</label>
-                <input type="text" name="password" value="{teacher["password"]}" class="w-full px-3 py-2 border rounded-lg" required>
-            </div>
-            <button type="submit" class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700">Save Modifications</button>
-            <a href="/admin" class="ml-2 inline-block bg-slate-100 text-slate-700 font-bold py-2 px-4 rounded-lg">Cancel</a>
-        </form>
-    </div>
-    """
-    conn.close()
-    return page_wrapper("Edit Teacher Entity Matrix", body, is_admin=True)
-
-
-@app.route("/admin/delete-teacher/<int:teacher_id>")
-def admin_delete_teacher(teacher_id):
-    protect = admin_required()
-    if protect:
-        return protect
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM teachers WHERE id=%s", (teacher_id,))
-    conn.commit()
-    conn.close()
-    return "<script>alert('Teacher purged successfully');window.location.href='/admin';</script>"
+    return "<script>alert('Instructor profile created successfully!'); window.location.href='/admin';</script>"
 
 
 @app.route("/admin/create-class", methods=["POST"])
@@ -1514,6 +1366,7 @@ def admin_create_class():
     protect = admin_required()
     if protect:
         return protect
+
     class_name = request.form.get("class_name", "").strip()
     department = request.form.get("department", "").strip()
     course = request.form.get("course", "").strip()
@@ -1522,96 +1375,23 @@ def admin_create_class():
     teacher_id = request.form.get("teacher_id", "").strip()
 
     if not class_name or not teacher_id:
-        return "<script>alert('Class name and teacher selection are mandatory');window.location.href='/admin';</script>"
+        return "<script>alert('Class Target Label and Proctor Profile allocation are mandatory!'); window.location.href='/admin';</script>"
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
-    teacher = cur.fetchone()
-    if not teacher:
-        conn.close()
-        return "<script>alert('Selected proctor identity mismatch data reference code');window.location.href='/admin';</script>"
+    
+    cur.execute("SELECT teacher_name FROM teachers WHERE id=%s", (teacher_id,))
+    t_row = cur.fetchone()
+    teacher_display_name = t_row["teacher_name"] if t_row else ""
 
     cur.execute("""
-        INSERT INTO classes (
-            class_name, department, course, section_name, subject_name, teacher_id, teacher_display_name, created_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    """, (class_name, department, course, section_name, subject_name, teacher["id"], teacher["teacher_name"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        INSERT INTO classes (class_name, department, course, section_name, subject_name, teacher_id, teacher_display_name, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """, (class_name, department or None, course or None, section_name or None, subject_name or None, int(teacher_id), teacher_display_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
-    return "<script>alert('New classroom created successfully');window.location.href='/admin';</script>"
 
-
-@app.route("/admin/edit-class/<int:class_id>", methods=["GET", "POST"])
-def admin_edit_class(class_id):
-    protect = admin_required()
-    if protect:
-        return protect
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM classes WHERE id=%s", (class_id,))
-    class_row = cur.fetchone()
-    if not class_row:
-        conn.close()
-        return "Class file matching matrix not detected index inside standard layout references", 404
-
-    if request.method == "POST":
-        class_name = request.form.get("class_name", "").strip()
-        department = request.form.get("department", "").strip()
-        course = request.form.get("course", "").strip()
-        section_name = request.form.get("section_name", "").strip()
-        subject_name = request.form.get("subject_name", "").strip()
-        teacher_id = request.form.get("teacher_id", "").strip()
-
-        cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
-        t = cur.fetchone()
-        t_name = t["teacher_name"] if t else ""
-
-        cur.execute("""
-            UPDATE classes SET class_name=%s, department=%s, course=%s, section_name=%s, subject_name=%s, teacher_id=%s, teacher_display_name=%s
-            WHERE id=%s
-        """, (class_name, department, course, section_name, subject_name, teacher_id, t_name, class_id))
-        conn.commit()
-        conn.close()
-        return "<script>alert('Classroom record adjustments committed!');window.location.href='/admin';</script>"
-
-    teachers = get_all_teachers()
-    body = f"""
-    <div class="max-w-md">
-        <h1 class="text-2xl font-bold mb-4">Edit Classroom Configuration</h1>
-        <form method="POST" class="space-y-3">
-            <input type="text" name="class_name" value="{class_row["class_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
-            <input type="text" name="department" value="{class_row["department"] or ""}" class="w-full px-3 py-2 border rounded-lg">
-            <input type="text" name="course" value="{class_row["course"] or ""}" class="w-full px-3 py-2 border rounded-lg">
-            <input type="text" name="section_name" value="{class_row["section_name"] or ""}" class="w-full px-3 py-2 border rounded-lg">
-            <input type="text" name="subject_name" value="{class_row["subject_name"] or ""}" class="w-full px-3 py-2 border rounded-lg">
-            <select name="teacher_id" class="w-full px-3 py-2 border rounded-lg" required>
-    """
-    for t in teachers:
-        sel = "selected" if t["id"] == class_row["teacher_id"] else ""
-        body += f'<option value="{t["id"]}" {sel}>{t["teacher_name"]}</option>'
-    body += f"""
-            </select>
-            <button class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700" type="submit">Save Adjustments</button>
-            <a class="ml-2 inline-block bg-slate-100 text-slate-700 font-bold py-2 px-4 rounded-lg" href="/admin">Cancel</a>
-        </form>
-    </div>
-    """
-    conn.close()
-    return page_wrapper("Modify Course Class Configuration", body, is_admin=True)
-
-
-@app.route("/admin/delete-class/<int:class_id>")
-def admin_delete_class(class_id):
-    protect = admin_required()
-    if protect:
-        return protect
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM classes WHERE id=%s", (class_id,))
-    conn.commit()
-    conn.close()
-    return "<script>alert('Classroom record mapping purged successfully');window.location.href='/admin';</script>"
+    return "<script>alert('Dynamic course classroom map registered successfully!'); window.location.href='/admin';</script>"
 
 
 @app.route("/admin/assign-student-class", methods=["POST"])
@@ -1619,178 +1399,66 @@ def admin_assign_student_class():
     protect = admin_required()
     if protect:
         return protect
+
     student_db_id = request.form.get("student_db_id", "").strip()
     class_id = request.form.get("class_id", "").strip()
+
     if not student_db_id or not class_id:
-        return "<script>alert('All enrollment parameters are needed');window.location.href='/admin';</script>"
+        return "<script>alert('Please select both a student and a class roster targeting slot!'); window.location.href='/admin';</script>"
+
     assign_student_to_class(int(student_db_id), int(class_id))
-    return "<script>alert('Student enrollment map updated dynamically!');window.location.href='/admin';</script>"
+    return "<script>alert('Student assigned to class successfully!'); window.location.href='/admin';</script>"
 
 
-@app.route("/admin/edit-student/<int:student_db_id>", methods=["GET", "POST"])
-def admin_edit_student(student_db_id):
+@app.route("/admin/delete-student/<int:id>", methods=["POST"])
+def admin_delete_student(id):
     protect = admin_required()
     if protect:
         return protect
-    student = get_student_row_by_db_id(student_db_id)
-    if not student:
-        return "Student file mismatch", 404
-    if request.method == "POST":
-        full_name = request.form.get("full_name", "").strip()
-        password = request.form.get("password", "").strip()
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("UPDATE students SET full_name=%s, password=%s WHERE id=%s", (full_name, password, student_db_id))
-        conn.commit()
-        conn.close()
-        load_known_faces()
-        return "<script>alert('Student account adjusted');window.location.href='/admin';</script>"
 
-    body = f"""
-    <div class="max-w-md">
-        <h1 class="text-2xl font-bold mb-4">Modify Student Registration Settings</h1>
-        <form method="POST" class="space-y-4">
-            <div>
-                <label class="block text-sm font-medium">System Identifier (Disabled)</label>
-                <input type="text" value="{student["student_id"]}" class="w-full px-3 py-2 border rounded-lg bg-slate-50" disabled>
-            </div>
-            <div>
-                <label class="block text-sm font-medium">Full Registration Name</label>
-                <input type="text" name="full_name" value="{student["full_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
-            </div>
-            <div>
-                <label class="block text-sm font-medium">Portal Authentication Password</label>
-                <input type="text" name="password" value="{student["password"]}" class="w-full px-3 py-2 border rounded-lg" required>
-            </div>
-            <button class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700" type="submit">Save File Changes</button>
-            <a class="inline-block bg-slate-100 text-slate-700 font-bold py-2 px-4 rounded-lg ml-2" href="/admin">Cancel</a>
-        </form>
-    </div>
-    """
-    return page_wrapper("Edit Student Account Data", body, is_admin=True)
-
-
-@app.route("/admin/delete-student/<student_id>")
-def admin_delete_student(student_id):
-    protect = admin_required()
-    if protect:
-        return protect
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, image_file FROM students WHERE student_id=%s", (student_id,))
-    row = cur.fetchone()
-    if row:
-        db_id = row["id"]
-        img = row["image_file"]
-        cur.execute("DELETE FROM attendance WHERE student_id=%s", (student_id,))
-        cur.execute("DELETE FROM student_classes WHERE student_id_fk=%s", (db_id,))
-        cur.execute("DELETE FROM students WHERE id=%s", (db_id,))
+    try:
+        # 1. Clear out intermediate cross references inside enrollment lists
+        cur.execute("DELETE FROM student_classes WHERE student_id_fk = %s", (id,))
+        # 2. Drop the master student entry row
+        cur.execute("DELETE FROM students WHERE id = %s", (id,))
         conn.commit()
-        try:
-            path = os.path.join(IMAGE_DIR, img)
-            if os.path.exists(path):
-                os.remove(path)
-        except:
-            pass
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return f"<script>alert('Failed to drop student execution error: {str(e)}'); window.location.href='/admin';</script>"
+
     conn.close()
+    # Synchronize facial database representation matrices 
     load_known_faces()
-    return "<script>alert('Student account fully deleted');window.location.href='/admin';</script>"
+    return "<script>alert('Student profile completely discarded from database registry.'); window.location.href='/admin';</script>"
 
 
-@app.route("/admin/class/<int:class_id>")
-def admin_view_class(class_id):
+@app.route("/admin/delete-teacher/<int:id>", methods=["POST"])
+def admin_delete_teacher(id):
     protect = admin_required()
     if protect:
         return protect
-    class_row = get_class_by_id(class_id)
-    if not class_row:
-        return "Class code record mapping target not found in framework database state", 404
-    students = get_students_in_class(class_id)
-    attendance = get_attendance_for_class(class_id)
 
-    body = f"""
-    <div class="space-y-6">
-        <div>
-            <h1 class="text-3xl font-bold text-slate-800">Class: {class_row["class_name"]}</h1>
-            <p class="text-sm text-slate-500">Subject: {class_row["subject_name"] or "None"} | Section: {class_row["section_name"] or "None"}</p>
-        </div>
-        <div class="flex gap-2">
-            <a class="bg-slate-800 text-white font-bold py-2 px-4 rounded-lg" href="/admin">← Return Dashboard</a>
-        </div>
-        
-        <div class="bg-white border rounded-xl overflow-hidden shadow-sm">
-            <div class="p-4 bg-slate-50 font-bold text-slate-800">Enrolled Students Matrix</div>
-            <table class="w-full text-left">
-                <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">Face</th>
-                        <th class="p-3">Student ID</th>
-                        <th class="p-3">Full Name</th>
-                        <th class="p-3">Action Control</th>
-                    </tr>
-                </thead>
-                <tbody>
-    """
-    if students:
-        for s in students:
-            body += f"""
-                <tr class="border-b">
-                    <td class="p-3"><img class="w-8 h-8 object-cover rounded-full border" src="/student-image/{s["image_file"]}"></td>
-                    <td class="p-3 font-mono">{s["student_id"]}</td>
-                    <td class="p-3 font-medium">{s["full_name"]}</td>
-                    <td class="p-3"><a class="text-red-500 hover:underline" href="/admin/remove-student-from-class/{class_id}/{s['id']}" onclick="return confirm('Unmap from current class framework matrix?')">Drop Enrollment</a></td>
-                </tr>
-            """
-    else:
-        body += "<tr><td colspan='4' class='p-4 text-center text-slate-400'>No student data currently mapped inside classroom roster.</td></tr>"
-    body += """
-                </tbody>
-            </table>
-        </div>
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        # Check if teacher holds active classrooms to prevent violating constraint mechanics
+        cur.execute("SELECT 1 FROM classes WHERE teacher_id = %s LIMIT 1", (id,))
+        if cur.fetchone():
+            conn.close()
+            return "<script>alert('Cannot delete instructor because they are currently assigned to an active class registry module.'); window.location.href='/admin';</script>"
 
-        <div class="bg-white border rounded-xl overflow-hidden shadow-sm">
-            <div class="p-4 bg-slate-50 font-bold text-slate-800">Attendance Log</div>
-            <table class="w-full text-left">
-                <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">Date</th>
-                        <th class="p-3">Time logged</th>
-                        <th class="p-3">Student ID</th>
-                        <th class="p-3">Full Name</th>
-                        <th class="p-3">Verification Flag</th>
-                    </tr>
-                </thead>
-                <tbody>
-    """
-    if attendance:
-        for a in attendance:
-            body += f"""
-                <tr class="border-b">
-                    <td class="p-3">{a["date"]}</td>
-                    <td class="p-3 text-slate-500">{a["time"]}</td>
-                    <td class="p-3 font-mono">{a["student_id"]}</td>
-                    <td class="p-3 font-medium">{a["full_name"]}</td>
-                    <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-bold {'bg-emerald-100 text-emerald-800' if a['status']=='Present' else 'bg-rose-100 text-rose-800'}">{a["status"]}</span></td>
-                </tr>
-            """
-    else:
-        body += "<tr><td colspan='5' class='p-4 text-center text-slate-400'>No scan iterations completed for this stream matrix.</td></tr>"
-    body += """
-                </tbody>
-            </table>
-        </div>
-    </div>
-    """
-    return page_wrapper("Class Details Matrix View", body, is_admin=True)
+        cur.execute("DELETE FROM teachers WHERE id = %s", (id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return f"<script>alert('Failed to delete instructor structural instance: {str(e)}'); window.location.href='/admin';</script>"
 
-
-@app.route("/admin/remove-student-from-class/<int:class_id>/<int:student_db_id>")
-def admin_remove_student_from_class(class_id, student_db_id):
-    protect = admin_required()
-    if protect:
-        return protect
-    remove_student_from_class(student_db_id, class_id)
-    return f"<script>alert('Student unmapped from current class matrix');window.location.href='/admin/class/{class_id}';</script>"
+    conn.close()
+    return "<script>alert('Teacher instance unlinked successfully.'); window.location.href='/admin';</script>"
 
 
 @app.route("/admin/reports")
@@ -1798,62 +1466,64 @@ def admin_reports():
     protect = admin_required()
     if protect:
         return protect
-    daily = get_report_records("daily")
-    weekly = get_report_records("weekly")
-    monthly = get_report_records("monthly")
 
-    def render_report_table(title, rows):
-        html = f"""
-        <div class="bg-white border rounded-xl overflow-hidden shadow-sm mt-4">
-            <div class="p-4 bg-slate-50 font-bold text-slate-800">{title}</div>
-            <table class="w-full text-left">
+    period = request.args.get("period", "daily")
+    records = get_report_records(period)
+
+    body = f"""
+    <div class="space-y-4">
+        <div class="flex justify-between items-center flex-wrap gap-2">
+            <div>
+                <h1 class="text-2xl font-bold text-slate-800">📋 Roster Master Ledger Reports</h1>
+                <p class="text-sm text-slate-500">Historical database log entries sorted by execution datetime slots</p>
+            </div>
+            <div class="flex gap-2">
+                <a class="btn dark px-3 py-1 text-xs" href="/admin/reports?period=daily">Daily Log</a>
+                <a class="btn dark px-3 py-1 text-xs" href="/admin/reports?period=weekly">Weekly Matrix</a>
+                <a class="btn dark px-3 py-1 text-xs" href="/admin/reports?period=monthly">Monthly Block</a>
+                <a class="btn green px-3 py-1 text-xs" href="/export-attendance">📥 Export CSV Sheet</a>
+            </div>
+        </div>
+        
+        <div class="overflow-x-auto">
+            <table>
                 <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">Calendar Date</th>
-                        <th class="p-3">Student ID</th>
-                        <th class="p-3">Student Name</th>
-                        <th class="p-3">Course Subject Target</th>
-                        <th class="p-3">Topic Description</th>
-                        <th class="p-3">Status Flag</th>
-                        <th class="p-3">Proctor Name</th>
+                    <tr>
+                        <th>Student ID</th>
+                        <th>Full Name</th>
+                        <th>Class Blueprint</th>
+                        <th>Instructor</th>
+                        <th>Attendance Status</th>
+                        <th>System Timestamp Reference</th>
                     </tr>
                 </thead>
                 <tbody>
-        """
-        if rows:
-            for r in rows:
-                html += f"""
-                    <tr class="border-b text-sm">
-                        <td class="p-3">{r["date"]}</td>
-                        <td class="p-3 font-mono">{r["student_id"]}</td>
-                        <td class="p-3 font-medium">{r["full_name"]}</td>
-                        <td class="p-3 font-semibold">{r["class_name"]}</td>
-                        <td class="p-3">{r["subject_name"] or ""}</td>
-                        <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-bold {'bg-emerald-100 text-emerald-800' if r['status']=='Present' else 'bg-rose-100 text-rose-800'}">{r["status"]}</span></td>
-                        <td class="p-3 text-slate-500">{r["teacher_name"] or ""}</td>
-                    </tr>
-                """
-        else:
-            html += "<tr><td colspan='7' class='p-4 text-center text-slate-400'>No records compiled inside this time range delta mapping state.</td></tr>"
-        html += "</tbody></table></div>"
-        return html
-
-    body = """
-    <div class="space-y-4">
-        <div>
-            <h1 class="text-3xl font-bold text-slate-800">System Time Frame Summaries</h1>
-            <p class="text-sm text-slate-500">Review standard dynamic breakdowns mapped by date intervals.</p>
-        </div>
     """
-    body += render_report_table("Daily Metric Report Insights", daily)
-    body += render_report_table("Extended Weekly Performance Matrix", weekly)
-    body += render_report_table("Rolling Monthly Aggregated Logs Summary", monthly)
-    body += "</div>"
-    return page_wrapper("Reports Overview", body, is_admin=True)
+    for r in records:
+        body += f"""
+        <tr>
+            <td>{r['student_id']}</td>
+            <td>{r['full_name']}</td>
+            <td>{r['class_name']} ({r['subject_name'] or ''})</td>
+            <td>{r['teacher_name'] or ''}</td>
+            <td><span class="px-2 py-0.5 rounded text-xs font-bold {'bg-green-100 text-green-800' if r['status']=='Present' else 'bg-red-100 text-red-800'}">{r['status']}</span></td>
+            <td>{r['date']} @ {r['time']}</td>
+        </tr>
+        """
+    if not records:
+        body += '<tr><td colspan="6" class="text-center text-slate-400 py-6">No historical records saved for the chosen period scope.</td></tr>'
+
+    body += """
+                </tbody>
+            </table>
+        </div>
+    </div>
+    """
+    return page_wrapper("Attendance Ledger Reports", body, is_admin=True)
 
 
 # =========================================================
-# BEAUTIFUL ORGANIZED TEACHER DASHBOARD PORTAL WITH SIDEBAR
+# TEACHER / INSTRUCTOR DISPATCH VIEWS
 # =========================================================
 @app.route("/teacher")
 def teacher_dashboard():
@@ -1862,765 +1532,270 @@ def teacher_dashboard():
         return protect
 
     teacher_id = get_logged_teacher_id()
-    teacher_name = session.get("teacher_name", "Instructor")
+    teacher_name = session.get("teacher_name", "Teacher")
     classes = get_teacher_classes(teacher_id)
-    attendance = get_attendance_for_teacher(teacher_name)
 
     body = f"""
-    <div class="space-y-6">
-        <div class="bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-2xl text-white shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div>
-                <h1 class="text-3xl font-extrabold tracking-tight">Welcome Back, {teacher_name}!</h1>
-                <p class="text-blue-100 text-sm mt-1">Manage active classrooms, launch live face-recognition streams, or complete fast manual manual ticking sheets.</p>
-            </div>
-            <div class="bg-white/10 px-4 py-2 rounded-xl text-xs font-mono backdrop-blur-sm">
-                System Session Verified ✓
-            </div>
-        </div>
-
+    <div class="space-y-4">
         <div>
-            <h2 class="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2"><i class="fas fa-chalkboard text-blue-600"></i> My Assigned Academic Classrooms</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <h1 class="text-2xl font-bold text-slate-800">👨‍🏫 Instructor Dashboard Panel</h1>
+            <p class="text-sm text-slate-500">Access macro management metrics for assigned course schedules.</p>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
     """
-    if classes:
-        for c in classes:
-            body += f"""
-                <div class="bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md transition flex flex-col justify-between overflow-hidden">
-                    <div class="p-5">
-                        <div class="flex justify-between items-start mb-3">
-                            <span class="text-xs font-bold uppercase tracking-wider bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full">{c["department"] or "General"}</span>
-                            <span class="text-xs font-mono text-slate-400">#CLS-{c["id"]}</span>
-                        </div>
-                        <h3 class="text-xl font-bold text-slate-800 mb-1">{c["class_name"]}</h3>
-                        <p class="text-sm font-medium text-slate-600 mb-2">{c["subject_name"] or "No Topic Component Attached"}</p>
-                        <div class="text-xs text-slate-400 space-y-1">
-                            <div><i class="fas fa-layer-group w-4 text-slate-300"></i> <b>Section Block:</b> {c["section_name"] or "N/A"}</div>
-                            <div><i class="fas fa-bookmark w-4 text-slate-300"></i> <b>Course Code:</b> {c["course"] or "N/A"}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="p-4 bg-slate-50 border-t border-slate-100 grid grid-cols-2 gap-2 text-center">
-                        <a href="/teacher/class/{c["id"]}" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition">
-                            <i class="fas fa-list-check"></i> Tracker Sheet
-                        </a>
-                        <a href="/teacher/class/{c["id"]}/scan" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition">
-                            <i class="fas fa-camera"></i> AI Scan
-                        </a>
-                    </div>
-                </div>
-            """
-    else:
-        body += """
-            <div class="col-span-full bg-white border border-dashed rounded-2xl p-8 text-center text-slate-400">
-                <i class="fas fa-folder-open text-4xl mb-2 text-slate-300"></i>
-                <p class="font-medium">No classroom matrix mapping objects assigned to your proctor account identifier.</p>
+    for c in classes:
+        body += f"""
+        <div class="p-4 border border-slate-200 rounded-xl bg-slate-50 flex flex-col justify-between">
+            <div>
+                <span class="text-xs font-bold uppercase tracking-wider text-blue-600">{c['subject_name'] or 'General Subject'}</span>
+                <h3 class="text-lg font-bold text-slate-800 mt-1">{c['class_name']}</h3>
+                <p class="text-xs text-slate-500 mt-1">Dept: {c['department'] or 'None'} | Course Code: {c['course'] or 'None'} | Sec: {c['section_name'] or 'None'}</p>
             </div>
-        """
-    body += f"""
+            <div class="mt-4 pt-2 border-t flex justify-end">
+                <a href="/teacher/class/{c['id']}" class="btn bg-blue-600 text-white text-xs px-3 py-1.5 rounded-lg">Open Manual Sheet →</a>
             </div>
         </div>
+        """
+    if not classes:
+        body += '<div class="col-span-2 p-6 text-center text-slate-400">No workspace allocation found for your account reference.</div>'
 
-        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-            <div class="p-4 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
-                <h3 class="font-bold text-slate-800 flex items-center gap-2"><i class="fas fa-history text-slate-500"></i> Recent Attendance Mappings Log</h3>
-                <span class="text-xs text-slate-500 bg-white border px-2 py-1 rounded-lg">Proctor: {teacher_name}</span>
-            </div>
+    body += "</div></div>"
+    return page_wrapper("Instructor Management Console", body, is_teacher=True, teacher_name=teacher_name)
+
+
+@app.route("/teacher/class/<int:class_id>")
+def teacher_class_view(class_id):
+    protect = teacher_required()
+    if protect:
+        return protect
+
+    teacher_name = session.get("teacher_name", "Teacher")
+    class_row = get_class_by_id(class_id)
+    if not class_row:
+        return "Target class index data block structure unallocated", 404
+
+    students = get_students_in_class(class_id)
+
+    body = f"""
+    <div class="space-y-4">
+        <div>
+            <h1 class="text-2xl font-bold text-slate-800">📋 Roster Attendance Ticking Grid</h1>
+            <p class="text-sm text-slate-500">Class: <b>{class_row['class_name']}</b> | Subject: {class_row['subject_name'] or 'None'}</p>
+        </div>
+        
+        <form method="POST" action="/teacher/mark-attendance">
+            <input type="hidden" name="class_id" value="{class_id}">
             <div class="overflow-x-auto">
-                <table class="w-full text-left m-0 border-none shadow-none rounded-none">
+                <table>
                     <thead>
-                        <tr class="bg-slate-100/70 border-b text-slate-700 text-xs uppercase font-bold tracking-wider">
-                            <th class="p-3 border-none bg-transparent text-slate-700 font-bold">Date Logged</th>
-                            <th class="p-3 border-none bg-transparent text-slate-700 font-bold">Timestamp</th>
-                            <th class="p-3 border-none bg-transparent text-slate-700 font-bold">Student ID</th>
-                            <th class="p-3 border-none bg-transparent text-slate-700 font-bold">Full Name</th>
-                            <th class="p-3 border-none bg-transparent text-slate-700 font-bold">Class Framework</th>
-                            <th class="p-3 border-none bg-transparent text-slate-700 font-bold">Section</th>
-                            <th class="p-3 border-none bg-transparent text-slate-700 font-bold">Verification Status</th>
+                        <tr>
+                            <th>Student Code ID</th>
+                            <th>Full Name</th>
+                            <th>Verified Performance Index</th>
+                            <th>Presence Status Toggle Selection</th>
                         </tr>
                     </thead>
-                    <tbody class="text-xs divide-y divide-slate-100">
+                    <tbody>
     """
-    if attendance:
-        for a in attendance:
-            body += f"""
-                <tr class="hover:bg-slate-50/80 transition-colors">
-                    <td class="p-3 font-medium whitespace-nowrap">{a["date"]}</td>
-                    <td class="p-3 text-slate-400">{a["time"]}</td>
-                    <td class="p-3 font-mono font-bold text-slate-600">{a["student_id"]}</td>
-                    <td class="p-3 font-semibold text-slate-800">{a["full_name"]}</td>
-                    <td class="p-3 text-slate-600">{a["class_name"]}</td>
-                    <td class="p-3 text-slate-500">{a["section_name"] or "—"}</td>
-                    <td class="p-3"><span class="px-2.5 py-1 rounded-full text-[11px] font-extrabold {'bg-emerald-50 text-emerald-700 border border-emerald-200' if a['status']=='Present' else 'bg-rose-50 text-rose-700 border border-rose-200'}">{a["status"]}</span></td>
-                </tr>
-            """
-    else:
-        body += "<tr><td colspan='7' class='p-6 text-center text-slate-400 font-medium'>No records processed via your instructor portal session.</td></tr>"
-    body += """
+    for s in students:
+        pct = get_percentage(s["student_id"], class_id)
+        body += f"""
+        <tr>
+            <td><b>{s['student_id']}</b></td>
+            <td>{s['full_name']}</td>
+            <td><span class="text-xs font-semibold px-2 py-0.5 rounded {'bg-green-100 text-green-700' if pct>=75 else 'bg-amber-100 text-amber-700'}">{pct}% Present Rate</span></td>
+            <td>
+                <select name="status_{s['id']}" style="margin:0; width:140px; padding:4px 8px;" class="border rounded-lg text-sm">
+                    <option value="Present">Present</option>
+                    <option value="Absent">Absent</option>
+                </select>
+            </td>
+        </tr>
+        """
+    if not students:
+        body += '<tr><td colspan="4" class="text-center text-slate-400 py-6">No students assigned to this classroom list yet.</td></tr>'
+
+    body += f"""
                     </tbody>
                 </table>
             </div>
-        </div>
+            <div class="pt-4 flex gap-2">
+                <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2 rounded-lg">Submit Batch Ledger Records</button>
+                <a href="/teacher" class="btn bg-slate-100 text-slate-700 hover:bg-slate-200 px-4 py-2 rounded-lg">Go Back</a>
+            </div>
+        </form>
     </div>
     """
-    return page_wrapper("Teacher Dashboard", body, is_teacher=True, teacher_name=teacher_name)
+    return page_wrapper("Roster Verification Matrix", body, is_teacher=True, teacher_name=teacher_name)
 
 
-# =========================================================
-# MANUAL ATTENDANCE ROSTER SHEET CONTROL WITH BATCH CLICK SUBMIT
-# =========================================================
-@app.route("/teacher/class/<int:class_id>")
-def teacher_view_class(class_id):
+@app.route("/teacher/mark-attendance", methods=["POST"])
+def teacher_mark_attendance():
     protect = teacher_required()
     if protect:
         return protect
+
+    class_id_str = request.form.get("class_id")
+    if not class_id_str:
+        return "Invalid dynamic parameters form mapping configuration instance missing", 400
+
+    class_id = int(class_id_str)
     class_row = get_class_by_id(class_id)
-    if not class_row:
-        return "Class mismatch mapping object reference layer", 404
-    if class_row["teacher_id"] != get_logged_teacher_id():
-        return "Unauthorized proctor routing attempt override locked", 403
-
     students = get_students_in_class(class_id)
-    today_str = datetime.now().strftime("%B %d, %Y")
-
-    body = f"""
-    <div class="space-y-6">
-        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 border border-slate-200 rounded-xl shadow-sm">
-            <div>
-                <a href="/teacher" class="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1 mb-1"><i class="fas fa-arrow-left"></i> Back to Dashboard Panel</a>
-                <h1 class="text-2xl font-extrabold text-slate-800 tracking-tight">Roster Tracker: {class_row["class_name"]}</h1>
-                <p class="text-xs text-slate-400 font-medium mt-0.5">Subject code: {class_row["subject_name"] or "N/A"} | Active Proctor Date: {today_str}</p>
-            </div>
-            <div class="flex gap-2">
-                <a class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl flex items-center gap-1.5 transition shadow-sm shadow-emerald-100" href="/teacher/class/{class_id}/scan">
-                    <i class="fas fa-camera"></i> Launch AI Scanner
-                </a>
-            </div>
-        </div>
-
-        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-            <div class="px-5 py-4 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
-                <h3 class="font-bold text-slate-700 text-sm flex items-center gap-2"><i class="fas fa-user-check text-slate-400"></i> Interactive Manual Ticking Sheet</h3>
-                <div class="flex items-center gap-3 text-xs">
-                    <button onclick="checkAll(true)" type="button" class="text-blue-600 hover:text-blue-800 font-semibold bg-white px-2 py-1 rounded border shadow-sm">Mark All Present</button>
-                    <span class="text-slate-300">|</span>
-                    <button onclick="checkAll(false)" type="button" class="text-slate-500 hover:text-slate-700 font-semibold bg-white px-2 py-1 rounded border shadow-sm">Clear All</button>
-                </div>
-            </div>
-
-            <form id="attendanceForm" method="POST" action="/teacher/class/{class_id}/manual-submit">
-                <div class="divide-y divide-slate-100">
-    """
-    if students:
-        for idx, s in enumerate(students, 1):
-            pct = get_percentage(s["student_id"], class_id)
-            body += f"""
-                    <div class="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50 transition-colors">
-                        <div class="flex items-center gap-4">
-                            <span class="text-xs font-mono font-bold text-slate-300 w-5 text-center">{idx:02d}</span>
-                            <img class="w-10 h-10 object-cover rounded-xl border bg-slate-50" src="/student-image/{s["image_file"]}">
-                            <div>
-                                <h4 class="font-bold text-slate-800 text-sm">{s["full_name"]}</h4>
-                                <p class="text-[11px] font-mono text-slate-400">ID: #{s["student_id"]} | Agg. Ratio Score: <span class="text-blue-600 font-bold">{pct}%</span></p>
-                            </div>
-                        </div>
-
-                        <div class="flex items-center gap-6">
-                            <label class="relative inline-flex items-center cursor-pointer select-none">
-                                <input type="checkbox" name="present_students" value="{s["student_id"]}" class="sr-only peer" checked>
-                                <div class="w-14 h-7 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[4px] after:left-[4px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
-                                <span class="ml-3 text-xs font-bold text-slate-500 peer-checked:text-emerald-600 uppercase tracking-wider w-16">Present</span>
-                            </label>
-                        </div>
-                    </div>
-            """
-    else:
-        body += """
-                    <div class="p-8 text-center text-slate-400 font-medium">
-                        <i class="fas fa-users-slash text-3xl mb-1 text-slate-300"></i>
-                        <p>No student accounts currently assigned to this classroom registry array block.</p>
-                    </div>
-        """
-    body += """
-                </div>
-
-                <div class="p-5 bg-slate-50/60 border-t border-slate-100 flex justify-end">
-                    <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-6 py-2.5 rounded-xl shadow-md shadow-indigo-100 flex items-center gap-2 transition-all">
-                        <i class="fas fa-save text-xs"></i>
-                        <span>Submit Attendance Sheet</span>
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <script>
-    function checkAll(status) {
-        const checkboxes = document.querySelectorAll('input[name="present_students"]');
-        checkboxes.forEach(cb => cb.checked = status);
-    }
-    </script>
-    """
-    return page_wrapper("Classroom Ticking Roster Sheet", body, is_teacher=True, teacher_name=session.get("teacher_name"))
-
-
-# =========================================================
-# MANUAL BATCH TICKING SUBMISSION HANDLER ROUTE ACTION
-# =========================================================
-@app.route("/teacher/class/<int:class_id>/manual-submit", methods=["POST"])
-def teacher_manual_submit_batch(class_id):
-    protect = teacher_required()
-    if protect:
-        return protect
-    class_row = get_class_by_id(class_id)
-    if not class_row:
-        return "Class file record mapping object mismatch context layer", 404
-    if class_row["teacher_id"] != get_logged_teacher_id():
-        return "Action forbidden access blocked context matrix", 403
-
-    students = get_students_in_class(class_id)
-    ticked_present_ids = request.form.getlist("present_students")
 
     for s in students:
-        status = "Present" if s["student_id"] in ticked_present_ids else "Absent"
-        mark_attendance(s, class_row, status=status)
+        status_val = request.form.get(f"status_{s['id']}")
+        if status_val:
+            mark_attendance(s, class_row, status_val)
 
-    return "<script>alert('Attendance roster processing batch committed successfully!'); window.location.href='/teacher';</script>"
-
-
-# =========================================================
-# BACKWARDS COMPATIBLE FORCE PILL OVERRIDES 
-# =========================================================
-@app.route("/teacher/manual-mark/<int:class_id>/<int:student_db_id>/<status>")
-def teacher_manual_mark_override(class_id, student_db_id, status):
-    protect = teacher_required()
-    if protect:
-        return protect
-    class_row = get_class_by_id(class_id)
-    if not class_row:
-        return "Class mismatch row array object definition state error", 404
-    if class_row["teacher_id"] != get_logged_teacher_id():
-        return "Unauthorized action trigger attempt configuration locked", 403
-
-    student_row = get_student_row_by_db_id(student_db_id)
-    if student_row:
-        mark_attendance(student_row, class_row, status)
-    return f"<script>alert('Manually forced student record to {status}!');window.location.href='/teacher/class/{class_id}';</script>"
+    return "<script>alert('Batch records logged into database schema matrix successfully!'); window.location.href='/teacher';</script>"
 
 
 # =========================================================
-# FACE SCAN LIVE CAMERA STREAM MODULE VISUAL ENGINE
+# STUDENT SUITE APP DISPATCH CONTROLLERS
 # =========================================================
-@app.route("/teacher/class/<int:class_id>/scan")
-def teacher_scan_class(class_id):
-    protect = teacher_required()
-    if protect:
-        return protect
-    class_row = get_class_by_id(class_id)
-    if not class_row:
-        return "Class asset record code definition state error instance missing", 404
-    if class_row["teacher_id"] != get_logged_teacher_id():
-        return "Proctor verification sequence match locked mismatch exception", 403
-
-    teacher_name = session.get("teacher_name", "Teacher Proctored Session")
-
-    body = f"""
-    <div class="max-w-3xl mx-auto text-center space-y-4">
-        <div>
-            <h1 class="text-3xl font-extrabold text-slate-800">📸 Automatic AI Face Recognition</h1>
-            <p class="text-sm text-slate-500 mt-1">Live frame parser sequence linked to <b>{class_row["class_name"]}</b></p>
-        </div>
-
-        <video id="video" autoplay playsinline muted class="w-full max-w-lg mx-auto bg-black border border-slate-300 rounded-2xl shadow-lg"></video>
-        
-        <div id="result" class="text-2xl font-bold text-emerald-600 mt-4 tracking-tight animate-pulse">Scanning feed state framework...</div>
-        <div id="status" class="text-xs font-semibold text-slate-400">Please provide camera hardware layout authorizations</div>
-        
-        <div class="flex justify-center gap-2 flex-wrap pt-2">
-            <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl" onclick="switchCamera()">Switch Camera Orientation</button>
-            <button class="bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 px-4 rounded-xl" onclick="startCamera()">Reset Stream Connection</button>
-            <a class="bg-slate-800 hover:bg-slate-900 text-white font-bold py-2 px-4 rounded-xl" href="/teacher/class/{class_id}">Return to Tracker Sheet</a>
-        </div>
-    </div>
-
-<script>
-const video = document.getElementById('video');
-const resultDiv = document.getElementById('result');
-const statusDiv = document.getElementById('status');
-let currentFacingMode = "user";
-let stream = null;
-let intervalId = null;
-
-async function startCamera() {{
-    try {{
-        statusDiv.innerText = "Initializing target camera device array sequence...";
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
-            statusDiv.innerText = "Browser core lacks MediaDevices API standard integration layer definitions";
-            return;
-        }}
-        if (stream) {{
-            stream.getTracks().forEach(track => track.stop());
-        }}
-        try {{
-            stream = await navigator.mediaDevices.getUserMedia({{
-                video: {{ facingMode: {{ ideal: currentFacingMode }}, width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }},
-                audio: false
-            }});
-        }} catch (err) {{
-            stream = await navigator.mediaDevices.getUserMedia({{ video: true, audio: false }});
-        }}
-        video.srcObject = stream;
-        video.onloadedmetadata = async () => {{
-            try {{
-                await video.play();
-                statusDiv.innerText = "Active camera connection stream streaming pipeline established.";
-                startScanningLoops();
-            }} catch (e) {{
-                statusDiv.innerText = "Camera decoded buffer but play permission got standard block exceptions";
-            }}
-        }};
-    }} catch (err) {{
-        statusDiv.innerText = "Camera framework pipeline hook connection failure context: " + err.message;
-    }}
-}}
-
-function switchCamera() {{
-    currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
-    startCamera();
-}}
-
-function startScanningLoops() {{
-    if(intervalId) clearInterval(intervalId);
-    intervalId = setInterval(async () => {{
-        if(video.paused || video.ended) return;
-        try {{
-            const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth || 640;
-            canvas.height = video.videoHeight || 480;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const image = canvas.toDataURL('image/jpeg');
-
-            const res = await fetch('/teacher/class/{class_id}/scan-frame', {{
-                method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{ image: image }})
-            }});
-            const data = await res.json();
-            if (data.name && data.name !== "Unknown") {{
-                resultDiv.innerText = "🎉 " + data.name;
-                statusDiv.innerText = data.message || "Match successfully logged.";
-            }} else {{
-                resultDiv.innerText = "Scanning framework loops state...";
-            }}
-        }} catch(err) {{
-            console.log("Parsing framework error exception captured context loops", err);
-        }}
-    }}, 2000);
-}}
-
-window.addEventListener('beforeunload', () => {{
-    if(intervalId) clearInterval(intervalId);
-    if(stream) stream.getTracks().forEach(t => t.stop());
-}});
-
-startCamera();
-</script>
-    """
-    return page_wrapper("Face Scanner Live Canvas Pipeline Engine", body, is_teacher=True, teacher_name=teacher_name)
-
-
-@app.route("/teacher/class/<int:class_id>/scan-frame", methods=["POST"])
-def teacher_scan_frame_matrix_lookup(class_id):
-    try:
-        protect = teacher_required()
-        if protect:
-            return jsonify({"name": "Unknown", "message": "Authentication token missing"})
-
-        class_row = get_class_by_id(class_id)
-        if not class_row or class_row["teacher_id"] != get_logged_teacher_id():
-            return jsonify({"name": "Unknown", "message": "Context scope mapping target mismatch access denied"})
-
-        data = request.get_json()
-        if not data or "image" not in data:
-            return jsonify({"name": "Unknown"})
-
-        image_data = data["image"]
-        if "," in image_data:
-            image_data = image_data.split(",")[1]
-        image_data = image_data.replace(" ", "+")
-        missing_padding = len(image_data) % 4
-        if missing_padding:
-            image_data += "=" * (4 - missing_padding)
-
-        img_bytes = base64.b64decode(image_data)
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        if frame is None:
-            return jsonify({"name": "Unknown"})
-
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        face_locations = face_recognition.face_locations(rgb_frame)
-        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-
-        if len(face_encodings) == 0:
-            return jsonify({"name": "Unknown"})
-
-        for face_encoding in face_encodings:
-            if len(known_encodings) == 0:
-                break
-            matches = face_recognition.compare_faces(known_encodings, face_encoding, tolerance=0.5)
-            face_distances = face_recognition.face_distance(known_encodings, face_encoding)
-
-            if len(face_distances) > 0:
-                best_match_index = np.argmin(face_distances)
-                if matches[best_match_index]:
-                    student = known_students[best_match_index]
-                    if not student_belongs_to_class(student["db_id"], class_id):
-                        return jsonify({
-                            "name": f"{student['student_id']} - {student['full_name']}",
-                            "message": "Recognized, but student is NOT enrolled in this specific roster mapping template"
-                        })
-
-                    student_row = get_student_row_by_db_id(student["db_id"])
-                    mark_attendance(student_row, class_row, "Present")
-                    return jsonify({
-                        "name": f"{student['student_id']} - {student['full_name']}",
-                        "message": f"Attendance verified & logged successfully into database for {class_row['class_name']}"
-                    })
-
-        return jsonify({"name": "Unknown"})
-    except Exception as e:
-        print("SCAN BATCH ENCODING VECTOR LOOKUP EXCEPTION METRIC ERROR:", e)
-        return jsonify({"name": "Unknown", "message": "Lookup processing matrix iteration break exception standard error"})
-
-
-# =========================================================
-# ADDITIONS: STUDENT SELF ATTENDANCE (MANUAL & FACE CHECK-IN)
-# =========================================================
-@app.route("/student/checkin/manual/<int:class_id>")
-def student_manual_checkin(class_id):
+@app.route("/student")
+def student_dashboard():
     protect = student_required()
     if protect:
         return protect
-    
-    student_db_id = get_logged_student_db_id()
-    if not student_belongs_to_class(student_db_id, class_id):
-        return "<script>alert('Error: You are not enrolled in this class framework matrix.'); window.location.href='/student';</script>"
 
-    student_row = get_student_row_by_db_id(student_db_id)
-    class_row = get_class_by_id(class_id)
-    
-    if student_row and class_row:
-        mark_attendance(student_row, class_row, "Present")
-        return "<script>alert('Success: Your manual check-in has been successfully logged!'); window.location.href='/student';</script>"
-    
-    return "<script>alert('Error updating configuration parameters.'); window.location.href='/student';</script>"
+    student_db_id = get_logged_student_db_id()
+    student_ctx = get_student_row_by_db_id(student_db_id)
+    classes = get_classes_for_student(student_db_id)
+
+    body = f"""
+    <div class="space-y-4">
+        <div>
+            <h1 class="text-2xl font-bold text-slate-800">📚 My Registered Classroom Metrics Matrix</h1>
+            <p class="text-sm text-slate-500">Realtime percentage indicators tracking calculated attendance compliance rates.</p>
+        </div>
+        
+        <div class="overflow-x-auto">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Class Identifier Room</th>
+                        <th>Subject Title Code</th>
+                        <th>Aggregated Verified Presence Rate</th>
+                        <th>Roster Evaluation Index</th>
+                    </tr>
+                </thead>
+                <tbody>
+    """
+    for c in classes:
+        pct = get_percentage(student_ctx["student_id"], c["id"])
+        body += f"""
+        <tr>
+            <td><b>{c['class_name']}</b></td>
+            <td>{c['subject_name'] or 'General Subject'}</td>
+            <td><b class="text-lg text-blue-600">{pct}%</b> verified presence count</td>
+            <td><span class="px-2 py-0.5 text-xs font-bold rounded {'bg-green-100 text-green-800' if pct>=75 else 'bg-red-100 text-red-800'}">{'Compliant Status' if pct>=75 else 'Deficit Action Notice'}</span></td>
+        </tr>
+        """
+    if not classes:
+        body += '<tr><td colspan="4" class="text-center text-slate-400 py-6">Your profile is not assigned to any classroom layout frameworks yet.</td></tr>'
+
+    body += """
+                </tbody>
+            </table>
+        </div>
+    </div>
+    """
+    return page_wrapper("Student Hub Matrix", body, is_student=True, student_context=student_ctx)
 
 
 @app.route("/student/scan")
-def student_scan_portal():
+def student_scan_view():
     protect = student_required()
     if protect:
         return protect
 
     student_db_id = get_logged_student_db_id()
     student_ctx = get_student_row_by_db_id(student_db_id)
-    
-    body = f"""
-    <div class="max-w-3xl mx-auto text-center space-y-4">
-        <div>
-            <h1 class="text-3xl font-extrabold text-slate-800">📸 Student Face Check-In</h1>
-            <p class="text-sm text-slate-500 mt-1">Look into your camera device stream to verify your identity profile</p>
-        </div>
 
-        <video id="video" autoplay playsinline muted class="w-full max-w-lg mx-auto bg-black border border-slate-300 rounded-2xl shadow-lg"></video>
+    body = f"""
+    <div class="max-w-xl mx-auto text-center">
+        <h1 class="text-2xl font-bold text-slate-800 mb-2">📸 AI Biometric Verification Entry Point</h1>
+        <p class="text-xs text-slate-500 mb-4">Position your face inside the active viewport template frame layer</p>
         
-        <div id="result" class="text-2xl font-bold text-emerald-600 mt-4 tracking-tight animate-pulse">Initializing face capture feed layer...</div>
-        <div id="status" class="text-xs font-semibold text-slate-400">Please provide camera hardware authorization access</div>
-        
-        <div class="flex justify-center gap-2 flex-wrap pt-2">
-            <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl" onclick="switchCamera()">Switch Orientation</button>
-            <button class="bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 px-4 rounded-xl" onclick="startCamera()">Reset Feed Pipeline</button>
-            <a class="bg-slate-800 hover:bg-slate-900 text-white font-bold py-2 px-4 rounded-xl" href="/student">Back to Profile</a>
-        </div>
+        <video id="v" autoplay playsinline muted class="w-full max-w-sm mx-auto bg-black rounded-2xl shadow-inner mb-4 border border-slate-300"></video>
+        <button onclick="scan()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-xl transition">Authenticate & Check In</button>
+        <div id="status" class="text-xs font-semibold text-slate-500 mt-3">Initial webcamera canvas system configuration matrix mapping online...</div>
     </div>
 
-<script>
-const video = document.getElementById('video');
-const resultDiv = document.getElementById('result');
-const statusDiv = document.getElementById('status');
-let currentFacingMode = "user";
-let stream = null;
-let intervalId = null;
-
-async function startCamera() {{
-    try {{
-        statusDiv.innerText = "Initializing targeting system hardware loop...";
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
-            statusDiv.innerText = "Browser lacks MediaDevices API permissions layout.";
-            return;
-        }}
-        if (stream) {{
-            stream.getTracks().forEach(track => track.stop());
-        }}
+    <script>
+    const video = document.getElementById('v');
+    const statusDiv = document.getElementById('status');
+    
+    navigator.mediaDevices.getUserMedia({{ video: true, audio: false }})
+        .then(s => {{ video.srcObject = s; statusDiv.innerText = "Camera stream connected successfully."; }})
+        .catch(e => {{ statusDiv.innerText = "Hardware connection failure reference: " + e.message; }});
+        
+    async function scan() {{
         try {{
-            stream = await navigator.mediaDevices.getUserMedia({{
-                video: {{ facingMode: {{ ideal: currentFacingMode }}, width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }},
-                audio: false
-            }});
-        }} catch (err) {{
-            stream = await navigator.mediaDevices.getUserMedia({{ video: true, audio: false }});
-        }}
-        video.srcObject = stream;
-        video.onloadedmetadata = async () => {{
-            try {{
-                await video.play();
-                statusDiv.innerText = "Streaming canvas sequence pipeline online.";
-                startScanningLoops();
-            }} catch (e) {{
-                statusDiv.innerText = "Play permissions locked by hardware profile error.";
-            }}
-        }};
-    }} catch (err) {{
-        statusDiv.innerText = "Stream initialization failure: " + err.message;
-    }}
-}}
-
-function switchCamera() {{
-    currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
-    startCamera();
-}}
-
-function startScanningLoops() {{
-    if(intervalId) clearInterval(intervalId);
-    intervalId = setInterval(async () => {{
-        if(video.paused || video.ended) return;
-        try {{
+            statusDiv.innerText = "Extracting snapshot frame vector mappings...";
             const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth || 640;
-            canvas.height = video.videoHeight || 480;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const image = canvas.toDataURL('image/jpeg');
-
-            const res = await fetch('/student/scan-frame', {{
+            canvas.width = 640;
+            canvas.height = 480;
+            canvas.getContext('2d').drawImage(video, 0, 0, 640, 480);
+            const dataUrl = canvas.toDataURL('image/jpeg');
+            
+            statusDiv.innerText = "Sending biometric authentication data packet...";
+            const res = await fetch('/verify-scan', {{
                 method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{ image: image }})
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ image: dataUrl }})
             }});
-            const data = await res.json();
-            if (data.success) {{
-                resultDiv.innerText = "✓ Verification Locked!";
-                statusDiv.innerText = data.message;
-                clearInterval(intervalId);
-                setTimeout(() => {{ window.location.href = '/student'; }}, 2500);
-            }} else {{
-                resultDiv.innerText = "Analyzing face match matrix frame loops...";
-                if(data.message) statusDiv.innerText = data.message;
-            }}
+            const d = await res.json();
+            statusDiv.innerText = d.message;
+            alert(d.message);
         }} catch(err) {{
-            console.log("Scan routine cycle exception error code:", err);
+            statusDiv.innerText = "Scan runtime framework tracking exception error: " + err.message;
         }}
-    }}, 2000);
-}}
-
-window.addEventListener('beforeunload', () => {{
-    if(intervalId) clearInterval(intervalId);
-    if(stream) stream.getTracks().forEach(t => t.stop());
-}});
-
-startCamera();
-</script>
+    }}
+    </script>
     """
-    return page_wrapper("Student Self Face-Recognition Portal", body, is_student=True, student_context=student_ctx)
+    return page_wrapper("Facial Scan Matching", body, is_student=True, student_context=student_ctx)
 
 
-@app.route("/student/scan-frame", methods=["POST"])
-def student_scan_frame_matrix_lookup():
+@app.route("/verify-scan", methods=["POST"])
+def verify_scan():
     try:
-        protect = student_required()
-        if protect:
-            return jsonify({"success": False, "message": "Session verification check failure"})
-
-        student_db_id = get_logged_student_db_id()
-        student_row = get_student_row_by_db_id(student_db_id)
-        classes = get_classes_for_student(student_db_id)
-
-        if not student_row or not classes:
-            return jsonify({"success": False, "message": "No course classrooms assigned roster registry blocks"})
-
-        data = request.get_json()
-        if not data or "image" not in data:
-            return jsonify({"success": False})
-
-        image_data = data["image"]
+        if not is_student_logged_in():
+            return jsonify({"success": False, "message": "Session expired authentication context."})
+        data = request.get_json() or {}
+        image_data = data.get("image", "")
         if "," in image_data:
             image_data = image_data.split(",")[1]
-        image_data = image_data.replace(" ", "+")
-        missing_padding = len(image_data) % 4
-        if missing_padding:
-            image_data += "=" * (4 - missing_padding)
-
+        
         img_bytes = base64.b64decode(image_data)
         nparr = np.frombuffer(img_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        if frame is None:
-            return jsonify({"success": False})
-
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        embedding = _get_face_embedding(rgb_frame)
+        if embedding is None:
+            return jsonify({"success": False, "message": "No face found inside camera canvas framework layer."})
 
-        # Detect face using MediaPipe
-        face_embedding = _get_face_embedding(rgb_frame)
+        s_ctx = get_student_row_by_db_id(get_logged_student_db_id())
+        classes = get_classes_for_student(s_ctx["id"])
+        if not classes:
+            return jsonify({"success": False, "message": "You are not currently registered to any active class rosters."})
 
-        if face_embedding is None:
-            return jsonify({"success": False, "message": "Position your face clearly within the camera frame layout matrix"})
+        # Match against cached registered baseline face image
+        for match in known_students:
+            if match["db_id"] == s_ctx["id"]:
+                idx = known_students.index(match)
+                known_emb = known_encodings[idx]
+                matched, distance = _compare_embeddings(known_emb, embedding)
+                if matched:
+                    for cls in classes:
+                        mark_attendance(s_ctx, cls, "Present")
+                    return jsonify({"success": True, "message": "Identity successfully verified via Face Vector! Status updated to Present across today's slots."})
 
-        if len(known_encodings) == 0:
-            return jsonify({"success": False, "message": "No registered faces found"})
-
-        best_match_index = None
-        best_dist = float("inf")
-        for i, known_emb in enumerate(known_encodings):
-            matched, dist = _compare_embeddings(known_emb, face_embedding, tolerance=0.6)
-            if matched and dist < best_dist:
-                best_dist = dist
-                best_match_index = i
-
-        if best_match_index is not None:
-            matched_student = known_students[best_match_index]
-
-            if matched_student["db_id"] != student_db_id:
-                return jsonify({"success": False, "message": "Face profile mapping match mismatch against logged portal session token identifier"})
-
-            for c in classes:
-                mark_attendance(student_row, c, "Present")
-
-            return jsonify({
-                "success": True,
-                "message": f"Identity verified successfully for {student_row['full_name']}. All active course rosters checked!"
-            })
-
-        return jsonify({"success": False, "message": "Face trace vector lookup match mismatch code error"})
+        return jsonify({"success": False, "message": "Biometric configuration verification mismatch."})
     except Exception as e:
-        return jsonify({"success": False, "message": f"Internal runtime matrix loop failure error: {str(e)}"})
-
-
-# =========================================================
-# STUDENT PROFILE PORTAL VIEW 
-# =========================================================
-@app.route("/student")
-def student_dashboard_portal():
-    protect = student_required()
-    if protect:
-        return protect
-
-    student_db_id = get_logged_student_db_id()
-    student_id = session.get("student_id")
-    student_ctx = get_student_row_by_db_id(student_db_id)
-
-    classes = get_classes_for_student(student_db_id)
-    history = get_attendance_for_student(student_id)
-
-    body = f"""
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div class="lg:col-span-1 space-y-6">
-            <div class="bg-white border rounded-xl p-6 text-center shadow-sm">
-                <img class="w-24 h-24 object-cover rounded-full mx-auto border-2 border-blue-500 mb-3 shadow-inner" src="/student-image/{student_ctx["image_file"]}">
-                <h2 class="text-xl font-bold text-slate-800">{student_ctx["full_name"]}</h2>
-                <p class="text-xs font-mono text-slate-400 mt-1">ID: {student_ctx["student_id"]}</p>
-                <div class="mt-3 inline-block bg-emerald-50 text-emerald-700 text-xs font-bold px-3 py-1 rounded-full border border-emerald-200">✓ Active Enrolled Student</div>
-                
-                <div class="mt-6 border-t pt-4">
-                    <a href="/student/scan" class="w-full inline-block text-center bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl transition shadow-md shadow-emerald-100 text-xs">
-                        <i class="fas fa-camera mr-1"></i> Check-In with Face Scanner
-                    </a>
-                </div>
-            </div>
-        </div>
-
-        <div class="lg:col-span-2 space-y-6">
-            <div class="bg-white border rounded-xl overflow-hidden shadow-sm">
-                <div class="p-4 bg-slate-50 border-b font-bold text-slate-700">📚 Registered Course Classes Summary Matrix</div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left m-0 border-none shadow-none rounded-none">
-                        <thead>
-                            <tr class="bg-slate-100 border-b text-xs font-bold text-slate-600">
-                                <th class="p-3">Class Target</th>
-                                <th class="p-3">Department</th>
-                                <th class="p-3">Course Catalog ID</th>
-                                <th class="p-3">Section Identity</th>
-                                <th class="p-3">Attendance Ratio</th>
-                                <th class="p-3 text-right">Self Check-In</th>
-                            </tr>
-                        </thead>
-                        <tbody class="text-xs">
-    """
-    if classes:
-        for c in classes:
-            pct = get_percentage(student_id, c["id"])
-            body += f"""
-                <tr class="border-b">
-                    <td class="p-3 font-semibold text-slate-800">{c["class_name"]}</td>
-                    <td class="p-3 text-slate-500">{c["department"] or ""}</td>
-                    <td class="p-3 font-mono">{c["course"] or ""}</td>
-                    <td class="p-3">{c["section_name"] or ""}</td>
-                    <td class="p-3"><strong class="text-blue-600 font-extrabold">{pct}%</strong></td>
-                    <td class="p-3 text-right">
-                        <a href="/student/checkin/manual/{c["id"]}" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-2.5 rounded text-[11px] transition inline-block">
-                            <i class="fas fa-check mr-1"></i> Mark Present
-                        </a>
-                    </td>
-                </tr>
-            """
-    else:
-        body += "<tr><td colspan='6' class='p-4 text-center text-slate-400 font-medium'>No dynamic tracking assignments detected mapped to profile matrix.</td></tr>"
-    body += """
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <div class="bg-white border rounded-xl overflow-hidden shadow-sm">
-                <div class="p-4 bg-slate-50 border-b font-bold text-slate-700">📋 My Historical Verification Check-In Logs</div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left m-0 border-none shadow-none rounded-none">
-                        <thead>
-                            <tr class="bg-slate-100 border-b text-xs font-bold text-slate-600">
-                                <th class="p-3">Calendar Date</th>
-                                <th class="p-3">Time logged</th>
-                                <th class="p-3">Course Target</th>
-                                <th class="p-3">Subject Topic Description</th>
-                                <th class="p-3">Status Pillar Flag</th>
-                                <th class="p-3">Authorized Proctor</th>
-                            </tr>
-                        </thead>
-                        <tbody class="text-xs">
-    """
-    if history:
-        for h in history:
-            body += f"""
-                <tr class="border-b">
-                    <td class="p-3 font-medium">{h["date"]}</td>
-                    <td class="p-3 text-slate-400 font-mono">{h["time"]}</td>
-                    <td class="p-3 font-bold text-slate-700">{h["class_name"]}</td>
-                    <td class="p-3">{h["subject_name"] or ""}</td>
-                    <td class="p-3"><span class="px-2 py-0.5 rounded text-[11px] font-bold {'bg-emerald-100 text-emerald-800' if h['status']=='Present' else 'bg-rose-100 text-rose-800'}">{h['status']}</span></td>
-                    <td class="p-3 text-slate-500">{h["teacher_name"] or ""}</td>
-                </tr>
-            """
-    else:
-        body += "<tr><td colspan='6' class='p-4 text-center text-slate-400 font-medium'>No scan verification histories logged into backend databases rows.</td></tr>"
-    body += """
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    </div>
-    """
-    return page_wrapper("Student Personal Hub Portal", body, is_student=True, student_context=student_ctx)
+        return jsonify({"success": False, "message": str(e)})
 
 
 # =========================================================
@@ -2651,10 +1826,10 @@ def export_attendance():
             f'{r["department"] or ""},{r["course"] or ""},{r["section_name"] or ""},'
             f'{r["subject_name"] or ""},{r["teacher_name"] or ""},{r["status"]},{r["date"]},{r["time"]}\n'
         )
-    return Response(csv_data, mimetype="text/csv", headers={"Content-disposition": "attachment; filename=attendance_sheet.csv"})
+    return Response(csv_data, mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=attendance_export.csv"})
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     init_db()
     load_known_faces()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
