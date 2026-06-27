@@ -199,7 +199,7 @@ def student_required():
 def student_exists(student_id):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM students WHERE lower(student_id)=lower(?)", (student_id.strip(),))
+    cur.execute("SELECT 1 FROM students WHERE lower(student_id)=lower(%s)", (student_id.strip(),))
     row = cur.fetchone()
     conn.close()
     return row is not None
@@ -208,7 +208,7 @@ def student_exists(student_id):
 def teacher_username_exists(username):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM teachers WHERE lower(username)=lower(?)", (username.strip(),))
+    cur.execute("SELECT 1 FROM teachers WHERE lower(username)=lower(%s)", (username.strip(),))
     row = cur.fetchone()
     conn.close()
     return row is not None
@@ -253,7 +253,7 @@ def get_teacher_classes(teacher_id):
         SELECT c.*, t.teacher_name
         FROM classes c
         LEFT JOIN teachers t ON c.teacher_id = t.id
-        WHERE c.teacher_id=?
+        WHERE c.teacher_id=%s
         ORDER BY c.id DESC
     """, (teacher_id,))
     rows = cur.fetchall()
@@ -268,7 +268,7 @@ def get_class_by_id(class_id):
         SELECT c.*, t.teacher_name
         FROM classes c
         LEFT JOIN teachers t ON c.teacher_id = t.id
-        WHERE c.id=?
+        WHERE c.id=%s
     """, (class_id,))
     row = cur.fetchone()
     conn.close()
@@ -278,7 +278,7 @@ def get_class_by_id(class_id):
 def get_student_row_by_student_id(student_id_text):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM students WHERE student_id=?", (student_id_text,))
+    cur.execute("SELECT * FROM students WHERE student_id=%s", (student_id_text,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -287,7 +287,7 @@ def get_student_row_by_student_id(student_id_text):
 def get_student_row_by_db_id(student_db_id):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM students WHERE id=?", (student_db_id,))
+    cur.execute("SELECT * FROM students WHERE id=%s", (student_db_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -300,7 +300,7 @@ def get_students_in_class(class_id):
         SELECT s.*
         FROM students s
         INNER JOIN student_classes sc ON sc.student_id_fk = s.id
-        WHERE sc.class_id_fk=?
+        WHERE sc.class_id_fk=%s
         ORDER BY s.full_name
     """, (class_id,))
     rows = cur.fetchall()
@@ -315,7 +315,7 @@ def get_classes_for_student(student_db_id):
         SELECT c.*
         FROM classes c
         INNER JOIN student_classes sc ON sc.class_id_fk = c.id
-        WHERE sc.student_id_fk=?
+        WHERE sc.student_id_fk=%s
         ORDER BY c.class_name
     """, (student_db_id,))
     rows = cur.fetchall()
@@ -329,7 +329,7 @@ def assign_student_to_class(student_db_id, class_id):
     try:
         cur.execute("""
             INSERT INTO student_classes (student_id_fk, class_id_fk)
-            VALUES (?, ?)
+            VALUES (%s, %s)
         """, (student_db_id, class_id))
         conn.commit()
     except:
@@ -342,7 +342,7 @@ def remove_student_from_class(student_db_id, class_id):
     cur = conn.cursor()
     cur.execute("""
         DELETE FROM student_classes
-        WHERE student_id_fk=? AND class_id_fk=?
+        WHERE student_id_fk=%s AND class_id_fk=%s
     """, (student_db_id, class_id))
     conn.commit()
     conn.close()
@@ -362,7 +362,7 @@ def get_attendance_for_teacher(teacher_name):
     cur = conn.cursor()
     cur.execute("""
         SELECT * FROM attendance
-        WHERE teacher_name=?
+        WHERE teacher_name=%s
         ORDER BY id DESC
     """, (teacher_name,))
     rows = cur.fetchall()
@@ -375,7 +375,7 @@ def get_attendance_for_class(class_id):
     cur = conn.cursor()
     cur.execute("""
         SELECT * FROM attendance
-        WHERE class_id=?
+        WHERE class_id=%s
         ORDER BY date DESC, time DESC
     """, (class_id,))
     rows = cur.fetchall()
@@ -388,7 +388,7 @@ def get_attendance_for_student(student_id):
     cur = conn.cursor()
     cur.execute("""
         SELECT * FROM attendance
-        WHERE student_id=?
+        WHERE student_id=%s
         ORDER BY date DESC, time DESC
     """, (student_id,))
     rows = cur.fetchall()
@@ -434,7 +434,7 @@ def student_belongs_to_class(student_db_id, class_id):
     cur = conn.cursor()
     cur.execute("""
         SELECT 1 FROM student_classes
-        WHERE student_id_fk=? AND class_id_fk=?
+        WHERE student_id_fk=%s AND class_id_fk=%s
     """, (student_db_id, class_id))
     row = cur.fetchone()
     conn.close()
@@ -451,7 +451,7 @@ def mark_attendance(student_row, class_row, status="Present"):
 
     cur.execute("""
         SELECT * FROM attendance
-        WHERE student_id=? AND class_id=? AND date=?
+        WHERE student_id=%s AND class_id=%s AND date=%s
     """, (student_row["student_id"], class_row["id"], today))
     existing = cur.fetchone()
 
@@ -460,8 +460,8 @@ def mark_attendance(student_row, class_row, status="Present"):
     if existing:
         cur.execute("""
             UPDATE attendance
-            SET status=?, time=?, teacher_name=?
-            WHERE id=?
+            SET status=%s, time=%s, teacher_name=%s
+            WHERE id=%s
         """, (status, now_time, teacher_name, existing["id"]))
     else:
         cur.execute("""
@@ -469,7 +469,7 @@ def mark_attendance(student_row, class_row, status="Present"):
                 student_id, full_name, class_id, class_name,
                 department, course, section_name, subject_name,
                 teacher_name, status, date, time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             student_row["student_id"],
             student_row["full_name"],
@@ -495,14 +495,14 @@ def get_attendance_count_for_student_class(student_id, class_id):
     cur.execute("""
         SELECT COUNT(*) as c
         FROM attendance
-        WHERE student_id=? AND class_id=? AND status='Present'
+        WHERE student_id=%s AND class_id=%s AND status='Present'
     """, (student_id, class_id))
     present_count = cur.fetchone()["c"]
 
     cur.execute("""
         SELECT COUNT(*) as c
         FROM attendance
-        WHERE student_id=? AND class_id=?
+        WHERE student_id=%s AND class_id=%s
     """, (student_id, class_id))
     total_count = cur.fetchone()["c"]
     conn.close()
@@ -533,7 +533,7 @@ def get_report_records(period="daily"):
 
     cur.execute("""
         SELECT * FROM attendance
-        WHERE date >= ?
+        WHERE date >= %s
         ORDER BY date DESC, time DESC
     """, (start_date.strftime("%Y-%m-%d"),))
     rows = cur.fetchall()
@@ -823,25 +823,25 @@ def user_settings():
             return "<script>alert('Admin password updated successfully!'); window.location.href='/admin';</script>"
 
         elif role == "teacher":
-            cur.execute("SELECT password FROM teachers WHERE id=?", (user_id,))
+            cur.execute("SELECT password FROM teachers WHERE id=%s", (user_id,))
             row = cur.fetchone()
             if not row or row["password"] != old_password:
                 conn.close()
                 return page_wrapper("Settings", "<p class='text-red-500 font-bold'>Incorrect old password.</p>", is_teacher=True, teacher_name=teacher_name_str)
             
-            cur.execute("UPDATE teachers SET password=? WHERE id=?", (new_password, user_id))
+            cur.execute("UPDATE teachers SET password=%s WHERE id=%s", (new_password, user_id))
             conn.commit()
             conn.close()
             return "<script>alert('Teacher password updated successfully!'); window.location.href='/teacher';</script>"
 
         elif role == "student":
-            cur.execute("SELECT password FROM students WHERE id=?", (user_id,))
+            cur.execute("SELECT password FROM students WHERE id=%s", (user_id,))
             row = cur.fetchone()
             if not row or row["password"] != old_password:
                 conn.close()
                 return page_wrapper("Settings", "<p class='text-red-500 font-bold'>Incorrect old password.</p>", is_student=True, student_context=student_ctx)
             
-            cur.execute("UPDATE students SET password=? WHERE id=?", (new_password, user_id))
+            cur.execute("UPDATE students SET password=%s WHERE id=%s", (new_password, user_id))
             conn.commit()
             conn.close()
             return "<script>alert('Student password updated successfully!'); window.location.href='/student';</script>"
@@ -947,7 +947,7 @@ def teacher_login():
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM teachers WHERE username=? AND password=?", (username, password))
+    cur.execute("SELECT * FROM teachers WHERE username=%s AND password=%s", (username, password))
     teacher = cur.fetchone()
     conn.close()
 
@@ -971,7 +971,7 @@ def student_login():
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM students WHERE student_id=? AND password=?", (student_id, password))
+    cur.execute("SELECT * FROM students WHERE student_id=%s AND password=%s", (student_id, password))
     student = cur.fetchone()
     conn.close()
 
@@ -1084,7 +1084,7 @@ async function startCamera() {
 }
 
 function switchCamera() {
-    currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
+    currentFacingMode = currentFacingMode === "user" %s "environment" : "user";
     startCamera();
 }
 
@@ -1175,7 +1175,7 @@ def register_face():
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO students (student_id, full_name, password, image_file, registered_at)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
         """, (student_id, full_name, password, filename, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         conn.close()
@@ -1284,7 +1284,7 @@ def admin_dashboard():
                     <td class="p-3 font-mono">{t["password"]}</td>
                     <td class="p-3">
                         <a class="text-blue-600 hover:underline mr-2" href="/admin/edit-teacher/{t['id']}">Edit</a>
-                        <a class="text-red-600 hover:underline" href="/admin/delete-teacher/{t['id']}" onclick="return confirm('Purge data profile matrix?')">Delete</a>
+                        <a class="text-red-600 hover:underline" href="/admin/delete-teacher/{t['id']}" onclick="return confirm('Purge data profile matrix%s')">Delete</a>
                     </td>
                 </tr>
             """
@@ -1320,7 +1320,7 @@ def admin_dashboard():
                     <td class="p-3 text-slate-600">{t_name}</td>
                     <td class="p-3">
                         <a class="text-blue-500 hover:underline mr-2" href="/admin/edit-class/{c['id']}">Edit</a>
-                        <a class="text-red-500 hover:underline" href="/admin/delete-class/{c['id']}" onclick="return confirm('Delete classroom mapping?')">Delete</a>
+                        <a class="text-red-500 hover:underline" href="/admin/delete-class/{c['id']}" onclick="return confirm('Delete classroom mapping%s')">Delete</a>
                     </td>
                 </tr>
             """
@@ -1357,7 +1357,7 @@ def admin_dashboard():
                     <td class="p-3 text-xs text-slate-500">{s["registered_at"]}</td>
                     <td class="p-3">
                         <a class="text-blue-500 hover:underline mr-2" href="/admin/edit-student/{s['id']}">Edit</a>
-                        <a class="text-red-500 hover:underline" href="/admin/delete-student/{s['student_id']}" onclick="return confirm('Delete student entirely?')">Delete</a>
+                        <a class="text-red-500 hover:underline" href="/admin/delete-student/{s['student_id']}" onclick="return confirm('Delete student entirely%s')">Delete</a>
                     </td>
                 </tr>
             """
@@ -1436,7 +1436,7 @@ def admin_create_teacher():
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO teachers (teacher_name, username, password, created_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
     """, (teacher_name, username, password, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
@@ -1450,7 +1450,7 @@ def admin_edit_teacher(teacher_id):
         return protect
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM teachers WHERE id=?", (teacher_id,))
+    cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
     teacher = cur.fetchone()
     if not teacher:
         conn.close()
@@ -1462,11 +1462,11 @@ def admin_edit_teacher(teacher_id):
         password = request.form.get("password", "").strip()
 
         cur.execute("""
-            UPDATE teachers SET teacher_name=?, username=?, password=? WHERE id=?
+            UPDATE teachers SET teacher_name=%s, username=%s, password=%s WHERE id=%s
         """, (teacher_name, username, password, teacher_id))
         conn.commit()
         
-        cur.execute("UPDATE classes SET teacher_display_name=? WHERE teacher_id=?", (teacher_name, teacher_id))
+        cur.execute("UPDATE classes SET teacher_display_name=%s WHERE teacher_id=%s", (teacher_name, teacher_id))
         conn.commit()
         
         conn.close()
@@ -1504,7 +1504,7 @@ def admin_delete_teacher(teacher_id):
         return protect
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM teachers WHERE id=?", (teacher_id,))
+    cur.execute("DELETE FROM teachers WHERE id=%s", (teacher_id,))
     conn.commit()
     conn.close()
     return "<script>alert('Teacher purged successfully');window.location.href='/admin';</script>"
@@ -1527,7 +1527,7 @@ def admin_create_class():
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM teachers WHERE id=?", (teacher_id,))
+    cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
     teacher = cur.fetchone()
     if not teacher:
         conn.close()
@@ -1536,7 +1536,7 @@ def admin_create_class():
     cur.execute("""
         INSERT INTO classes (
             class_name, department, course, section_name, subject_name, teacher_id, teacher_display_name, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
     """, (class_name, department, course, section_name, subject_name, teacher["id"], teacher["teacher_name"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
@@ -1550,7 +1550,7 @@ def admin_edit_class(class_id):
         return protect
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM classes WHERE id=?", (class_id,))
+    cur.execute("SELECT * FROM classes WHERE id=%s", (class_id,))
     class_row = cur.fetchone()
     if not class_row:
         conn.close()
@@ -1564,13 +1564,13 @@ def admin_edit_class(class_id):
         subject_name = request.form.get("subject_name", "").strip()
         teacher_id = request.form.get("teacher_id", "").strip()
 
-        cur.execute("SELECT * FROM teachers WHERE id=?", (teacher_id,))
+        cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
         t = cur.fetchone()
         t_name = t["teacher_name"] if t else ""
 
         cur.execute("""
-            UPDATE classes SET class_name=?, department=?, course=?, section_name=?, subject_name=?, teacher_id=?, teacher_display_name=?
-            WHERE id=?
+            UPDATE classes SET class_name=%s, department=%s, course=%s, section_name=%s, subject_name=%s, teacher_id=%s, teacher_display_name=%s
+            WHERE id=%s
         """, (class_name, department, course, section_name, subject_name, teacher_id, t_name, class_id))
         conn.commit()
         conn.close()
@@ -1609,7 +1609,7 @@ def admin_delete_class(class_id):
         return protect
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM classes WHERE id=?", (class_id,))
+    cur.execute("DELETE FROM classes WHERE id=%s", (class_id,))
     conn.commit()
     conn.close()
     return "<script>alert('Classroom record mapping purged successfully');window.location.href='/admin';</script>"
@@ -1641,7 +1641,7 @@ def admin_edit_student(student_db_id):
         password = request.form.get("password", "").strip()
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("UPDATE students SET full_name=?, password=? WHERE id=?", (full_name, password, student_db_id))
+        cur.execute("UPDATE students SET full_name=%s, password=%s WHERE id=%s", (full_name, password, student_db_id))
         conn.commit()
         conn.close()
         load_known_faces()
@@ -1678,14 +1678,14 @@ def admin_delete_student(student_id):
         return protect
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, image_file FROM students WHERE student_id=?", (student_id,))
+    cur.execute("SELECT id, image_file FROM students WHERE student_id=%s", (student_id,))
     row = cur.fetchone()
     if row:
         db_id = row["id"]
         img = row["image_file"]
-        cur.execute("DELETE FROM attendance WHERE student_id=?", (student_id,))
-        cur.execute("DELETE FROM student_classes WHERE student_id_fk=?", (db_id,))
-        cur.execute("DELETE FROM students WHERE id=?", (db_id,))
+        cur.execute("DELETE FROM attendance WHERE student_id=%s", (student_id,))
+        cur.execute("DELETE FROM student_classes WHERE student_id_fk=%s", (db_id,))
+        cur.execute("DELETE FROM students WHERE id=%s", (db_id,))
         conn.commit()
         try:
             path = os.path.join(IMAGE_DIR, img)
@@ -1739,7 +1739,7 @@ def admin_view_class(class_id):
                     <td class="p-3"><img class="w-8 h-8 object-cover rounded-full border" src="/student-image/{s["image_file"]}"></td>
                     <td class="p-3 font-mono">{s["student_id"]}</td>
                     <td class="p-3 font-medium">{s["full_name"]}</td>
-                    <td class="p-3"><a class="text-red-500 hover:underline" href="/admin/remove-student-from-class/{class_id}/{s['id']}" onclick="return confirm('Unmap from current class framework matrix?')">Drop Enrollment</a></td>
+                    <td class="p-3"><a class="text-red-500 hover:underline" href="/admin/remove-student-from-class/{class_id}/{s['id']}" onclick="return confirm('Unmap from current class framework matrix%s')">Drop Enrollment</a></td>
                 </tr>
             """
     else:
@@ -2185,7 +2185,7 @@ async function startCamera() {{
 }}
 
 function switchCamera() {{
-    currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
+    currentFacingMode = currentFacingMode === "user" %s "environment" : "user";
     startCamera();
 }}
 
@@ -2389,7 +2389,7 @@ async function startCamera() {{
 }}
 
 function switchCamera() {{
-    currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
+    currentFacingMode = currentFacingMode === "user" %s "environment" : "user";
     startCamera();
 }}
 
