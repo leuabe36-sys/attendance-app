@@ -595,7 +595,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
         <nav class="sidebar-nav">
             <a href="/student" class="active">📚 My Profile Home</a>
             <a href="/student/scan" style="background:#059669; color:white;">📸 Face Check-In</a>
-            <a href="/settings">⚙️ Update Password</a>
+            <a href="/student/edit-profile">✏️ Edit Profile</a>
             <hr style="border:0; border-top: 1px solid #374151; margin:15px 0;">
             <a href="/" style="background:#1f2937;">🏠 Back Main Site</a>
             <form method="POST" action="/student-logout" style="margin:0 12px;"><button type="submit" style="width:100%;background:#991b1b;color:white;border:none;padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;text-align:left;">🚪 Secure Logout</button></form>
@@ -1692,40 +1692,88 @@ def admin_edit_student(student_db_id):
         return protect
     student = get_student_row_by_db_id(student_db_id)
     if not student:
-        return "Student file mismatch", 404
+        return "Student not found", 404
     if request.method == "POST":
         full_name = request.form.get("full_name", "").strip()
         password = request.form.get("password", "").strip()
+        new_student_id = request.form.get("student_id", "").strip()
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("UPDATE students SET full_name=%s, password=%s WHERE id=%s", (full_name, password, student_db_id))
+        old_student_id = student["student_id"]
+        old_image = student["image_file"]
+        new_image = old_image
+
+        # Handle photo upload
+        photo = request.files.get("photo")
+        if photo and photo.filename:
+            safe_id = sanitize_filename(new_student_id or old_student_id)
+            safe_name = sanitize_filename(full_name)
+            ext = photo.filename.rsplit(".", 1)[-1].lower() if "." in photo.filename else "jpg"
+            new_filename = f"{safe_id}_{safe_name}.{ext}"
+            photo.save(os.path.join(IMAGE_DIR, new_filename))
+            # Remove old image if different
+            if old_image != new_filename:
+                try:
+                    old_path = os.path.join(IMAGE_DIR, old_image)
+                    if os.path.exists(old_path):
+                        os.remove(old_path)
+                except:
+                    pass
+            new_image = new_filename
+
+        # Update student_id in attendance too if changed
+        if new_student_id and new_student_id != old_student_id:
+            cur.execute("UPDATE attendance SET student_id=%s WHERE student_id=%s", (new_student_id, old_student_id))
+
+        cur.execute(
+            "UPDATE students SET full_name=%s, password=%s, student_id=%s, image_file=%s WHERE id=%s",
+            (full_name, password, new_student_id or old_student_id, new_image, student_db_id)
+        )
         conn.commit()
         conn.close()
         load_known_faces()
-        return "<script>alert('Student account adjusted');window.location.href='/admin';</script>"
+        return "<script>alert('Student profile updated successfully');window.location.href='/admin';</script>"
 
     body = f"""
-    <div class="max-w-md">
-        <h1 class="text-2xl font-bold mb-4">Modify Student Registration Settings</h1>
-        <form method="POST" class="space-y-4">
+    <div class="max-w-lg">
+        <h1 class="text-2xl font-bold mb-1">Edit Student Profile</h1>
+        <p class="text-sm text-slate-500 mb-5">Admin can update all fields including Student ID and photo.</p>
+
+        <div class="flex items-center gap-4 mb-6 p-4 bg-slate-50 rounded-xl border">
+            <img id="photoPreview" src="/student-image/{student["image_file"]}" class="w-20 h-20 rounded-full object-cover border-2 border-blue-400 shadow">
             <div>
-                <label class="block text-sm font-medium">System Identifier (Disabled)</label>
-                <input type="text" value="{student["student_id"]}" class="w-full px-3 py-2 border rounded-lg bg-slate-50" disabled>
+                <p class="font-semibold text-slate-700">{student["full_name"]}</p>
+                <p class="text-xs text-slate-400 font-mono">ID: {student["student_id"]}</p>
+            </div>
+        </div>
+
+        <form method="POST" enctype="multipart/form-data" class="space-y-4">
+            <div>
+                <label class="block text-sm font-semibold text-slate-700 mb-1">Student ID</label>
+                <input type="text" name="student_id" value="{student["student_id"]}" class="w-full px-3 py-2 border rounded-lg" required>
             </div>
             <div>
-                <label class="block text-sm font-medium">Full Registration Name</label>
+                <label class="block text-sm font-semibold text-slate-700 mb-1">Full Name</label>
                 <input type="text" name="full_name" value="{student["full_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
             </div>
             <div>
-                <label class="block text-sm font-medium">Portal Authentication Password</label>
+                <label class="block text-sm font-semibold text-slate-700 mb-1">Password</label>
                 <input type="text" name="password" value="{student["password"]}" class="w-full px-3 py-2 border rounded-lg" required>
             </div>
-            <button class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700" type="submit">Save File Changes</button>
-            <a class="inline-block bg-slate-100 text-slate-700 font-bold py-2 px-4 rounded-lg ml-2" href="/admin">Cancel</a>
+            <div>
+                <label class="block text-sm font-semibold text-slate-700 mb-1">Profile Photo (Upload from file)</label>
+                <input type="file" name="photo" accept="image/*" class="w-full px-3 py-2 border rounded-lg bg-white"
+                    onchange="document.getElementById('photoPreview').src = URL.createObjectURL(this.files[0])">
+                <p class="text-xs text-slate-400 mt-1">Leave empty to keep current photo.</p>
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button class="bg-blue-600 text-white font-bold py-2 px-5 rounded-lg hover:bg-blue-700" type="submit">Save Changes</button>
+                <a class="inline-block bg-slate-100 text-slate-700 font-bold py-2 px-5 rounded-lg hover:bg-slate-200" href="/admin">Cancel</a>
+            </div>
         </form>
     </div>
     """
-    return page_wrapper("Edit Student Account Data", body, is_admin=True)
+    return page_wrapper("Edit Student Profile", body, is_admin=True)
 
 
 @app.route("/admin/delete-student/<int:db_id>", methods=["GET", "POST"])
@@ -2602,9 +2650,12 @@ def student_dashboard_portal():
                 <p class="text-xs font-mono text-slate-400 mt-1">ID: {student_ctx["student_id"]}</p>
                 <div class="mt-3 inline-block bg-emerald-50 text-emerald-700 text-xs font-bold px-3 py-1 rounded-full border border-emerald-200">✓ Active Enrolled Student</div>
                 
-                <div class="mt-6 border-t pt-4">
+                <div class="mt-6 border-t pt-4 space-y-2">
                     <a href="/student/scan" class="w-full inline-block text-center bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl transition shadow-md shadow-emerald-100 text-xs">
                         <i class="fas fa-camera mr-1"></i> Check-In with Face Scanner
+                    </a>
+                    <a href="/student/edit-profile" class="w-full inline-block text-center bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-xl transition text-xs">
+                        ✏️ Edit My Profile
                     </a>
                 </div>
             </div>
@@ -2691,6 +2742,190 @@ def student_dashboard_portal():
     </div>
     """
     return page_wrapper("Student Personal Hub Portal", body, is_student=True, student_context=student_ctx)
+
+
+# =========================================================
+# STUDENT EDIT PROFILE
+# =========================================================
+@app.route("/student/edit-profile", methods=["GET", "POST"])
+def student_edit_profile():
+    protect = student_required()
+    if protect:
+        return protect
+
+    student_db_id = get_logged_student_db_id()
+    student = get_student_row_by_db_id(student_db_id)
+    error = ""
+
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        current_password = request.form.get("current_password", "").strip()
+        new_password = request.form.get("new_password", "").strip()
+
+        if not full_name:
+            error = "Full name cannot be empty."
+        elif current_password and student["password"] != current_password:
+            error = "Current password is incorrect."
+        else:
+            conn = get_db()
+            cur = conn.cursor()
+            new_image = student["image_file"]
+
+            photo_file = request.files.get("photo")
+            photo_b64 = request.form.get("photo_b64", "").strip()
+
+            if photo_file and photo_file.filename:
+                safe_id = sanitize_filename(student["student_id"])
+                safe_name = sanitize_filename(full_name)
+                ext = photo_file.filename.rsplit(".", 1)[-1].lower() if "." in photo_file.filename else "jpg"
+                new_filename = f"{safe_id}_{safe_name}.{ext}"
+                photo_file.save(os.path.join(IMAGE_DIR, new_filename))
+                if student["image_file"] != new_filename:
+                    try:
+                        old_path = os.path.join(IMAGE_DIR, student["image_file"])
+                        if os.path.exists(old_path):
+                            os.remove(old_path)
+                    except:
+                        pass
+                new_image = new_filename
+            elif photo_b64:
+                img_data = photo_b64
+                if "," in img_data:
+                    img_data = img_data.split(",")[1]
+                img_data = img_data.replace(" ", "+")
+                pad = len(img_data) % 4
+                if pad:
+                    img_data += "=" * (4 - pad)
+                img_bytes = base64.b64decode(img_data)
+                nparr = np.frombuffer(img_bytes, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if frame is not None:
+                    safe_id = sanitize_filename(student["student_id"])
+                    safe_name = sanitize_filename(full_name)
+                    new_filename = f"{safe_id}_{safe_name}.jpg"
+                    cv2.imwrite(os.path.join(IMAGE_DIR, new_filename), frame)
+                    if student["image_file"] != new_filename:
+                        try:
+                            old_path = os.path.join(IMAGE_DIR, student["image_file"])
+                            if os.path.exists(old_path):
+                                os.remove(old_path)
+                        except:
+                            pass
+                    new_image = new_filename
+
+            final_password = new_password if new_password else student["password"]
+            cur.execute(
+                "UPDATE students SET full_name=%s, password=%s, image_file=%s WHERE id=%s",
+                (full_name, final_password, new_image, student_db_id)
+            )
+            conn.commit()
+            conn.close()
+            session["student_name"] = full_name
+            load_known_faces()
+            return "<script>alert('Profile updated successfully!');window.location.href='/student';</script>"
+
+    body = f"""
+    <div class="max-w-lg mx-auto">
+        <h1 class="text-2xl font-bold text-slate-800 mb-1">Edit My Profile</h1>
+        <p class="text-sm text-slate-500 mb-5">Update your name, password, or profile photo.</p>
+        {'<div class="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm font-semibold">' + error + '</div>' if error else ''}
+
+        <div class="flex items-center gap-4 mb-6 p-4 bg-slate-50 rounded-xl border">
+            <img id="photoPreview" src="/student-image/{student["image_file"]}" class="w-20 h-20 rounded-full object-cover border-2 border-blue-400 shadow">
+            <div>
+                <p class="font-semibold text-slate-700">{student["full_name"]}</p>
+                <p class="text-xs text-slate-400 font-mono">ID: {student["student_id"]}</p>
+            </div>
+        </div>
+
+        <form method="POST" enctype="multipart/form-data" class="space-y-4" id="profileForm">
+            <input type="hidden" name="photo_b64" id="photo_b64">
+            <div>
+                <label class="block text-sm font-semibold text-slate-700 mb-1">Full Name</label>
+                <input type="text" name="full_name" value="{student["full_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
+            </div>
+            <div>
+                <label class="block text-sm font-semibold text-slate-700 mb-1">Current Password <span class="text-slate-400 font-normal">(required only to change password)</span></label>
+                <input type="password" name="current_password" class="w-full px-3 py-2 border rounded-lg" placeholder="Enter current password to change it">
+            </div>
+            <div>
+                <label class="block text-sm font-semibold text-slate-700 mb-1">New Password <span class="text-slate-400 font-normal">(leave blank to keep current)</span></label>
+                <input type="password" name="new_password" class="w-full px-3 py-2 border rounded-lg" placeholder="Leave blank to keep current password">
+            </div>
+            <div class="border rounded-xl p-4 space-y-3 bg-slate-50">
+                <p class="text-sm font-semibold text-slate-700">Profile Photo</p>
+                <div class="flex flex-wrap gap-2">
+                    <label class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg cursor-pointer text-sm">
+                        📁 Upload from File
+                        <input type="file" name="photo" accept="image/*" class="hidden" onchange="previewFile(this)">
+                    </label>
+                    <button type="button" onclick="openCamera()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-4 py-2 rounded-lg text-sm">📸 Take Selfie</button>
+                </div>
+                <div id="cameraArea" style="display:none;" class="space-y-2">
+                    <video id="camVideo" autoplay playsinline muted class="w-full max-w-xs rounded-xl border bg-black"></video>
+                    <div class="flex gap-2">
+                        <button type="button" onclick="capturePhoto()" class="bg-emerald-600 text-white font-bold px-4 py-2 rounded-lg text-sm">✅ Capture</button>
+                        <button type="button" onclick="closeCamera()" class="bg-slate-400 text-white font-bold px-4 py-2 rounded-lg text-sm">Cancel</button>
+                    </div>
+                    <div id="camStatus" class="text-xs text-slate-500"></div>
+                </div>
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="bg-blue-600 text-white font-bold py-2 px-5 rounded-lg hover:bg-blue-700">Save Changes</button>
+                <a href="/student" class="inline-block bg-slate-100 text-slate-700 font-bold py-2 px-5 rounded-lg hover:bg-slate-200">Cancel</a>
+            </div>
+        </form>
+    </div>
+<script>
+let camStream = null;
+function previewFile(input) {{
+    if (input.files && input.files[0]) {{
+        document.getElementById('photoPreview').src = URL.createObjectURL(input.files[0]);
+        document.getElementById('photo_b64').value = '';
+    }}
+}}
+async function openCamera() {{
+    document.getElementById('cameraArea').style.display = 'block';
+    const camStatus = document.getElementById('camStatus');
+    try {{
+        let constraints = [
+            {{ video: {{ facingMode: {{ exact: 'user' }} }}, audio: false }},
+            {{ video: {{ facingMode: {{ ideal: 'user' }} }}, audio: false }},
+            {{ video: true, audio: false }}
+        ];
+        let lastErr = null;
+        for (let c of constraints) {{
+            try {{ camStream = await navigator.mediaDevices.getUserMedia(c); break; }}
+            catch(e) {{ lastErr = e; camStream = null; }}
+        }}
+        if (!camStream) throw lastErr;
+        document.getElementById('camVideo').srcObject = camStream;
+        await document.getElementById('camVideo').play();
+        camStatus.innerText = '✅ Camera ready — click Capture when ready';
+    }} catch(e) {{
+        camStatus.innerText = '❌ Camera error: ' + e.message;
+    }}
+}}
+function capturePhoto() {{
+    const video = document.getElementById('camVideo');
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    const dataUrl = canvas.toDataURL('image/jpeg');
+    document.getElementById('photoPreview').src = dataUrl;
+    document.getElementById('photo_b64').value = dataUrl;
+    document.querySelector('input[name="photo"]').value = '';
+    closeCamera();
+}}
+function closeCamera() {{
+    if (camStream) {{ camStream.getTracks().forEach(t => t.stop()); camStream = null; }}
+    document.getElementById('cameraArea').style.display = 'none';
+}}
+</script>
+    """
+    return page_wrapper("Edit My Profile", body, is_student=True, student_context=student)
+
 
 
 # =========================================================
