@@ -1084,7 +1084,7 @@ async function startCamera() {
 }
 
 function switchCamera() {
-    currentFacingMode = currentFacingMode === "user" %s "environment" : "user";
+    currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
     startCamera();
 }
 
@@ -1284,7 +1284,7 @@ def admin_dashboard():
                     <td class="p-3 font-mono">{t["password"]}</td>
                     <td class="p-3">
                         <a class="text-blue-600 hover:underline mr-2" href="/admin/edit-teacher/{t['id']}">Edit</a>
-                        <a class="text-red-600 hover:underline" href="/admin/delete-teacher/{t['id']}" onclick="return confirm('Purge data profile matrix%s')">Delete</a>
+                        <a class="text-red-600 hover:underline" href="/admin/delete-teacher/{t['id']}" onclick="return confirm('Purge data profile matrix?')">Delete</a>
                     </td>
                 </tr>
             """
@@ -1320,7 +1320,7 @@ def admin_dashboard():
                     <td class="p-3 text-slate-600">{t_name}</td>
                     <td class="p-3">
                         <a class="text-blue-500 hover:underline mr-2" href="/admin/edit-class/{c['id']}">Edit</a>
-                        <a class="text-red-500 hover:underline" href="/admin/delete-class/{c['id']}" onclick="return confirm('Delete classroom mapping%s')">Delete</a>
+                        <a class="text-red-500 hover:underline" href="/admin/delete-class/{c['id']}" onclick="return confirm('Delete classroom mapping?')">Delete</a>
                     </td>
                 </tr>
             """
@@ -1357,7 +1357,7 @@ def admin_dashboard():
                     <td class="p-3 text-xs text-slate-500">{s["registered_at"]}</td>
                     <td class="p-3">
                         <a class="text-blue-500 hover:underline mr-2" href="/admin/edit-student/{s['id']}">Edit</a>
-                        <a class="text-red-500 hover:underline" href="/admin/delete-student/{s['student_id']}" onclick="return confirm('Delete student entirely%s')">Delete</a>
+                        <a class="text-red-500 hover:underline" href="/admin/delete-student/{s['student_id']}" onclick="return confirm('Delete student entirely?')">Delete</a>
                     </td>
                 </tr>
             """
@@ -1739,7 +1739,7 @@ def admin_view_class(class_id):
                     <td class="p-3"><img class="w-8 h-8 object-cover rounded-full border" src="/student-image/{s["image_file"]}"></td>
                     <td class="p-3 font-mono">{s["student_id"]}</td>
                     <td class="p-3 font-medium">{s["full_name"]}</td>
-                    <td class="p-3"><a class="text-red-500 hover:underline" href="/admin/remove-student-from-class/{class_id}/{s['id']}" onclick="return confirm('Unmap from current class framework matrix%s')">Drop Enrollment</a></td>
+                    <td class="p-3"><a class="text-red-500 hover:underline" href="/admin/remove-student-from-class/{class_id}/{s['id']}" onclick="return confirm('Unmap from current class framework matrix?')">Drop Enrollment</a></td>
                 </tr>
             """
     else:
@@ -2185,7 +2185,7 @@ async function startCamera() {{
 }}
 
 function switchCamera() {{
-    currentFacingMode = currentFacingMode === "user" %s "environment" : "user";
+    currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
     startCamera();
 }}
 
@@ -2389,7 +2389,7 @@ async function startCamera() {{
 }}
 
 function switchCamera() {{
-    currentFacingMode = currentFacingMode === "user" %s "environment" : "user";
+    currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
     startCamera();
 }}
 
