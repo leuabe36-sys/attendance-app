@@ -52,7 +52,12 @@ def _compare_embeddings(known_embedding, unknown_embedding, tolerance=0.6):
     return dist < tolerance, dist
 
 app = Flask(__name__)
-app.secret_key = "school_attendance_v4_secret_key"
+app.secret_key = os.environ.get("SECRET_KEY", "school_attendance_v4_secret_key")
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# Allow session cookies over HTTPS in production; set SESSION_COOKIE_SECURE=false only for local HTTP dev
+_is_https = os.environ.get("HTTPS", "true").lower() not in ("false", "0", "no")
+app.config["SESSION_COOKIE_SECURE"] = _is_https
 
 DB_FILE = "attendance.db"
 IMAGE_DIR = "student_images"
@@ -557,7 +562,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             <a href="/settings">⚙️ Account Settings</a>
             <hr style="border:0; border-top: 1px solid #374151; margin:15px 0;">
             <a href="/" style="background:#1f2937;">🏠 Back Main Site</a>
-            <a href="/admin-logout" style="background:#991b1b; color:white;">🚪 Secure Logout</a>
+            <form method="POST" action="/admin-logout" style="margin:0 12px;"><button type="submit" style="width:100%;background:#991b1b;color:white;border:none;padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;text-align:left;">🚪 Secure Logout</button></form>
         </nav>
         """
     elif is_teacher:
@@ -571,7 +576,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             <a href="/settings">⚙️ Update Password</a>
             <hr style="border:0; border-top: 1px solid #374151; margin:15px 0;">
             <a href="/" style="background:#1f2937;">🏠 Back Main Site</a>
-            <a href="/teacher-logout" style="background:#991b1b; color:white;">🚪 Secure Logout</a>
+            <form method="POST" action="/teacher-logout" style="margin:0 12px;"><button type="submit" style="width:100%;background:#991b1b;color:white;border:none;padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;text-align:left;">🚪 Secure Logout</button></form>
         </nav>
         """
     elif is_student and student_context:
@@ -587,7 +592,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             <a href="/settings">⚙️ Update Password</a>
             <hr style="border:0; border-top: 1px solid #374151; margin:15px 0;">
             <a href="/" style="background:#1f2937;">🏠 Back Main Site</a>
-            <a href="/student-logout" style="background:#991b1b; color:white;">🚪 Secure Logout</a>
+            <form method="POST" action="/student-logout" style="margin:0 12px;"><button type="submit" style="width:100%;background:#991b1b;color:white;border:none;padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;text-align:left;">🚪 Secure Logout</button></form>
         </nav>
         """
 
@@ -986,22 +991,28 @@ def student_login():
     return login_page("Student Login", "/student-login", "Student ID", "Student Password", "Invalid student ID or password")
 
 
-@app.route("/admin-logout")
+@app.route("/admin-logout", methods=["GET", "POST"])
 def admin_logout():
     session.clear()
-    return redirect("/admin-login")
+    response = redirect("/admin-login")
+    response.delete_cookie("session")
+    return response
 
 
-@app.route("/teacher-logout")
+@app.route("/teacher-logout", methods=["GET", "POST"])
 def teacher_logout():
     session.clear()
-    return redirect("/teacher-login")
+    response = redirect("/teacher-login")
+    response.delete_cookie("session")
+    return response
 
 
-@app.route("/student-logout")
+@app.route("/student-logout", methods=["GET", "POST"])
 def student_logout():
     session.clear()
-    return redirect("/student-login")
+    response = redirect("/student-login")
+    response.delete_cookie("session")
+    return response
 
 
 # =========================================================
@@ -1356,7 +1367,9 @@ def admin_dashboard():
                     <td class="p-3 text-xs text-slate-500">{s["registered_at"]}</td>
                     <td class="p-3">
                         <a class="text-blue-500 hover:underline mr-2" href="/admin/edit-student/{s['id']}">Edit</a>
-                        <a class="text-red-500 hover:underline" href="/admin/delete-student/{s['student_id']}" onclick="return confirm('Delete student entirely?')">Delete</a>
+                        <form method="POST" action="/admin/delete-student/{s['student_id']}" style="display:inline;" onsubmit="return confirm('Delete student entirely?')">
+                            <button type="submit" style="background:none;border:none;padding:0;color:#ef4444;font-weight:600;cursor:pointer;text-decoration:underline;">Delete</button>
+                        </form>
                     </td>
                 </tr>
             """
@@ -1670,7 +1683,7 @@ def admin_edit_student(student_db_id):
     return page_wrapper("Edit Student Account Data", body, is_admin=True)
 
 
-@app.route("/admin/delete-student/<student_id>")
+@app.route("/admin/delete-student/<student_id>", methods=["GET", "POST"])
 def admin_delete_student(student_id):
     protect = admin_required()
     if protect:
