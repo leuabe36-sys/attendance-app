@@ -3,30 +3,45 @@ from werkzeug.utils import secure_filename
 import cv2
 import mediapipe as mp
 import numpy as np
+
+# Fix mediapipe solutions compatibility
+try:
+    mp.solutions.face_mesh
+except AttributeError:
+    pass
 import os
 import base64
 import sqlite3
 from datetime import datetime, timedelta
 
 # MediaPipe face mesh for embeddings
-_mp_face_mesh = mp.solutions.face_mesh
-_mp_face_detection = mp.solutions.face_detection
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 
 def _get_face_embedding(rgb_image):
     """Extract a simple face embedding using MediaPipe landmarks as a feature vector."""
-    with _mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1,
-                                  refine_landmarks=True, min_detection_confidence=0.5) as face_mesh:
+    try:
+        import mediapipe as mp2
+        face_mesh = mp2.solutions.face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5
+        )
         results = face_mesh.process(rgb_image)
+        face_mesh.close()
         if not results.multi_face_landmarks:
             return None
         landmarks = results.multi_face_landmarks[0].landmark
         coords = np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float32).flatten()
-        # Normalize
         coords = coords - coords.mean()
         norm = np.linalg.norm(coords)
         if norm == 0:
             return None
         return coords / norm
+    except Exception as e:
+        print("Embedding error:", e)
+        return None
 
 def _compare_embeddings(known_embedding, unknown_embedding, tolerance=0.6):
     """Compare two embeddings using cosine distance."""
