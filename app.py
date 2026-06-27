@@ -55,9 +55,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "school_attendance_v4_secret_key")
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-# Allow session cookies over HTTPS in production; set SESSION_COOKIE_SECURE=false only for local HTTP dev
-_is_https = os.environ.get("HTTPS", "true").lower() not in ("false", "0", "no")
-app.config["SESSION_COOKIE_SECURE"] = _is_https
+app.config["SESSION_COOKIE_SECURE"] = False  # works on both HTTP and HTTPS deployments
 
 DB_FILE = "attendance.db"
 IMAGE_DIR = "student_images"
@@ -593,6 +591,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             <hr style="border:0; border-top: 1px solid #374151; margin:15px 0;">
             <a href="/" style="background:#1f2937;">🏠 Back Main Site</a>
             <form method="POST" action="/student-logout" style="margin:0 12px;"><button type="submit" style="width:100%;background:#991b1b;color:white;border:none;padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;text-align:left;">🚪 Secure Logout</button></form>
+            <form method="POST" action="/student/delete-account" style="margin:4px 12px 0 12px;" onsubmit="return confirm('Are you sure you want to permanently delete your account? This cannot be undone.')"><button type="submit" style="width:100%;background:#7f1d1d;color:white;border:none;padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;text-align:left;">🗑️ Delete My Account</button></form>
         </nav>
         """
 
@@ -1014,6 +1013,37 @@ def student_logout():
     response.delete_cookie("session")
     return response
 
+
+
+@app.route("/student/delete-account", methods=["POST"])
+def student_delete_account():
+    protect = student_required()
+    if protect:
+        return protect
+    student_db_id = get_logged_student_db_id()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT student_id, image_file FROM students WHERE id=%s", (student_db_id,))
+    row = cur.fetchone()
+    if row:
+        student_id = row["student_id"]
+        img = row["image_file"]
+        cur.execute("DELETE FROM attendance WHERE student_id=%s", (student_id,))
+        cur.execute("DELETE FROM student_classes WHERE student_id_fk=%s", (student_db_id,))
+        cur.execute("DELETE FROM students WHERE id=%s", (student_db_id,))
+        conn.commit()
+        try:
+            path = os.path.join(IMAGE_DIR, img)
+            if os.path.exists(path):
+                os.remove(path)
+        except:
+            pass
+    conn.close()
+    load_known_faces()
+    session.clear()
+    response = redirect("/student-login")
+    response.delete_cookie("session")
+    return response
 
 # =========================================================
 # STUDENT REGISTRATION PAGE
