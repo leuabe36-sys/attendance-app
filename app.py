@@ -235,6 +235,18 @@ def init_db():
         )
     """)
     cur.execute("ALTER TABLE attendance ADD COLUMN IF NOT EXISTS school_id INTEGER NOT NULL DEFAULT 1")
+    # admin_settings: migrate from old single-PK schema to (school_id, key) composite PK
+    cur.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='admin_settings' AND column_name='school_id'
+            ) THEN
+                DROP TABLE IF EXISTS admin_settings;
+            END IF;
+        END$$;
+    """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS admin_settings (
             school_id INTEGER NOT NULL DEFAULT 1,
@@ -243,11 +255,6 @@ def init_db():
             PRIMARY KEY (school_id, key)
         )
     """)
-    # Migrate old admin_settings if it has a different PK
-    try:
-        cur.execute("ALTER TABLE admin_settings ADD COLUMN IF NOT EXISTS school_id INTEGER NOT NULL DEFAULT 1")
-    except Exception:
-        pass
     # Seed default admin password for school 1 if not already set
     cur.execute("""
         INSERT INTO admin_settings (school_id, key, value)
