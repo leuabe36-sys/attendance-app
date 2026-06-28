@@ -1582,12 +1582,18 @@ def login_page(title, action, user_placeholder, pass_placeholder, error_message=
     """)
 
 
+ADMIN_LOGIN_EXTRA_FIELDS = '''
+    <input type="text" name="school_name" placeholder="School Name (e.g. Green Hills Secondary School)" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
+    <input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
+'''
+
 @app.route("/admin-login", methods=["GET", "POST"])
 def admin_login():
     if request.method == "GET":
         return login_page("Admin Login", "/admin-login", "School Code", "Admin Password",
-                          extra_fields='<input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>')
+                          extra_fields=ADMIN_LOGIN_EXTRA_FIELDS)
 
+    school_name = request.form.get("school_name", "").strip()
     school_code = request.form.get("school_code", "").strip().upper()
     password = request.form.get("password", "").strip()
 
@@ -1595,7 +1601,12 @@ def admin_login():
     if not school:
         return login_page("Admin Login", "/admin-login", "School Code", "Admin Password",
                           "School code not found.",
-                          extra_fields='<input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg" required>')
+                          extra_fields=ADMIN_LOGIN_EXTRA_FIELDS)
+
+    if school_name.strip().lower() != school["name"].strip().lower():
+        return login_page("Admin Login", "/admin-login", "School Code", "Admin Password",
+                          "School name does not match this school code.",
+                          extra_fields=ADMIN_LOGIN_EXTRA_FIELDS)
 
     # Check school-specific admin password
     conn = get_db()
@@ -1608,7 +1619,7 @@ def admin_login():
     if password != stored_pw:
         return login_page("Admin Login", "/admin-login", "School Code", "Admin Password",
                           "Invalid password.",
-                          extra_fields='<input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg" required>')
+                          extra_fields=ADMIN_LOGIN_EXTRA_FIELDS)
 
     session.clear()
     session["admin_logged_in"] = True
