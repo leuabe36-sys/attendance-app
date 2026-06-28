@@ -4140,13 +4140,26 @@ def student_qr_scan_portal():
             <p class="text-sm text-slate-500 mt-1">Point your camera at the QR code your teacher is showing.</p>
         </div>
 
-        <div class="relative max-w-md mx-auto bg-black rounded-2xl overflow-hidden shadow-lg border border-slate-300" style="aspect-ratio:1/1;">
+        <!-- Camera viewport: touch-action none so pinch doesn't zoom the page -->
+        <div id="qrViewport" class="relative max-w-md mx-auto bg-black rounded-2xl overflow-hidden shadow-lg border border-slate-300"
+             style="aspect-ratio:1/1; touch-action:none;">
             <video id="qrVideo" autoplay playsinline muted class="w-full h-full object-cover"></video>
             <canvas id="qrCanvas" class="hidden"></canvas>
             <!-- Scan-frame overlay -->
             <div class="absolute inset-0 pointer-events-none flex items-center justify-center">
                 <div class="w-2/3 h-2/3 border-4 border-emerald-400 rounded-2xl" style="box-shadow:0 0 0 2000px rgba(0,0,0,0.35);"></div>
             </div>
+            <!-- Zoom level badge -->
+            <div id="zoomBadge" class="absolute top-2 right-2 bg-black/60 text-white text-xs font-bold px-2 py-1 rounded-lg hidden">1.0×</div>
+        </div>
+
+        <!-- Zoom slider — shown after camera starts -->
+        <div id="zoomRow" class="hidden max-w-md mx-auto flex items-center gap-3 px-2">
+            <span class="text-slate-400 text-lg select-none">🔍</span>
+            <input id="zoomSlider" type="range" min="1" max="5" step="0.1" value="1"
+                   class="flex-1 h-2 accent-emerald-500 cursor-pointer"
+                   oninput="applyZoom(parseFloat(this.value))">
+            <span class="text-slate-400 text-lg select-none">🔎</span>
         </div>
 
         <div id="qrStatus" class="text-sm font-semibold text-slate-500">📡 Starting camera…</div>
@@ -4168,29 +4181,99 @@ def student_qr_scan_portal():
     const qrCanvas = document.getElementById('qrCanvas');
     const qrCtx = qrCanvas.getContext('2d', {{ willReadFrequently: true }});
     const qrStatus = document.getElementById('qrStatus');
+    const zoomSlider = document.getElementById('zoomSlider');
+    const zoomBadge = document.getElementById('zoomBadge');
+    const zoomRow = document.getElementById('zoomRow');
     let qrStream = null;
     let qrScanLoopId = null;
-    let qrCurrentFacingMode = "environment";  // back camera by default — that's what you point at a QR code
-    let qrHandledCode = false;  // prevent double-submitting once a code is found
+    let qrCurrentFacingMode = "environment";  // back camera by default
+    let qrHandledCode = false;
     let qrStudentLat = null;
     let qrStudentLng = null;
+
+    // ── Zoom state ──
+    let currentZoom = 1.0;
+    let maxNativeZoom = 5.0;  // updated once camera starts
+
+    // ── Apply zoom via Camera API (native zoom) or CSS transform fallback ──
+    async function applyZoom(level) {{
+        currentZoom = level;
+        zoomBadge.innerText = level.toFixed(1) + '×';
+        zoomBadge.classList.remove('hidden');
+        if (qrStream) {{
+            const track = qrStream.getVideoTracks()[0];
+            const caps = track.getCapabilities ? track.getCapabilities() : {{}};
+            if (caps.zoom) {{
+                // Native hardware/software zoom — keeps full resolution, best for QR
+                const clamped = Math.min(Math.max(level, caps.zoom.min), caps.zoom.max);
+                try {{ await track.applyConstraints({{ advanced: [{{ zoom: clamped }}] }}); }} catch(e) {{}}
+            }} else {{
+                // Fallback: CSS scale transform on the video element
+                qrVideo.style.transform = 'scale(' + level + ')';
+                qrVideo.style.transformOrigin = 'center center';
+            }}
+        }}
+        zoomSlider.value = level;
+    }}
+
+    // ── Pinch-to-zoom on the camera viewport ──
+    (function() {{
+        const viewport = document.getElementById('qrViewport');
+        let initialDist = null;
+        let zoomAtPinchStart = 1.0;
+
+        function dist(t) {{
+            const dx = t[0].clientX - t[1].clientX;
+            const dy = t[0].clientY - t[1].clientY;
+            return Math.sqrt(dx*dx + dy*dy);
+        }}
+
+        viewport.addEventListener('touchstart', function(e) {{
+            if (e.touches.length === 2) {{
+                e.preventDefault();
+                initialDist = dist(e.touches);
+                zoomAtPinchStart = currentZoom;
+            }}
+        }}, {{ passive: false }});
+
+        viewport.addEventListener('touchmove', function(e) {{
+            if (e.touches.length === 2 && initialDist) {{
+                e.preventDefault();
+                const scale = dist(e.touches) / initialDist;
+                const newZoom = Math.min(Math.max(zoomAtPinchStart * scale, 1.0), maxNativeZoom);
+                applyZoom(newZoom);
+            }}
+        }}, {{ passive: false }});
+
+        viewport.addEventListener('touchend', function(e) {{
+            if (e.touches.length < 2) {{ initialDist = null; }}
+        }});
+    }})();
 
     // GPS capture (sent along once a code is found, same as the manual check-in form)
     const gpsStatusEl = document.getElementById('gpsStatus');
     if (navigator.geolocation) {{
-        navigator.geolocation.getCurrentPosition(function(pos) {{
-            qrStudentLat = pos.coords.latitude;
-            qrStudentLng = pos.coords.longitude;
-            if (gpsStatusEl) {{
-                gpsStatusEl.innerText = '✅ GPS captured (' + qrStudentLat.toFixed(4) + ', ' + qrStudentLng.toFixed(4) + ')';
-                gpsStatusEl.className = 'text-xs text-emerald-600 font-semibold';
+        if (gpsStatusEl) {{ gpsStatusEl.innerText = '🔄 Acquiring GPS fix…'; }}
+        let _qrBestAcc = Infinity;
+        const _qrWatcher = navigator.geolocation.watchPosition(function(pos) {{
+            const acc = pos.coords.accuracy;
+            if (acc < _qrBestAcc) {{
+                _qrBestAcc = acc;
+                qrStudentLat = pos.coords.latitude;
+                qrStudentLng = pos.coords.longitude;
+                if (gpsStatusEl) {{
+                    gpsStatusEl.innerText = '✅ GPS: ' + qrStudentLat.toFixed(5) + ', ' + qrStudentLng.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
+                    gpsStatusEl.className = acc <= 50 ? 'text-xs text-emerald-600 font-semibold' : 'text-xs text-amber-500 font-semibold';
+                    if (acc <= 50) {{ navigator.geolocation.clearWatch(_qrWatcher); }}
+                }}
             }}
         }}, function(err) {{
             if (gpsStatusEl) {{
                 gpsStatusEl.innerText = '⚠️ GPS unavailable — session code from the QR will still work.';
                 gpsStatusEl.className = 'text-xs text-amber-600 font-semibold';
             }}
-        }}, {{ enableHighAccuracy: true, timeout: 8000 }});
+        }}, {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }});
+        setTimeout(function() {{ navigator.geolocation.clearWatch(_qrWatcher); }}, 20000);
     }} else {{
         if (gpsStatusEl) gpsStatusEl.innerText = '⚠️ GPS not supported on this device.';
     }}
@@ -4198,6 +4281,11 @@ def student_qr_scan_portal():
     async function startCamera() {{
         try {{
             qrHandledCode = false;
+            currentZoom = 1.0;
+            zoomSlider.value = 1;
+            zoomBadge.classList.add('hidden');
+            zoomRow.classList.add('hidden');
+            qrVideo.style.transform = '';
             if (qrScanLoopId) {{ cancelAnimationFrame(qrScanLoopId); qrScanLoopId = null; }}
             qrStatus.innerText = "Starting camera…";
             qrStatus.className = "text-sm font-semibold text-slate-500";
@@ -4215,7 +4303,7 @@ def student_qr_scan_portal():
                 qrStream = null;
             }}
             let constraints = [
-                {{ video: {{ facingMode: {{ exact: qrCurrentFacingMode }}, width: {{ ideal: 1280 }}, height: {{ ideal: 1280 }} }}, audio: false }},
+                {{ video: {{ facingMode: {{ exact: qrCurrentFacingMode }}, width: {{ ideal: 1920 }}, height: {{ ideal: 1920 }} }}, audio: false }},
                 {{ video: {{ facingMode: {{ ideal: qrCurrentFacingMode }}, width: {{ ideal: 1280 }}, height: {{ ideal: 1280 }} }}, audio: false }},
                 {{ video: true, audio: false }}
             ];
@@ -4228,7 +4316,23 @@ def student_qr_scan_portal():
             qrVideo.srcObject = qrStream;
             await new Promise((resolve) => {{ qrVideo.onloadedmetadata = () => resolve(); }});
             await qrVideo.play();
-            qrStatus.innerText = "✅ Camera ready — point at the QR code (" + (qrCurrentFacingMode === "environment" ? "Back" : "Front") + ")";
+
+            // ── Detect zoom capability and configure slider ──
+            const track = qrStream.getVideoTracks()[0];
+            const caps = track.getCapabilities ? track.getCapabilities() : {{}};
+            if (caps.zoom) {{
+                maxNativeZoom = caps.zoom.max || 5.0;
+                zoomSlider.min = caps.zoom.min || 1;
+                zoomSlider.max = maxNativeZoom;
+                zoomSlider.step = 0.1;
+            }} else {{
+                maxNativeZoom = 5.0;  // CSS fallback range
+                zoomSlider.min = 1;
+                zoomSlider.max = 5;
+            }}
+            zoomRow.classList.remove('hidden');
+
+            qrStatus.innerText = "✅ Camera ready — point at the QR code (" + (qrCurrentFacingMode === "environment" ? "Back" : "Front") + "). Pinch or use slider to zoom.";
             qrStatus.className = "text-sm font-semibold text-emerald-600";
             scanLoop();
         }} catch (err) {{
