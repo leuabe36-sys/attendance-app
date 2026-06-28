@@ -352,6 +352,19 @@ def init_db():
     cur.execute("ALTER TABLE attendance ADD COLUMN IF NOT EXISTS student_lng DOUBLE PRECISION")
     cur.execute("ALTER TABLE attendance ADD COLUMN IF NOT EXISTS distance_meters DOUBLE PRECISION")
 
+    # ── SESSION TOKENS TABLE (one active device per user) ──
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_session_tokens (
+            id SERIAL PRIMARY KEY,
+            user_type TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            school_id INTEGER NOT NULL,
+            token TEXT NOT NULL UNIQUE,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ust_user ON user_session_tokens(user_type, user_id, school_id)")
+
     conn.commit()
     conn.close()
 
@@ -360,6 +373,52 @@ def init_db():
 # HELPERS
 # =========================================================
 import math
+
+
+# ── Single-device session token helpers ──
+def create_user_session_token(user_type, user_id, school_id):
+    """Invalidate all previous tokens for this user and issue a fresh one."""
+    token = secrets.token_hex(32)
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM user_session_tokens WHERE user_type=%s AND user_id=%s AND school_id=%s",
+                    (user_type, user_id, school_id))
+        cur.execute("INSERT INTO user_session_tokens (user_type, user_id, school_id, token) VALUES (%s,%s,%s,%s)",
+                    (user_type, user_id, school_id, token))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("create_user_session_token error:", e)
+    return token
+
+def validate_user_session_token(user_type, user_id, school_id, token):
+    """Return True only if this exact token is the current active one."""
+    if not token:
+        return False
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM user_session_tokens WHERE user_type=%s AND user_id=%s AND school_id=%s AND token=%s",
+                    (user_type, user_id, school_id, token))
+        row = cur.fetchone()
+        conn.close()
+        return row is not None
+    except Exception as e:
+        print("validate_user_session_token error:", e)
+        return True  # on DB error, don't block
+
+def revoke_user_session_token(user_type, user_id, school_id):
+    """Remove all tokens (used on logout)."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM user_session_tokens WHERE user_type=%s AND user_id=%s AND school_id=%s",
+                    (user_type, user_id, school_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("revoke_user_session_token error:", e)
 
 def utc_iso(dt):
     """
@@ -656,13 +715,28 @@ def admin_required():
 def teacher_required():
     if not is_teacher_logged_in():
         return redirect("/teacher-login")
+    # One-device check
+    teacher_id = session.get("teacher_id")
+    school_id = session.get("school_id", 1)
+    token = session.get("device_token")
+    if teacher_id and not validate_user_session_token("teacher", teacher_id, school_id, token):
+        session.clear()
+        return redirect("/teacher-login?kicked=1")
     return None
 
 
 def student_required():
     if not is_student_logged_in():
         return redirect("/student-login")
+    # One-device check
+    student_db_id = session.get("student_db_id")
+    school_id = session.get("school_id", 1)
+    token = session.get("device_token")
+    if student_db_id and not validate_user_session_token("student", student_db_id, school_id, token):
+        session.clear()
+        return redirect("/student-login?kicked=1")
     return None
+
 
 
 def student_exists(student_id, school_id=None):
@@ -965,6 +1039,11 @@ def mark_attendance(student_row, class_row, status="Present", student_lat=None, 
 
     teacher_name = class_row["teacher_display_name"] or class_row["teacher_name"] or ""
 
+    # ── Block re-scan: if already marked Present today, do not overwrite ──
+    if existing and existing["status"] == "Present":
+        conn.close()
+        return {"already_marked": True, "status": "Present", "time": existing["time"]}
+
     if existing:
         cur.execute("""
             UPDATE attendance
@@ -1001,6 +1080,7 @@ def mark_attendance(student_row, class_row, status="Present", student_lat=None, 
 
     conn.commit()
     conn.close()
+    return {"already_marked": False, "status": status}
 
 
 def get_attendance_count_for_student_class(student_id, class_id):
@@ -1995,8 +2075,9 @@ def admin_login():
 def teacher_login():
     school_code_field = '<input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>'
     if request.method == "GET":
+        kicked_msg = "\u26a0\ufe0f Your account was logged in on another device. Please log in again." if request.args.get("kicked") else ""
         return login_page("Teacher Login", "/teacher-login", "Teacher Username", "Teacher Password",
-                          extra_fields=school_code_field)
+                          error_message=kicked_msg, extra_fields=school_code_field)
 
     school_code = request.form.get("school_code", "").strip().upper()
     username = request.form.get("username", "").strip()
@@ -2021,6 +2102,8 @@ def teacher_login():
         session["teacher_name"] = teacher["teacher_name"]
         session["school_id"] = school["id"]
         session["school_name"] = school["name"]
+        # Issue a new device token — invalidates any other active session
+        session["device_token"] = create_user_session_token("teacher", teacher["id"], school["id"])
         return redirect("/teacher")
 
     return login_page("Teacher Login", "/teacher-login", "Teacher Username", "Teacher Password",
@@ -2031,8 +2114,9 @@ def teacher_login():
 def student_login():
     school_code_field = '<input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>'
     if request.method == "GET":
+        kicked_msg = "\u26a0\ufe0f Your account was logged in on another device. Please log in again." if request.args.get("kicked") else ""
         return login_page("Student Login", "/student-login", "Student ID", "Student Password",
-                          extra_fields=school_code_field)
+                          error_message=kicked_msg, extra_fields=school_code_field)
 
     school_code = request.form.get("school_code", "").strip().upper()
     student_id = request.form.get("username", "").strip()
@@ -2058,6 +2142,8 @@ def student_login():
         session["student_name"] = student["full_name"]
         session["school_id"] = school["id"]
         session["school_name"] = school["name"]
+        # Issue a new device token — invalidates any other active session
+        session["device_token"] = create_user_session_token("student", student["id"], school["id"])
         return redirect("/student")
 
     return login_page("Student Login", "/student-login", "Student ID", "Student Password",
@@ -2074,6 +2160,10 @@ def admin_logout():
 
 @app.route("/teacher-logout", methods=["GET", "POST"])
 def teacher_logout():
+    teacher_id = session.get("teacher_id")
+    school_id = session.get("school_id", 1)
+    if teacher_id:
+        revoke_user_session_token("teacher", teacher_id, school_id)
     session.clear()
     response = redirect("/teacher-login")
     response.delete_cookie("session")
@@ -2082,6 +2172,10 @@ def teacher_logout():
 
 @app.route("/student-logout", methods=["GET", "POST"])
 def student_logout():
+    student_db_id = session.get("student_db_id")
+    school_id = session.get("school_id", 1)
+    if student_db_id:
+        revoke_user_session_token("student", student_db_id, school_id)
     session.clear()
     response = redirect("/student-login")
     response.delete_cookie("session")
@@ -3962,7 +4056,6 @@ def student_manual_checkin(class_id):
             <form method="POST" class="space-y-4 bg-white border rounded-xl p-5 shadow-sm">
                 <input type="hidden" name="latitude" id="lat">
                 <input type="hidden" name="longitude" id="lng">
-                <input type="hidden" name="gps_accuracy" id="gpsAcc">
 
                 <div>
                     <label class="block text-sm font-semibold text-slate-700 mb-1">📟 Session Code <span class="font-normal text-slate-400">(from your teacher or QR scan)</span></label>
@@ -3981,27 +4074,15 @@ def student_manual_checkin(class_id):
         </div>
         <script>
         if (navigator.geolocation) {{
-            var gpsStatus = document.getElementById('gpsStatus');
-            gpsStatus.innerText = '🔄 Acquiring GPS fix…';
-            var _bestAcc = Infinity;
-            var _watcher = navigator.geolocation.watchPosition(function(pos) {{
-                var acc = pos.coords.accuracy;
-                if (acc < _bestAcc) {{
-                    _bestAcc = acc;
-                    document.getElementById('lat').value = pos.coords.latitude;
-                    document.getElementById('lng').value = pos.coords.longitude;
-                    document.getElementById('gpsAcc').value = acc;
-                    gpsStatus.innerText = '✅ GPS: ' + pos.coords.latitude.toFixed(5) + ', ' + pos.coords.longitude.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
-                    gpsStatus.className = acc <= 50
-                        ? 'text-xs text-emerald-600 text-center font-semibold'
-                        : 'text-xs text-amber-500 text-center font-semibold';
-                    if (acc <= 50) {{ navigator.geolocation.clearWatch(_watcher); }}
-                }}
+            navigator.geolocation.getCurrentPosition(function(pos) {{
+                document.getElementById('lat').value = pos.coords.latitude;
+                document.getElementById('lng').value = pos.coords.longitude;
+                document.getElementById('gpsStatus').innerText = '✅ GPS location captured (' + pos.coords.latitude.toFixed(4) + ', ' + pos.coords.longitude.toFixed(4) + ')';
+                document.getElementById('gpsStatus').className = 'text-xs text-emerald-600 text-center font-semibold';
             }}, function(err) {{
-                gpsStatus.innerText = '⚠️ GPS unavailable — use session code or school WiFi.';
-                gpsStatus.className = 'text-xs text-amber-600 text-center font-semibold';
-            }}, {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }});
-            setTimeout(function() {{ navigator.geolocation.clearWatch(_watcher); }}, 20000);
+                document.getElementById('gpsStatus').innerText = '⚠️ GPS unavailable — use session code or school WiFi.';
+                document.getElementById('gpsStatus').className = 'text-xs text-amber-600 text-center font-semibold';
+            }}, {{ enableHighAccuracy: true, timeout: 8000 }});
         }} else {{
             document.getElementById('gpsStatus').innerText = '⚠️ GPS not supported on this device.';
         }}
@@ -4012,15 +4093,11 @@ def student_manual_checkin(class_id):
     # POST — validate and mark
     lat = request.form.get("latitude") or None
     lng = request.form.get("longitude") or None
-    gps_acc = request.form.get("gps_accuracy") or None
     session_code = request.form.get("session_code", "").strip()
 
     try:
         lat_f = float(lat) if lat else None
         lng_f = float(lng) if lng else None
-        # Discard coordinates with accuracy worse than 200 m — they are unreliable
-        if gps_acc is not None and float(gps_acc) > 200:
-            lat_f = lng_f = None
     except:
         lat_f = lng_f = None
 
@@ -4028,10 +4105,14 @@ def student_manual_checkin(class_id):
 
     if passed:
         dist_str = f' ({int(dist_m)}m from teacher)' if dist_m is not None else ''
-        mark_attendance(student_row, class_row, 'Present', student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+        result = mark_attendance(student_row, class_row, 'Present', student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+        if result.get('already_marked'):
+            return "<script>alert('\u2139\ufe0f Attendance already recorded as Present today. No changes made.'); window.location.href='/student';</script>"
         return f"<script>alert('✅ Attendance marked Present!\\n({reason}){dist_str}'); window.location.href='/student';</script>"
     else:
-        mark_attendance(student_row, class_row, 'Absent', student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+        result = mark_attendance(student_row, class_row, 'Absent', student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+        if result.get('already_marked'):
+            return "<script>alert('\u2139\ufe0f Attendance already recorded as Present today. No changes made.'); window.location.href='/student';</script>"
         return f"<script>alert('❌ Marked Absent — none of the verification checks passed.\\nReasons: {reason}'); window.location.href='/student';</script>"
 
 
@@ -4097,27 +4178,19 @@ def student_qr_scan_portal():
     // GPS capture (sent along once a code is found, same as the manual check-in form)
     const gpsStatusEl = document.getElementById('gpsStatus');
     if (navigator.geolocation) {{
-        if (gpsStatusEl) {{ gpsStatusEl.innerText = '🔄 Acquiring GPS fix…'; }}
-        let _qrBestAcc = Infinity;
-        const _qrWatcher = navigator.geolocation.watchPosition(function(pos) {{
-            const acc = pos.coords.accuracy;
-            if (acc < _qrBestAcc) {{
-                _qrBestAcc = acc;
-                qrStudentLat = pos.coords.latitude;
-                qrStudentLng = pos.coords.longitude;
-                if (gpsStatusEl) {{
-                    gpsStatusEl.innerText = '✅ GPS: ' + qrStudentLat.toFixed(5) + ', ' + qrStudentLng.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
-                    gpsStatusEl.className = acc <= 50 ? 'text-xs text-emerald-600 font-semibold' : 'text-xs text-amber-500 font-semibold';
-                    if (acc <= 50) {{ navigator.geolocation.clearWatch(_qrWatcher); }}
-                }}
+        navigator.geolocation.getCurrentPosition(function(pos) {{
+            qrStudentLat = pos.coords.latitude;
+            qrStudentLng = pos.coords.longitude;
+            if (gpsStatusEl) {{
+                gpsStatusEl.innerText = '✅ GPS captured (' + qrStudentLat.toFixed(4) + ', ' + qrStudentLng.toFixed(4) + ')';
+                gpsStatusEl.className = 'text-xs text-emerald-600 font-semibold';
             }}
         }}, function(err) {{
             if (gpsStatusEl) {{
                 gpsStatusEl.innerText = '⚠️ GPS unavailable — session code from the QR will still work.';
                 gpsStatusEl.className = 'text-xs text-amber-600 font-semibold';
             }}
-        }}, {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }});
-        setTimeout(function() {{ navigator.geolocation.clearWatch(_qrWatcher); }}, 20000);
+        }}, {{ enableHighAccuracy: true, timeout: 8000 }});
     }} else {{
         if (gpsStatusEl) gpsStatusEl.innerText = '⚠️ GPS not supported on this device.';
     }}
@@ -4284,27 +4357,17 @@ let intervalId = null;
 let studentLat = null;
 let studentLng = null;
 
-// GPS detection — watchPosition for best accuracy, reject stale cache with maximumAge:0
+// GPS detection
 if (navigator.geolocation) {{
-    document.getElementById('gpsStatus').innerText = '🔄 Acquiring GPS fix…';
-    let _camBestAcc = Infinity;
-    const _camWatcher = navigator.geolocation.watchPosition(function(pos) {{
-        const acc = pos.coords.accuracy;
-        if (acc < _camBestAcc) {{
-            _camBestAcc = acc;
-            studentLat = pos.coords.latitude;
-            studentLng = pos.coords.longitude;
-            document.getElementById('gpsStatus').innerText = '✅ GPS: ' + studentLat.toFixed(5) + ', ' + studentLng.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
-            document.getElementById('gpsStatus').className = acc <= 50
-                ? 'text-xs text-emerald-600 mt-1 font-semibold'
-                : 'text-xs text-amber-500 mt-1 font-semibold';
-            if (acc <= 50) {{ navigator.geolocation.clearWatch(_camWatcher); }}
-        }}
+    navigator.geolocation.getCurrentPosition(function(pos) {{
+        studentLat = pos.coords.latitude;
+        studentLng = pos.coords.longitude;
+        document.getElementById('gpsStatus').innerText = '✅ GPS captured (' + studentLat.toFixed(4) + ', ' + studentLng.toFixed(4) + ')';
+        document.getElementById('gpsStatus').className = 'text-xs text-emerald-600 mt-1 font-semibold';
     }}, function() {{
         document.getElementById('gpsStatus').innerText = '⚠️ GPS unavailable — use session code or school WiFi.';
         document.getElementById('gpsStatus').className = 'text-xs text-amber-600 mt-1 font-semibold';
-    }}, {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }});
-    setTimeout(function() {{ navigator.geolocation.clearWatch(_camWatcher); }}, 20000);
+    }}, {{ enableHighAccuracy: true, timeout: 8000 }});
 }}
 
 async function startCamera() {{
@@ -4472,14 +4535,28 @@ def student_scan_frame_matrix_lookup():
                 lat_f = lng_f = None
 
             any_passed = False
+            already_marked_all = True
             for c in classes:
                 passed, reason, dist_m = run_location_checks(lat_f, lng_f, session_code, c["id"], school_id, request)
                 if passed:
-                    mark_attendance(student_row, c, "Present", student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
-                    any_passed = True
+                    result = mark_attendance(student_row, c, "Present", student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+                    if result.get('already_marked'):
+                        pass  # already Present, don't overwrite
+                    else:
+                        any_passed = True
+                        already_marked_all = False
                 else:
-                    mark_attendance(student_row, c, "Absent", student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+                    result = mark_attendance(student_row, c, "Absent", student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+                    if not result.get('already_marked'):
+                        already_marked_all = False
 
+            # If every class was already marked Present, tell the student
+            if already_marked_all and not any_passed:
+                return jsonify({
+                    "success": True,
+                    "already_marked": True,
+                    "message": f"\u2139\ufe0f Attendance already recorded as Present today for {student_row['full_name']}. No changes made."
+                })
             if any_passed:
                 return jsonify({
                     "success": True,
@@ -5136,29 +5213,19 @@ let teacherLng = null;
 // ── GPS capture on page load ──
 const gpsStatusEl = document.getElementById('gpsStatus');
 if (navigator.geolocation) {{
-    if (gpsStatusEl) {{ gpsStatusEl.innerText = '🔄 Acquiring GPS fix…'; }}
-    let _tBestAcc = Infinity;
-    const _tWatcher = navigator.geolocation.watchPosition(function(pos) {{
-        const acc = pos.coords.accuracy;
-        if (acc < _tBestAcc) {{
-            _tBestAcc = acc;
-            teacherLat = pos.coords.latitude;
-            teacherLng = pos.coords.longitude;
-            if (gpsStatusEl) {{
-                gpsStatusEl.className = acc <= 50
-                    ? 'text-xs text-emerald-700 font-semibold bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2'
-                    : 'text-xs text-amber-600 font-semibold bg-amber-50 border border-amber-200 rounded-lg px-3 py-2';
-                gpsStatusEl.innerText = (acc <= 50 ? '✅' : '⏳') + ' GPS: ' + teacherLat.toFixed(5) + ', ' + teacherLng.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
-                if (acc <= 50) {{ navigator.geolocation.clearWatch(_tWatcher); }}
-            }}
+    navigator.geolocation.getCurrentPosition(function(pos) {{
+        teacherLat = pos.coords.latitude;
+        teacherLng = pos.coords.longitude;
+        if (gpsStatusEl) {{
+            gpsStatusEl.className = 'text-xs text-emerald-700 font-semibold bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2';
+            gpsStatusEl.innerText = '✅ GPS ready: ' + teacherLat.toFixed(5) + ', ' + teacherLng.toFixed(5);
         }}
     }}, function(err) {{
         if (gpsStatusEl) {{
             gpsStatusEl.className = 'text-xs text-amber-600 font-semibold bg-amber-50 border border-amber-200 rounded-lg px-3 py-2';
             gpsStatusEl.innerText = '⚠️ GPS unavailable — WiFi/code check will still work. (' + err.message + ')';
         }}
-    }}, {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }});
-    setTimeout(function() {{ navigator.geolocation.clearWatch(_tWatcher); }}, 20000);
+    }}, {{ enableHighAccuracy: true, timeout: 10000 }});
 }} else {{
     if (gpsStatusEl) gpsStatusEl.innerText = '⚠️ GPS not supported on this device.';
 }}
