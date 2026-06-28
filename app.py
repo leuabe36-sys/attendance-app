@@ -30,13 +30,19 @@ def supabase_upload(filename, image_bytes, content_type="image/jpeg"):
         url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{filename}"
         headers = {
             "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "apikey": SUPABASE_SERVICE_KEY,
             "Content-Type": content_type,
             "x-upsert": "true"
         }
-        resp = http_requests.put(url, headers=headers, data=image_bytes, timeout=15)
+        resp = http_requests.put(url, headers=headers, data=image_bytes, timeout=30)
+        print(f"Supabase upload status: {resp.status_code}, response: {resp.text[:200]}")
         if resp.status_code in (200, 201):
             return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{filename}"
-        print("Supabase upload error:", resp.status_code, resp.text)
+        # Try POST if PUT fails
+        resp2 = http_requests.post(url, headers=headers, data=image_bytes, timeout=30)
+        print(f"Supabase upload POST status: {resp2.status_code}, response: {resp2.text[:200]}")
+        if resp2.status_code in (200, 201):
+            return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{filename}"
         return None
     except Exception as e:
         print("Supabase upload exception:", e)
