@@ -3962,6 +3962,7 @@ def student_manual_checkin(class_id):
             <form method="POST" class="space-y-4 bg-white border rounded-xl p-5 shadow-sm">
                 <input type="hidden" name="latitude" id="lat">
                 <input type="hidden" name="longitude" id="lng">
+                <input type="hidden" name="gps_accuracy" id="gpsAcc">
 
                 <div>
                     <label class="block text-sm font-semibold text-slate-700 mb-1">📟 Session Code <span class="font-normal text-slate-400">(from your teacher or QR scan)</span></label>
@@ -3980,15 +3981,27 @@ def student_manual_checkin(class_id):
         </div>
         <script>
         if (navigator.geolocation) {{
-            navigator.geolocation.getCurrentPosition(function(pos) {{
-                document.getElementById('lat').value = pos.coords.latitude;
-                document.getElementById('lng').value = pos.coords.longitude;
-                document.getElementById('gpsStatus').innerText = '✅ GPS location captured (' + pos.coords.latitude.toFixed(4) + ', ' + pos.coords.longitude.toFixed(4) + ')';
-                document.getElementById('gpsStatus').className = 'text-xs text-emerald-600 text-center font-semibold';
+            var gpsStatus = document.getElementById('gpsStatus');
+            gpsStatus.innerText = '🔄 Acquiring GPS fix…';
+            var _bestAcc = Infinity;
+            var _watcher = navigator.geolocation.watchPosition(function(pos) {{
+                var acc = pos.coords.accuracy;
+                if (acc < _bestAcc) {{
+                    _bestAcc = acc;
+                    document.getElementById('lat').value = pos.coords.latitude;
+                    document.getElementById('lng').value = pos.coords.longitude;
+                    document.getElementById('gpsAcc').value = acc;
+                    gpsStatus.innerText = '✅ GPS: ' + pos.coords.latitude.toFixed(5) + ', ' + pos.coords.longitude.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
+                    gpsStatus.className = acc <= 50
+                        ? 'text-xs text-emerald-600 text-center font-semibold'
+                        : 'text-xs text-amber-500 text-center font-semibold';
+                    if (acc <= 50) {{ navigator.geolocation.clearWatch(_watcher); }}
+                }}
             }}, function(err) {{
-                document.getElementById('gpsStatus').innerText = '⚠️ GPS unavailable — use session code or school WiFi.';
-                document.getElementById('gpsStatus').className = 'text-xs text-amber-600 text-center font-semibold';
-            }}, {{ enableHighAccuracy: true, timeout: 8000 }});
+                gpsStatus.innerText = '⚠️ GPS unavailable — use session code or school WiFi.';
+                gpsStatus.className = 'text-xs text-amber-600 text-center font-semibold';
+            }}, {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }});
+            setTimeout(function() {{ navigator.geolocation.clearWatch(_watcher); }}, 20000);
         }} else {{
             document.getElementById('gpsStatus').innerText = '⚠️ GPS not supported on this device.';
         }}
@@ -3999,11 +4012,15 @@ def student_manual_checkin(class_id):
     # POST — validate and mark
     lat = request.form.get("latitude") or None
     lng = request.form.get("longitude") or None
+    gps_acc = request.form.get("gps_accuracy") or None
     session_code = request.form.get("session_code", "").strip()
 
     try:
         lat_f = float(lat) if lat else None
         lng_f = float(lng) if lng else None
+        # Discard coordinates with accuracy worse than 200 m — they are unreliable
+        if gps_acc is not None and float(gps_acc) > 200:
+            lat_f = lng_f = None
     except:
         lat_f = lng_f = None
 
@@ -4080,19 +4097,27 @@ def student_qr_scan_portal():
     // GPS capture (sent along once a code is found, same as the manual check-in form)
     const gpsStatusEl = document.getElementById('gpsStatus');
     if (navigator.geolocation) {{
-        navigator.geolocation.getCurrentPosition(function(pos) {{
-            qrStudentLat = pos.coords.latitude;
-            qrStudentLng = pos.coords.longitude;
-            if (gpsStatusEl) {{
-                gpsStatusEl.innerText = '✅ GPS captured (' + qrStudentLat.toFixed(4) + ', ' + qrStudentLng.toFixed(4) + ')';
-                gpsStatusEl.className = 'text-xs text-emerald-600 font-semibold';
+        if (gpsStatusEl) {{ gpsStatusEl.innerText = '🔄 Acquiring GPS fix…'; }}
+        let _qrBestAcc = Infinity;
+        const _qrWatcher = navigator.geolocation.watchPosition(function(pos) {{
+            const acc = pos.coords.accuracy;
+            if (acc < _qrBestAcc) {{
+                _qrBestAcc = acc;
+                qrStudentLat = pos.coords.latitude;
+                qrStudentLng = pos.coords.longitude;
+                if (gpsStatusEl) {{
+                    gpsStatusEl.innerText = '✅ GPS: ' + qrStudentLat.toFixed(5) + ', ' + qrStudentLng.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
+                    gpsStatusEl.className = acc <= 50 ? 'text-xs text-emerald-600 font-semibold' : 'text-xs text-amber-500 font-semibold';
+                    if (acc <= 50) {{ navigator.geolocation.clearWatch(_qrWatcher); }}
+                }}
             }}
         }}, function(err) {{
             if (gpsStatusEl) {{
                 gpsStatusEl.innerText = '⚠️ GPS unavailable — session code from the QR will still work.';
                 gpsStatusEl.className = 'text-xs text-amber-600 font-semibold';
             }}
-        }}, {{ enableHighAccuracy: true, timeout: 8000 }});
+        }}, {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }});
+        setTimeout(function() {{ navigator.geolocation.clearWatch(_qrWatcher); }}, 20000);
     }} else {{
         if (gpsStatusEl) gpsStatusEl.innerText = '⚠️ GPS not supported on this device.';
     }}
@@ -4259,17 +4284,27 @@ let intervalId = null;
 let studentLat = null;
 let studentLng = null;
 
-// GPS detection
+// GPS detection — watchPosition for best accuracy, reject stale cache with maximumAge:0
 if (navigator.geolocation) {{
-    navigator.geolocation.getCurrentPosition(function(pos) {{
-        studentLat = pos.coords.latitude;
-        studentLng = pos.coords.longitude;
-        document.getElementById('gpsStatus').innerText = '✅ GPS captured (' + studentLat.toFixed(4) + ', ' + studentLng.toFixed(4) + ')';
-        document.getElementById('gpsStatus').className = 'text-xs text-emerald-600 mt-1 font-semibold';
+    document.getElementById('gpsStatus').innerText = '🔄 Acquiring GPS fix…';
+    let _camBestAcc = Infinity;
+    const _camWatcher = navigator.geolocation.watchPosition(function(pos) {{
+        const acc = pos.coords.accuracy;
+        if (acc < _camBestAcc) {{
+            _camBestAcc = acc;
+            studentLat = pos.coords.latitude;
+            studentLng = pos.coords.longitude;
+            document.getElementById('gpsStatus').innerText = '✅ GPS: ' + studentLat.toFixed(5) + ', ' + studentLng.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
+            document.getElementById('gpsStatus').className = acc <= 50
+                ? 'text-xs text-emerald-600 mt-1 font-semibold'
+                : 'text-xs text-amber-500 mt-1 font-semibold';
+            if (acc <= 50) {{ navigator.geolocation.clearWatch(_camWatcher); }}
+        }}
     }}, function() {{
         document.getElementById('gpsStatus').innerText = '⚠️ GPS unavailable — use session code or school WiFi.';
         document.getElementById('gpsStatus').className = 'text-xs text-amber-600 mt-1 font-semibold';
-    }}, {{ enableHighAccuracy: true, timeout: 8000 }});
+    }}, {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }});
+    setTimeout(function() {{ navigator.geolocation.clearWatch(_camWatcher); }}, 20000);
 }}
 
 async function startCamera() {{
@@ -5101,19 +5136,29 @@ let teacherLng = null;
 // ── GPS capture on page load ──
 const gpsStatusEl = document.getElementById('gpsStatus');
 if (navigator.geolocation) {{
-    navigator.geolocation.getCurrentPosition(function(pos) {{
-        teacherLat = pos.coords.latitude;
-        teacherLng = pos.coords.longitude;
-        if (gpsStatusEl) {{
-            gpsStatusEl.className = 'text-xs text-emerald-700 font-semibold bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2';
-            gpsStatusEl.innerText = '✅ GPS ready: ' + teacherLat.toFixed(5) + ', ' + teacherLng.toFixed(5);
+    if (gpsStatusEl) {{ gpsStatusEl.innerText = '🔄 Acquiring GPS fix…'; }}
+    let _tBestAcc = Infinity;
+    const _tWatcher = navigator.geolocation.watchPosition(function(pos) {{
+        const acc = pos.coords.accuracy;
+        if (acc < _tBestAcc) {{
+            _tBestAcc = acc;
+            teacherLat = pos.coords.latitude;
+            teacherLng = pos.coords.longitude;
+            if (gpsStatusEl) {{
+                gpsStatusEl.className = acc <= 50
+                    ? 'text-xs text-emerald-700 font-semibold bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2'
+                    : 'text-xs text-amber-600 font-semibold bg-amber-50 border border-amber-200 rounded-lg px-3 py-2';
+                gpsStatusEl.innerText = (acc <= 50 ? '✅' : '⏳') + ' GPS: ' + teacherLat.toFixed(5) + ', ' + teacherLng.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
+                if (acc <= 50) {{ navigator.geolocation.clearWatch(_tWatcher); }}
+            }}
         }}
     }}, function(err) {{
         if (gpsStatusEl) {{
             gpsStatusEl.className = 'text-xs text-amber-600 font-semibold bg-amber-50 border border-amber-200 rounded-lg px-3 py-2';
             gpsStatusEl.innerText = '⚠️ GPS unavailable — WiFi/code check will still work. (' + err.message + ')';
         }}
-    }}, {{ enableHighAccuracy: true, timeout: 10000 }});
+    }}, {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }});
+    setTimeout(function() {{ navigator.geolocation.clearWatch(_tWatcher); }}, 20000);
 }} else {{
     if (gpsStatusEl) gpsStatusEl.innerText = '⚠️ GPS not supported on this device.';
 }}
