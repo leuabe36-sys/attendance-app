@@ -679,6 +679,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
         <nav class="sb-nav">
             <div class="sb-nav-label">MAIN</div>
             <a href="/admin" class="sb-link"><span class="sb-icon">⬛</span> Dashboard</a>
+            <a href="/admin/charts" class="sb-link"><span class="sb-icon">📈</span> Charts</a>
             <a href="/student-register" class="sb-link"><span class="sb-icon">➕</span> Register Student</a>
             <a href="/admin/reports" class="sb-link"><span class="sb-icon">📋</span> Attendance Reports</a>
             <div class="sb-nav-label" style="margin-top:16px;">ACCOUNT</div>
@@ -747,7 +748,9 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
                         <span></span><span></span><span></span>
                     </button>
                     <div class="topbar-title">{title}</div>
-                    <div class="topbar-right"></div>
+                    <div class="topbar-right">
+                        <button class="dm-toggle" id="dmBtn" onclick="toggleDark()" title="Toggle dark mode">🌙</button>
+                    </div>
                 </div>
                 <div class="content-area">
                     {body}
@@ -1142,6 +1145,68 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
         .alert-error {{ background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }}
         .alert-success {{ background: #f0fdf4; border: 1px solid #bbf7d0; color: #14532d; }}
 
+        /* ── DARK MODE ── */
+        html.dark {{
+            --c-bg: #0d1117;
+            --c-surface: #161b22;
+            --c-border: #30363d;
+            --c-text: #e6edf3;
+            --c-muted: #8b949e;
+            --c-accent: #4493f8;
+            --c-accent-dark: #2f81f7;
+            --c-accent-light: #1c2a3a;
+            --c-success: #3fb950;
+            --c-warning: #e3b341;
+            --c-danger: #f85149;
+        }}
+        html.dark body {{ background: var(--c-bg); color: var(--c-text); }}
+        html.dark .topbar {{ background: #161b22; border-color: #30363d; }}
+        html.dark .topbar-menu-btn span {{ background: #8b949e; }}
+        html.dark .topbar-menu-btn:hover {{ background: #21262d; }}
+        html.dark .card {{ background: var(--c-surface); border-color: var(--c-border); }}
+        html.dark .card-header {{ border-color: var(--c-border); }}
+        html.dark thead th {{ background: #21262d; color: #8b949e; border-color: #30363d; }}
+        html.dark tbody td {{ border-color: #21262d; color: var(--c-text); }}
+        html.dark tbody tr:hover td {{ background: #1c2128; }}
+        html.dark input:not([class]), html.dark select:not([class]), html.dark textarea:not([class]),
+        html.dark .form-input {{
+            background: #21262d; border-color: #30363d; color: var(--c-text);
+        }}
+        html.dark .stat-card {{ background: #161b22; border-color: #30363d; }}
+        html.dark .stat-card:hover {{ box-shadow: 0 4px 20px rgba(0,0,0,0.4); }}
+        html.dark .badge-green {{ background: #0d2818; color: #3fb950; }}
+        html.dark .badge-red {{ background: #2d1216; color: #f85149; }}
+        html.dark .badge-blue {{ background: #1c2a3a; color: #79c0ff; }}
+        html.dark .alert-error {{ background: #2d1216; border-color: #f85149; color: #f85149; }}
+        html.dark .alert-success {{ background: #0d2818; border-color: #3fb950; color: #3fb950; }}
+        html.dark .public-wrap .feat-item {{ background: #161b22; border-color: #30363d; }}
+        html.dark .public-wrap .feat-title {{ color: var(--c-text); }}
+        html.dark .public-wrap .home-title {{ color: var(--c-text); }}
+        html.dark .public-wrap .home-sub {{ color: var(--c-muted); }}
+        html.dark .public-wrap {{ background: #0d1117; }}
+        html.dark .page-title {{ color: var(--c-text); }}
+
+        /* ── DARK MODE TOGGLE BUTTON ── */
+        .dm-toggle {{
+            display: flex; align-items: center; justify-content: center;
+            width: 36px; height: 36px;
+            border-radius: 8px;
+            border: 1.5px solid var(--c-border);
+            background: var(--c-surface);
+            cursor: pointer;
+            font-size: 17px;
+            transition: all 0.18s;
+            flex-shrink: 0;
+            line-height: 1;
+        }}
+        .dm-toggle:hover {{ background: var(--c-accent-light); border-color: var(--c-accent); }}
+
+        /* ── CHART CONTAINER ── */
+        .chart-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }}
+        .chart-card {{ background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow-sm); }}
+        .chart-title {{ font-size: 14px; font-weight: 700; color: var(--c-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 16px; }}
+        canvas {{ max-width: 100%; }}
+
         /* ── MOBILE RESPONSIVE ── */
         @media (max-width: 1023px) {{
             .sb {{ transform: translateX(-100%); }}
@@ -1157,9 +1222,27 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             .stat-grid {{ grid-template-columns: repeat(2, 1fr); gap: 12px; }}
             .stat-value {{ font-size: 26px; }}
             .content-area {{ padding: 16px 12px; }}
+            .chart-grid {{ grid-template-columns: 1fr; }}
         }}
         </style>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
         <script>
+            // ── DARK MODE ──
+            (function() {{
+                const saved = localStorage.getItem('dm');
+                if (saved === '1' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {{
+                    document.documentElement.classList.add('dark');
+                }}
+            }})();
+            function toggleDark() {{
+                const isDark = document.documentElement.classList.toggle('dark');
+                localStorage.setItem('dm', isDark ? '1' : '0');
+                const btn = document.getElementById('dmBtn');
+                if (btn) btn.textContent = isDark ? '☀️' : '🌙';
+                // Refresh charts if present
+                if (window._charts) window._charts.forEach(c => {{ c.options.plugins.legend.labels.color = isDark ? '#8b949e' : '#475569'; c.update(); }});
+            }}
+            // ── SIDEBAR ──
             function toggleSidebar(e) {{
                 if(e) e.stopPropagation();
                 document.getElementById('sidebarMenu').classList.toggle('open');
@@ -1169,12 +1252,15 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
                 document.getElementById('sidebarMenu').classList.remove('open');
                 document.getElementById('sbOverlay').classList.remove('open');
             }}
-            // Mark active sidebar link
             document.addEventListener('DOMContentLoaded', function() {{
+                // Active nav link
                 const path = window.location.pathname;
                 document.querySelectorAll('.sb-link').forEach(a => {{
                     if(a.getAttribute('href') === path) a.classList.add('active');
                 }});
+                // Set dark toggle icon
+                const btn = document.getElementById('dmBtn');
+                if (btn) btn.textContent = document.documentElement.classList.contains('dark') ? '☀️' : '🌙';
             }});
         </script>
         <meta name="theme-color" content="#0f172a">
@@ -1963,6 +2049,177 @@ def admin_dashboard():
     </div>
     """
     return page_wrapper("Admin Dashboard", body, is_admin=True)
+
+
+# =========================================================
+# ADMIN CHARTS DASHBOARD
+# =========================================================
+@app.route("/admin/charts")
+def admin_charts():
+    protect = admin_required()
+    if protect:
+        return protect
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Daily attendance last 14 days
+    cur.execute("""
+        SELECT date, COUNT(*) as total,
+               SUM(CASE WHEN status='Present' THEN 1 ELSE 0 END) as present
+        FROM attendance
+        WHERE date >= (CURRENT_DATE - INTERVAL '14 days')::text
+        GROUP BY date ORDER BY date ASC
+    """)
+    daily = cur.fetchall()
+
+    # Per-class attendance rate
+    cur.execute("""
+        SELECT class_name,
+               COUNT(*) as total,
+               SUM(CASE WHEN status='Present' THEN 1 ELSE 0 END) as present
+        FROM attendance
+        GROUP BY class_name ORDER BY total DESC LIMIT 10
+    """)
+    by_class = cur.fetchall()
+
+    # Present vs Absent overall
+    cur.execute("SELECT status, COUNT(*) as c FROM attendance GROUP BY status")
+    status_rows = cur.fetchall()
+
+    # Top 5 students by attendance
+    cur.execute("""
+        SELECT full_name,
+               COUNT(*) as total,
+               SUM(CASE WHEN status='Present' THEN 1 ELSE 0 END) as present
+        FROM attendance
+        GROUP BY full_name ORDER BY present DESC LIMIT 8
+    """)
+    top_students = cur.fetchall()
+
+    conn.close()
+
+    import json
+    daily_labels = json.dumps([r["date"] for r in daily])
+    daily_present = json.dumps([int(r["present"]) for r in daily])
+    daily_absent = json.dumps([int(r["total"]) - int(r["present"]) for r in daily])
+
+    class_labels = json.dumps([r["class_name"] for r in by_class])
+    class_rates = json.dumps([round(int(r["present"])/int(r["total"])*100,1) if r["total"] else 0 for r in by_class])
+
+    status_map = {{r["status"]: int(r["c"]) for r in status_rows}}
+    present_count = status_map.get("Present", 0)
+    absent_count = status_map.get("Absent", 0)
+
+    student_labels = json.dumps([r["full_name"] for r in top_students])
+    student_rates = json.dumps([round(int(r["present"])/int(r["total"])*100,1) if r["total"] else 0 for r in top_students])
+
+    body = f"""
+    <div class="section-stack">
+        <div class="page-header">
+            <div class="page-title">Attendance Charts</div>
+            <div class="page-sub">Visual overview of attendance trends across all classes and students.</div>
+        </div>
+
+        <div class="chart-grid">
+            <div class="chart-card" style="grid-column: span 2;">
+                <div class="chart-title">Daily Attendance — Last 14 Days</div>
+                <canvas id="chartDaily" height="100"></canvas>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Overall Status</div>
+                <canvas id="chartDonut" height="200"></canvas>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Attendance Rate by Class (%)</div>
+                <canvas id="chartClass" height="200"></canvas>
+            </div>
+            <div class="chart-card" style="grid-column: span 2;">
+                <div class="chart-title">Top Students by Attendance Rate (%)</div>
+                <canvas id="chartStudents" height="100"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const isDark = () => document.documentElement.classList.contains('dark');
+    const textColor = () => isDark() ? '#8b949e' : '#475569';
+    const gridColor = () => isDark() ? '#21262d' : '#f1f5f9';
+
+    window._charts = [];
+
+    const dailyLabels = {daily_labels};
+    const dailyPresent = {daily_present};
+    const dailyAbsent = {daily_absent};
+
+    const c1 = new Chart(document.getElementById('chartDaily'), {{
+        type: 'bar',
+        data: {{
+            labels: dailyLabels,
+            datasets: [
+                {{ label: 'Present', data: dailyPresent, backgroundColor: '#3fb950', borderRadius: 5, stack: 'a' }},
+                {{ label: 'Absent', data: dailyAbsent, backgroundColor: '#f85149', borderRadius: 5, stack: 'a' }}
+            ]
+        }},
+        options: {{
+            responsive: true, plugins: {{ legend: {{ labels: {{ color: textColor() }} }} }},
+            scales: {{
+                x: {{ stacked: true, grid: {{ color: gridColor() }}, ticks: {{ color: textColor() }} }},
+                y: {{ stacked: true, grid: {{ color: gridColor() }}, ticks: {{ color: textColor() }} }}
+            }}
+        }}
+    }});
+    window._charts.push(c1);
+
+    const c2 = new Chart(document.getElementById('chartDonut'), {{
+        type: 'doughnut',
+        data: {{
+            labels: ['Present', 'Absent'],
+            datasets: [{{ data: [{present_count}, {absent_count}], backgroundColor: ['#3fb950','#f85149'], borderWidth: 0 }}]
+        }},
+        options: {{
+            responsive: true,
+            plugins: {{ legend: {{ labels: {{ color: textColor() }} }} }}
+        }}
+    }});
+    window._charts.push(c2);
+
+    const c3 = new Chart(document.getElementById('chartClass'), {{
+        type: 'bar',
+        data: {{
+            labels: {class_labels},
+            datasets: [{{ label: 'Rate %', data: {class_rates}, backgroundColor: '#4493f8', borderRadius: 5 }}]
+        }},
+        options: {{
+            indexAxis: 'y', responsive: true,
+            plugins: {{ legend: {{ labels: {{ color: textColor() }} }} }},
+            scales: {{
+                x: {{ max: 100, grid: {{ color: gridColor() }}, ticks: {{ color: textColor() }} }},
+                y: {{ grid: {{ color: gridColor() }}, ticks: {{ color: textColor() }} }}
+            }}
+        }}
+    }});
+    window._charts.push(c3);
+
+    const c4 = new Chart(document.getElementById('chartStudents'), {{
+        type: 'bar',
+        data: {{
+            labels: {student_labels},
+            datasets: [{{ label: 'Attendance %', data: {student_rates}, backgroundColor: '#a371f7', borderRadius: 5 }}]
+        }},
+        options: {{
+            responsive: true,
+            plugins: {{ legend: {{ labels: {{ color: textColor() }} }} }},
+            scales: {{
+                x: {{ grid: {{ color: gridColor() }}, ticks: {{ color: textColor() }} }},
+                y: {{ max: 100, grid: {{ color: gridColor() }}, ticks: {{ color: textColor() }} }}
+            }}
+        }}
+    }});
+    window._charts.push(c4);
+    </script>
+    """
+    return page_wrapper("Charts", body, is_admin=True)
 
 
 
