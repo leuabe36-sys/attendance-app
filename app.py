@@ -4680,7 +4680,7 @@ def teacher_session_panel(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT code, expires_at, created_at FROM class_sessions
+        SELECT code, expires_at, created_at, rotate_seconds, last_rotated FROM class_sessions
         WHERE class_id=%s AND school_id=%s AND active=TRUE AND expires_at > NOW()
         ORDER BY id DESC LIMIT 1
     """, (class_id, school_id))
@@ -4689,6 +4689,8 @@ def teacher_session_panel(class_id):
 
     active_code = active["code"] if active else None
     expires_iso = active["expires_at"].isoformat() if active else None
+    rotate_seconds_init = active["rotate_seconds"] if active else 60
+    last_rotated_iso = active["last_rotated"].isoformat() if active else None
 
     body = f"""
     <div class="max-w-2xl mx-auto space-y-6">
@@ -4826,8 +4828,12 @@ def teacher_session_panel(class_id):
         <div class="text-xs text-slate-400 mt-1">🔄 QR refreshes automatically</div>
     </div>
 
-<!-- qrcode.js from CDN -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<!-- qrcode.js from CDN (note: uses the soldair/node-qrcode "qrcode" package,
+     which exposes QRCode.toCanvas — NOT the davidshimjs "qrcodejs" package,
+     which does not have a toCanvas method and was silently breaking QR
+     rendering, which in turn was preventing the countdown timer from
+     starting since renderQR() threw before startCountdown() ran. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode/1.4.4/qrcode.min.js"></script>
 <script>
 const CLASS_ID = {class_id};
 let countdownInterval = null;
@@ -4838,6 +4844,8 @@ let currentRotateSecs = 60;
 let rotateSecsLeft = 60;
 let currentCode = '{active_code or ""}';
 let currentExpiresAt = {f'new Date("{expires_iso}")' if expires_iso else 'null'};
+let initialRotateSecs = {rotate_seconds_init};
+let initialLastRotated = {f'new Date("{last_rotated_iso}")' if last_rotated_iso else 'null'};
 let teacherLat = null;
 let teacherLng = null;
 
@@ -4866,21 +4874,33 @@ function checkinUrl(code) {{
 }}
 
 function renderQR(code) {{
-    const canvas = document.getElementById('qrCanvas');
-    canvas.width = 174; canvas.height = 174;
-    QRCode.toCanvas(canvas, checkinUrl(code), {{
-        width: 174, margin: 1,
-        color: {{ dark: '#1e293b', light: '#ffffff' }}
-    }}, function(err) {{ if(err) console.error(err); }});
+    try {{
+        const canvas = document.getElementById('qrCanvas');
+        if (!canvas || typeof QRCode === 'undefined' || !QRCode.toCanvas) {{
+            console.error('QR library not available — check the qrcode CDN script tag.');
+            return;
+        }}
+        canvas.width = 174; canvas.height = 174;
+        QRCode.toCanvas(canvas, checkinUrl(code), {{
+            width: 174, margin: 1,
+            color: {{ dark: '#1e293b', light: '#ffffff' }}
+        }}, function(err) {{ if(err) console.error(err); }});
+    }} catch(e) {{ console.error('renderQR failed:', e); }}
 }}
 
 function renderFsQR(code) {{
-    const canvas = document.getElementById('fsQrCanvas');
-    canvas.width = 300; canvas.height = 300;
-    QRCode.toCanvas(canvas, checkinUrl(code), {{
-        width: 300, margin: 1,
-        color: {{ dark: '#1e293b', light: '#ffffff' }}
-    }}, function(err) {{ if(err) console.error(err); }});
+    try {{
+        const canvas = document.getElementById('fsQrCanvas');
+        if (!canvas || typeof QRCode === 'undefined' || !QRCode.toCanvas) {{
+            console.error('QR library not available — check the qrcode CDN script tag.');
+            return;
+        }}
+        canvas.width = 300; canvas.height = 300;
+        QRCode.toCanvas(canvas, checkinUrl(code), {{
+            width: 300, margin: 1,
+            color: {{ dark: '#1e293b', light: '#ffffff' }}
+        }}, function(err) {{ if(err) console.error(err); }});
+    }} catch(e) {{ console.error('renderFsQR failed:', e); }}
 }}
 
 function setDuration(min) {{
@@ -4937,10 +4957,12 @@ async function startSession(e) {{
 }}
 
 // ── Dynamic QR rotation ──
-function startQRRotation(rotateSecs) {{
+function startQRRotation(rotateSecs, elapsedSecs) {{
     if (rotateInterval) clearInterval(rotateInterval);
     currentRotateSecs = rotateSecs;
-    rotateSecsLeft = rotateSecs;
+    elapsedSecs = elapsedSecs || 0;
+    // Sync the countdown to how much of the current rotation window has already passed
+    rotateSecsLeft = Math.max(1, rotateSecs - (elapsedSecs % rotateSecs));
     // Update the rotate progress bar every second
     rotateInterval = setInterval(async () => {{
         rotateSecsLeft -= 1;
@@ -5078,7 +5100,8 @@ function closeFullscreen() {{
 if (currentCode && currentExpiresAt) {{
     renderQR(currentCode);
     startCountdown(currentExpiresAt);
-    startQRRotation(60);  // default rotate; server tracks actual value
+    const elapsedSinceRotate = initialLastRotated ? Math.floor((new Date() - initialLastRotated) / 1000) : 0;
+    startQRRotation(initialRotateSecs || 60, elapsedSinceRotate);
     startLocRefresh();
     document.getElementById('locationsPanel').classList.remove('hidden');
 }}
