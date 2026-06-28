@@ -382,6 +382,13 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_cc_class ON class_comments(class_id)")
 
+    # Migrate class_comments to support teacher posts
+    cur.execute("ALTER TABLE class_comments ADD COLUMN IF NOT EXISTS poster_type TEXT NOT NULL DEFAULT 'student'")
+    cur.execute("ALTER TABLE class_comments ADD COLUMN IF NOT EXISTS teacher_id_fk INTEGER DEFAULT NULL")
+    # Allow student_db_id to be 0 for teacher posts (default was NOT NULL FK)
+    cur.execute("ALTER TABLE class_comments ALTER COLUMN student_db_id DROP NOT NULL")
+    cur.execute("ALTER TABLE class_comments DROP CONSTRAINT IF EXISTS class_comments_student_db_id_fkey")
+
     conn.commit()
     conn.close()
 
@@ -3665,9 +3672,12 @@ def teacher_view_class(class_id):
                 <h1 class="text-2xl font-extrabold text-slate-800 tracking-tight">Roster Tracker: {class_row["class_name"]}</h1>
                 <p class="text-xs text-slate-400 font-medium mt-0.5">Subject code: {class_row["subject_name"] or "N/A"} | Active Proctor Date: {today_str}</p>
             </div>
-            <div class="flex gap-2">
+            <div class="flex gap-2 flex-wrap">
                 <a class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl flex items-center gap-1.5 transition shadow-sm" href="/teacher/session-panel/{class_id}">
                     ⏱️ Attendance Timer
+                </a>
+                <a class="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl flex items-center gap-1.5 transition shadow-sm" href="/teacher/class/{class_id}/feed">
+                    💬 Class Chat
                 </a>
                 <a class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl flex items-center gap-1.5 transition shadow-sm shadow-emerald-100" href="/teacher/class/{class_id}/scan">
                     <i class="fas fa-camera"></i> Launch AI Scanner
@@ -5741,7 +5751,7 @@ def student_class_feed(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk
         FROM class_comments
         WHERE class_id=%s AND school_id=%s
         ORDER BY created_at ASC
@@ -5762,11 +5772,11 @@ def student_class_feed(class_id):
         else:
             ts_str = str(ts)[:16]
 
-        av = _tg_avatar(m["student_image"], m["student_name"], 34)
         txt = m["comment"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         mid = m["id"]
+        is_teacher = (m.get("poster_type") == "teacher")
 
-        if is_me:
+        if is_me and not is_teacher:
             return f"""
             <div class="tg-msg-row tg-mine" id="msg-{mid}">
                 <div class="tg-bubble tg-bubble-mine">
@@ -5774,7 +5784,22 @@ def student_class_feed(class_id):
                     <div class="tg-bubble-ts">{ts_str} ✓✓</div>
                 </div>
             </div>"""
+        elif is_teacher:
+            return f"""
+            <div class="tg-msg-row tg-theirs" id="msg-{mid}">
+                <div class="tg-av-wrap">
+                    <div class="tg-letter-av" style="width:34px;height:34px;background:#7c3aed;">👨‍🏫</div>
+                </div>
+                <div>
+                    <div class="tg-sender-name" style="color:#a78bfa;">{m['student_name']} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;margin-left:4px;">Teacher</span></div>
+                    <div class="tg-bubble" style="max-width:min(420px,72vw);padding:8px 12px 4px;border-radius:4px 16px 16px 16px;background:#2d1b69;border:1px solid #4c1d95;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,0.25);">
+                        <div class="tg-bubble-text">{txt}</div>
+                        <div class="tg-bubble-ts">{ts_str}</div>
+                    </div>
+                </div>
+            </div>"""
         else:
+            av = _tg_avatar(m["student_image"], m["student_name"], 34)
             return f"""
             <div class="tg-msg-row tg-theirs" id="msg-{mid}">
                 <div class="tg-av-wrap">
@@ -6111,7 +6136,7 @@ function nameColor(name) {{
 
 // ── Render a single message bubble ──
 function renderMsg(m) {{
-    const isMe = m.student_db_id === MY_DB_ID;
+    const isMe = m.student_db_id === MY_DB_ID && m.poster_type !== 'teacher';
     const ts = m.ts_display || '';
     const txt = m.comment.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
@@ -6120,6 +6145,19 @@ function renderMsg(m) {{
             <div class="tg-bubble tg-bubble-mine">
                 <div class="tg-bubble-text">${{txt}}</div>
                 <div class="tg-bubble-ts">${{ts}} ✓✓</div>
+            </div>
+        </div>`;
+    }} else if (m.poster_type === 'teacher') {{
+        return `<div class="tg-msg-row tg-theirs" id="msg-${{m.id}}">
+            <div class="tg-av-wrap">
+                <div class="tg-letter-av" style="width:34px;height:34px;background:#7c3aed;">👨‍🏫</div>
+            </div>
+            <div>
+                <div class="tg-sender-name" style="color:#a78bfa;">${{m.student_name}} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;margin-left:4px;">Teacher</span></div>
+                <div class="tg-bubble" style="max-width:min(420px,72vw);padding:8px 12px 4px;border-radius:4px 16px 16px 16px;background:#2d1b69;border:1px solid #4c1d95;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,0.25);">
+                    <div class="tg-bubble-text">${{txt}}</div>
+                    <div class="tg-bubble-ts">${{ts}}</div>
+                </div>
             </div>
         </div>`;
     }} else {{
@@ -6236,7 +6274,7 @@ def student_class_messages(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk
         FROM class_comments
         WHERE class_id=%s AND school_id=%s AND id>%s
         ORDER BY created_at ASC LIMIT 30
@@ -6259,6 +6297,8 @@ def student_class_messages(class_id):
             "student_image": supabase_public_url(r["student_image"] or ""),
             "comment": r["comment"],
             "ts_display": ts_display,
+            "poster_type": r.get("poster_type") or "student",
+            "teacher_id_fk": r.get("teacher_id_fk"),
         })
     return jsonify({"messages": result})
 
@@ -6286,12 +6326,533 @@ def student_post_comment(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type)
+        VALUES (%s, %s, %s, %s, %s, %s, 'student')
     """, (school_id, class_id, student_db_id, student_row["full_name"], student_row["image_file"], comment))
     conn.commit()
     conn.close()
     return ajax_ok("Comment posted!")
+
+
+
+# =========================================================
+# TEACHER — CLASS GROUP CHAT FEED
+# =========================================================
+
+def _teacher_belongs_to_class(teacher_id, class_id):
+    """Check if the teacher owns this class."""
+    row = get_class_by_id(class_id)
+    return row is not None and row["teacher_id"] == teacher_id
+
+
+@app.route("/teacher/class/<int:class_id>/feed")
+def teacher_class_feed(class_id):
+    protect = teacher_required()
+    if protect:
+        return protect
+
+    teacher_id = get_logged_teacher_id()
+    school_id = get_current_school_id()
+    teacher_name = session.get("teacher_name", "Teacher")
+    teacher_photo = session.get("teacher_photo", "")
+
+    class_row = get_class_by_id(class_id)
+    if not class_row or class_row["teacher_id"] != teacher_id:
+        return "<script>alert('Access denied.');window.location.href='/teacher';</script>"
+
+    classmates = get_students_in_class(class_id)
+
+    # Fetch latest 80 messages oldest→newest
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk
+        FROM class_comments
+        WHERE class_id=%s AND school_id=%s
+        ORDER BY created_at ASC LIMIT 80
+    """, (class_id, school_id))
+    messages = cur.fetchall()
+    conn.close()
+
+    cname = class_row["class_name"]
+    csubject = class_row.get("subject_name") or ""
+    cteacher = class_row.get("teacher_display_name") or class_row.get("teacher_name") or teacher_name
+    letter = cname[0].upper()
+    colors = ["#2196F3","#E91E63","#9C27B0","#FF9800","#4CAF50","#00BCD4","#F44336","#3F51B5"]
+    color = colors[sum(ord(c) for c in cname) % len(colors)]
+
+    def _msg_html_teacher(m):
+        ts = m["created_at"]
+        if hasattr(ts, "strftime"):
+            from datetime import date as _date
+            if ts.date() == __import__("datetime").date.today():
+                ts_str = ts.strftime("%I:%M %p")
+            else:
+                ts_str = ts.strftime("%b %d, %I:%M %p")
+        else:
+            ts_str = str(ts)[:16]
+
+        txt = m["comment"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        mid = m["id"]
+        is_me = (m.get("poster_type") == "teacher" and m.get("teacher_id_fk") == teacher_id)
+
+        if is_me:
+            return f"""
+            <div class="tg-msg-row tg-mine" id="msg-{mid}">
+                <div class="tg-bubble tg-bubble-mine">
+                    <div class="tg-bubble-text">{txt}</div>
+                    <div class="tg-bubble-ts">{ts_str} ✓✓</div>
+                </div>
+            </div>"""
+        else:
+            name = m["student_name"]
+            colors2 = ["#5b9bd9","#e8699a","#a876d8","#f4a623","#52c97f","#4db8d4","#e8645b","#7986cb"]
+            nc = colors2[sum(ord(c) for c in name) % len(colors2)]
+            av = _tg_avatar(m["student_image"], name, 34)
+            return f"""
+            <div class="tg-msg-row tg-theirs" id="msg-{mid}">
+                <div class="tg-av-wrap">
+                    <div style="display:contents;">{av}</div>
+                </div>
+                <div>
+                    <div class="tg-sender-name" style="color:{nc};">{name}</div>
+                    <div class="tg-bubble tg-bubble-theirs">
+                        <div class="tg-bubble-text">{txt}</div>
+                        <div class="tg-bubble-ts">{ts_str}</div>
+                    </div>
+                </div>
+            </div>"""
+
+    msgs_html = "".join(_msg_html_teacher(m) for m in messages)
+    last_id = messages[-1]["id"] if messages else 0
+
+    # Members sidebar
+    members_html = ""
+    for s in classmates:
+        av = _tg_avatar(s["image_file"], s["full_name"], 36)
+        members_html += f"""
+        <a href="/teacher/class/{class_id}/student-profile/{s['id']}" class="tg-member-item">
+            <div class="tg-member-av">{av}</div>
+            <div class="tg-member-info">
+                <div class="tg-member-name">{s['full_name']}</div>
+                <div class="tg-member-id">ID: {s['student_id']}</div>
+            </div>
+        </a>"""
+
+    EMOJIS = ["😀","😂","🥰","😎","🤔","👍","👏","🙌","🔥","💯","❤️","🎉","📚","✅","🤝","😅","🙏","💪","😴","🎓"]
+    emoji_btns = "".join(f'<button class="tg-emoji-btn" onclick="insertEmoji(\'{e}\')">{e}</button>' for e in EMOJIS)
+
+    teacher_av_url = supabase_public_url(teacher_photo) if teacher_photo else ""
+    teacher_letter = teacher_name[0].upper() if teacher_name else "T"
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{cname} · Teacher Chat</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;height:100vh;display:flex;flex-direction:column;overflow:hidden;color:#e4e7eb;}}
+.tg-topbar{{height:56px;background:#17212b;border-bottom:1px solid #0f1923;display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0;box-shadow:0 1px 8px rgba(0,0,0,0.3);}}
+.tg-topbar-av{{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;flex-shrink:0;background:{color};cursor:pointer;}}
+.tg-topbar-info{{flex:1;min-width:0;cursor:pointer;}}
+.tg-topbar-title{{font-weight:700;font-size:15px;color:#e4e7eb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
+.tg-topbar-sub{{font-size:12px;color:#5a8ebd;margin-top:1px;}}
+.tg-back{{color:#5b9bd9;font-size:13px;font-weight:600;text-decoration:none;padding:6px 10px;border-radius:8px;transition:background 0.15s;white-space:nowrap;}}
+.tg-back:hover{{background:rgba(91,155,217,0.12);}}
+.tg-members-toggle{{background:none;border:none;cursor:pointer;color:#5a8ebd;font-size:22px;padding:6px 8px;border-radius:8px;transition:background 0.15s;flex-shrink:0;}}
+.tg-members-toggle:hover{{background:rgba(91,155,217,0.12);}}
+.tg-teacher-badge{{background:#7c3aed;color:#e9d5ff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;margin-left:6px;}}
+.tg-body{{flex:1;display:flex;overflow:hidden;}}
+.tg-messages-wrap{{flex:1;display:flex;flex-direction:column;background:#0e1621;min-width:0;}}
+.tg-chat-bg{{flex:1;overflow-y:auto;padding:16px 12px;display:flex;flex-direction:column;gap:2px;background-image:radial-gradient(ellipse at 20% 80%,rgba(124,58,237,0.04) 0%,transparent 60%),radial-gradient(ellipse at 80% 20%,rgba(139,92,246,0.04) 0%,transparent 60%);}}
+.tg-msg-row{{display:flex;align-items:flex-end;gap:8px;margin-bottom:2px;}}
+.tg-mine{{flex-direction:row-reverse;}}
+.tg-theirs{{flex-direction:row;}}
+.tg-av-wrap{{flex-shrink:0;width:34px;align-self:flex-end;}}
+.tg-letter-av{{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:13px;flex-shrink:0;}}
+.tg-sender-name{{font-size:12px;font-weight:700;margin-bottom:3px;padding-left:2px;}}
+.tg-bubble{{max-width:min(420px,72vw);padding:8px 12px 4px;border-radius:16px;position:relative;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,0.25);}}
+.tg-bubble-mine{{background:#4c1d95;border-radius:16px 4px 16px 16px;}}
+.tg-bubble-theirs{{background:#182533;border:1px solid #1e3048;border-radius:4px 16px 16px 16px;}}
+.tg-bubble-text{{font-size:14px;line-height:1.5;color:#e4e7eb;}}
+.tg-bubble-ts{{font-size:10px;color:#7a9bbf;text-align:right;margin-top:4px;}}
+.tg-input-bar{{background:#17212b;border-top:1px solid #0f1923;padding:10px 12px;display:flex;align-items:flex-end;gap:8px;flex-shrink:0;}}
+.tg-input-wrap{{flex:1;background:#242f3d;border-radius:20px;display:flex;align-items:center;padding:6px 14px;gap:8px;}}
+.tg-emoji-toggle{{background:none;border:none;font-size:20px;cursor:pointer;flex-shrink:0;opacity:0.6;transition:opacity 0.15s;}}
+.tg-emoji-toggle:hover{{opacity:1;}}
+.tg-input{{flex:1;background:none;border:none;outline:none;color:#e4e7eb;font-size:14px;resize:none;max-height:120px;min-height:22px;line-height:1.5;}}
+.tg-input::placeholder{{color:#4a5a6a;}}
+.tg-send{{width:42px;height:42px;border-radius:50%;background:#7c3aed;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;transition:background 0.15s;}}
+.tg-send:hover{{background:#6d28d9;}}
+.tg-send:disabled{{background:#2b3c4e;cursor:not-allowed;}}
+.tg-emoji-panel{{position:absolute;bottom:72px;left:12px;right:12px;background:#17212b;border:1px solid #243447;border-radius:16px;padding:12px;display:none;z-index:10;}}
+.tg-emoji-panel.open{{display:flex;flex-wrap:wrap;gap:4px;}}
+.tg-emoji-btn{{background:none;border:none;font-size:22px;cursor:pointer;padding:4px;border-radius:8px;transition:background 0.12s;}}
+.tg-emoji-btn:hover{{background:rgba(255,255,255,0.08);}}
+.tg-members-panel{{width:260px;background:#17212b;border-left:1px solid #0d1117;display:flex;flex-direction:column;transition:transform 0.28s cubic-bezier(0.4,0,0.2,1);flex-shrink:0;overflow:hidden;}}
+.tg-members-panel.open{{transform:translateX(0);}}
+.tg-members-header{{padding:12px 14px;border-bottom:1px solid #0f1923;font-size:12px;font-weight:700;color:#5a8ebd;text-transform:uppercase;letter-spacing:0.06em;display:flex;align-items:center;justify-content:space-between;}}
+.tg-members-list{{flex:1;overflow-y:auto;padding:6px;}}
+.tg-member-item{{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;text-decoration:none;cursor:pointer;transition:background 0.12s;}}
+.tg-member-item:hover{{background:#1e3048;}}
+.tg-member-av{{flex-shrink:0;}}
+.tg-member-info{{min-width:0;}}
+.tg-member-name{{font-size:13px;font-weight:600;color:#c8d8e8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
+.tg-member-id{{font-size:11px;color:#4a6a8a;}}
+.tg-me-badge{{background:#2b5278;color:#7bb8ef;font-size:10px;font-weight:700;padding:1px 6px;border-radius:6px;margin-left:4px;}}
+::-webkit-scrollbar{{width:4px;}}::-webkit-scrollbar-track{{background:transparent;}}::-webkit-scrollbar-thumb{{background:#2b3c4e;border-radius:4px;}}
+@media(max-width:640px){{.tg-members-panel{{position:fixed;right:0;top:0;bottom:0;z-index:200;transform:translateX(100%);}}}}
+</style>
+</head>
+<body>
+<!-- Topbar -->
+<div class="tg-topbar">
+    <a href="/teacher/class/{class_id}" class="tg-back">← Back</a>
+    <div class="tg-topbar-av">{letter}</div>
+    <div class="tg-topbar-info">
+        <div class="tg-topbar-title">{cname} <span class="tg-teacher-badge">👨‍🏫 Teacher</span></div>
+        <div class="tg-topbar-sub">{len(classmates)} students · {csubject}</div>
+    </div>
+    <button class="tg-members-toggle" onclick="toggleMembers()" title="Members">👥</button>
+</div>
+
+<div class="tg-body" style="position:relative;">
+    <!-- Messages -->
+    <div class="tg-messages-wrap">
+        <div class="tg-chat-bg" id="chatBg">
+            {msgs_html}
+            <div id="messagesEnd"></div>
+        </div>
+
+        <!-- Emoji panel -->
+        <div class="tg-emoji-panel" id="emojiPanel">{emoji_btns}</div>
+
+        <!-- Input bar -->
+        <div class="tg-input-bar">
+            <div class="tg-input-wrap">
+                <button class="tg-emoji-toggle" onclick="toggleEmoji()" title="Emoji">😊</button>
+                <textarea class="tg-input" id="msgInput" placeholder="Message {cname}…" rows="1"
+                    oninput="autoResize(this)"
+                    onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendMessage();}}"></textarea>
+            </div>
+            <button class="tg-send" id="sendBtn" onclick="sendMessage()" title="Send">➤</button>
+        </div>
+    </div>
+
+    <!-- Members panel -->
+    <div class="tg-members-panel" id="membersPanel">
+        <div class="tg-members-header">
+            <span>Students ({len(classmates)})</span>
+            <button onclick="toggleMembers()" style="background:none;border:none;color:#5a8ebd;cursor:pointer;font-size:16px;">✕</button>
+        </div>
+        <div class="tg-members-list">{members_html}</div>
+    </div>
+</div>
+
+<script>
+const TEACHER_ID = {teacher_id};
+let lastId = {last_id};
+let pollTimer;
+let membersOpen = false;
+
+function toggleMembers() {{
+    membersOpen = !membersOpen;
+    const panel = document.getElementById('membersPanel');
+    panel.classList.toggle('open', membersOpen);
+}}
+
+function toggleEmoji() {{
+    document.getElementById('emojiPanel').classList.toggle('open');
+}}
+
+function insertEmoji(e) {{
+    const inp = document.getElementById('msgInput');
+    const pos = inp.selectionStart;
+    inp.value = inp.value.slice(0, pos) + e + inp.value.slice(inp.selectionEnd);
+    inp.selectionStart = inp.selectionEnd = pos + e.length;
+    inp.focus();
+    autoResize(inp);
+}}
+
+function autoResize(el) {{
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}}
+
+function renderMsg(m) {{
+    const ts = m.ts_display || '';
+    const txt = m.comment.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const isMe = m.poster_type === 'teacher' && m.teacher_id_fk === TEACHER_ID;
+
+    if (isMe) {{
+        return `<div class="tg-msg-row tg-mine" id="msg-${{m.id}}">
+            <div class="tg-bubble tg-bubble-mine">
+                <div class="tg-bubble-text">${{txt}}</div>
+                <div class="tg-bubble-ts">${{ts}} ✓✓</div>
+            </div></div>`;
+    }} else {{
+        const COLORS = ["#5b9bd9","#e8699a","#a876d8","#f4a623","#52c97f","#4db8d4","#e8645b","#7986cb"];
+        let s = 0; for(let c of m.student_name) s += c.charCodeAt(0);
+        const nc = COLORS[s % COLORS.length];
+        const avStyle = m.student_image
+            ? `<img src="${{m.student_image}}" style="width:34px;height:34px;border-radius:50%;object-fit:cover;">`
+            : `<div class="tg-letter-av" style="width:34px;height:34px;background:${{nc}};">${{m.student_name[0].toUpperCase()}}</div>`;
+        return `<div class="tg-msg-row tg-theirs" id="msg-${{m.id}}">
+            <div class="tg-av-wrap">${{avStyle}}</div>
+            <div>
+                <div class="tg-sender-name" style="color:${{nc}};">${{m.student_name}}</div>
+                <div class="tg-bubble tg-bubble-theirs">
+                    <div class="tg-bubble-text">${{txt}}</div>
+                    <div class="tg-bubble-ts">${{ts}}</div>
+                </div>
+            </div></div>`;
+    }}
+}}
+
+async function sendMessage() {{
+    const input = document.getElementById('msgInput');
+    const btn = document.getElementById('sendBtn');
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    autoResize(input);
+    btn.disabled = true;
+    document.getElementById('emojiPanel').classList.remove('open');
+    try {{
+        const res = await fetch('/teacher/class/{class_id}/comment', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{comment: text}})
+        }});
+        const data = await res.json();
+        if (!data.ok) {{ input.value = text; }}
+        else {{ pollMessages(); }}
+    }} catch(e) {{ input.value = text; }}
+    finally {{ btn.disabled = false; input.focus(); }}
+}}
+
+async function pollMessages() {{
+    try {{
+        const res = await fetch('/teacher/class/{class_id}/messages?after=' + lastId);
+        const data = await res.json();
+        if (!data.messages || !data.messages.length) return;
+        const bg = document.getElementById('chatBg');
+        const end = document.getElementById('messagesEnd');
+        data.messages.forEach(m => {{
+            if (document.getElementById('msg-' + m.id)) return;
+            const div = document.createElement('div');
+            div.innerHTML = renderMsg(m);
+            bg.insertBefore(div.firstElementChild, end);
+            lastId = Math.max(lastId, m.id);
+        }});
+        scrollToBottom();
+    }} catch(e) {{}}
+}}
+
+function scrollToBottom() {{
+    const bg = document.getElementById('chatBg');
+    bg.scrollTop = bg.scrollHeight;
+}}
+
+scrollToBottom();
+pollMessages();
+pollTimer = setInterval(pollMessages, 3000);
+document.addEventListener('click', e => {{
+    const panel = document.getElementById('membersPanel');
+    const toggle = document.querySelector('.tg-members-toggle');
+    if (membersOpen && !panel.contains(e.target) && e.target !== toggle) {{
+        membersOpen = false;
+        panel.classList.remove('open');
+    }}
+}});
+window.addEventListener('beforeunload', () => clearInterval(pollTimer));
+</script>
+</body></html>"""
+    return html
+
+
+@app.route("/teacher/class/<int:class_id>/messages")
+def teacher_class_messages(class_id):
+    """Teacher polling endpoint — returns new messages after a given id."""
+    protect = teacher_required()
+    if protect:
+        return jsonify({"messages": []})
+
+    teacher_id = get_logged_teacher_id()
+    school_id = get_current_school_id()
+
+    class_row = get_class_by_id(class_id)
+    if not class_row or class_row["teacher_id"] != teacher_id:
+        return jsonify({"messages": []})
+
+    after = int(request.args.get("after", 0))
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk
+        FROM class_comments
+        WHERE class_id=%s AND school_id=%s AND id>%s
+        ORDER BY created_at ASC LIMIT 30
+    """, (class_id, school_id, after))
+    rows = cur.fetchall()
+    conn.close()
+
+    from datetime import date as _date
+    result = []
+    for r in rows:
+        ts = r["created_at"]
+        if hasattr(ts, "strftime"):
+            ts_display = ts.strftime("%I:%M %p") if ts.date() == _date.today() else ts.strftime("%b %d, %I:%M %p")
+        else:
+            ts_display = str(ts)[:16]
+        result.append({
+            "id": r["id"],
+            "student_db_id": r["student_db_id"],
+            "student_name": r["student_name"],
+            "student_image": supabase_public_url(r["student_image"] or ""),
+            "comment": r["comment"],
+            "ts_display": ts_display,
+            "poster_type": r.get("poster_type") or "student",
+            "teacher_id_fk": r.get("teacher_id_fk"),
+        })
+    return jsonify({"messages": result})
+
+
+@app.route("/teacher/class/<int:class_id>/comment", methods=["POST"])
+def teacher_post_comment(class_id):
+    protect = teacher_required()
+    if protect:
+        return ajax_err("Not logged in.")
+
+    teacher_id = get_logged_teacher_id()
+    school_id = get_current_school_id()
+
+    class_row = get_class_by_id(class_id)
+    if not class_row or class_row["teacher_id"] != teacher_id:
+        return ajax_err("Not authorized for this class.")
+
+    data = request.get_json(silent=True) or {}
+    comment = (data.get("comment") or "").strip()
+    if not comment:
+        return ajax_err("Comment cannot be empty.")
+    if len(comment) > 500:
+        return ajax_err("Comment too long (max 500 characters).")
+
+    teacher_name = session.get("teacher_name", "Teacher")
+    teacher_photo = session.get("teacher_photo", "")
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type, teacher_id_fk)
+        VALUES (%s, %s, %s, %s, %s, %s, 'teacher', %s)
+    """, (school_id, class_id, 0, teacher_name, teacher_photo, comment, teacher_id))
+    conn.commit()
+    conn.close()
+    return ajax_ok("Comment posted!")
+
+
+@app.route("/teacher/class/<int:class_id>/student-profile/<int:student_db_id>")
+def teacher_view_student_profile(class_id, student_db_id):
+    """Teacher can tap on any student in their class to see their profile."""
+    protect = teacher_required()
+    if protect:
+        return protect
+
+    teacher_id = get_logged_teacher_id()
+    school_id = get_current_school_id()
+
+    class_row = get_class_by_id(class_id)
+    if not class_row or class_row["teacher_id"] != teacher_id:
+        return "<script>alert('Access denied.');window.location.href='/teacher';</script>"
+
+    student = get_student_row_by_db_id(student_db_id)
+    if not student or student.get("school_id", school_id) != school_id:
+        return "Student not found", 404
+
+    # Attendance stats for this student in this class
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT status, date, time FROM attendance WHERE student_id=%s AND class_id=%s ORDER BY date DESC LIMIT 20",
+                (student["student_id"], class_id))
+    recent_att = cur.fetchall()
+    conn.close()
+
+    present_count, total_count = get_attendance_count_for_student_class(student["student_id"], class_id)
+    pct = round((present_count / total_count * 100), 1) if total_count else 0
+
+    av_html = _tg_avatar(student["image_file"], student["full_name"], 90)
+
+    att_rows = "".join(f"""
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 14px;border-bottom:1px solid #0f1923;">
+        <span style="font-size:13px;color:#c8d8e8;">{a['date']}</span>
+        <span style="font-size:11px;color:#7a9bbf;">{format_time_12hr(str(a['time']))}</span>
+        <span style="font-size:11px;font-weight:700;padding:2px 10px;border-radius:8px;{'background:#1a3a2a;color:#52c97f;' if a['status']=='Present' else 'background:#3a1a1a;color:#f87171;'}">{a['status']}</span>
+    </div>""" for a in recent_att) or '<p style="text-align:center;color:#3a4a5a;padding:16px;font-size:13px;">No records yet</p>'
+
+    color_bar = "#52c97f" if pct >= 75 else ("#f4a623" if pct >= 50 else "#f87171")
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{student['full_name']}</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;color:#e4e7eb;min-height:100vh;}}
+.tg-letter-av{{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:32px;flex-shrink:0;}}
+</style>
+</head>
+<body>
+<div style="max-width:480px;margin:0 auto;padding:20px 16px;">
+    <a href="/teacher/class/{class_id}/feed" style="display:inline-flex;align-items:center;gap:6px;color:#5b9bd9;font-size:14px;font-weight:600;text-decoration:none;margin-bottom:20px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+        Back to Chat
+    </a>
+
+    <!-- Profile card -->
+    <div style="background:#17212b;border-radius:20px;overflow:hidden;margin-bottom:16px;">
+        <div style="height:80px;background:linear-gradient(135deg,#1a3a5c,#2b1a5c);"></div>
+        <div style="display:flex;justify-content:center;margin-top:-45px;margin-bottom:12px;">
+            <div style="border:4px solid #17212b;border-radius:50%;">{av_html}</div>
+        </div>
+        <div style="text-align:center;padding:0 20px 24px;">
+            <h2 style="font-size:20px;font-weight:700;color:#e4e7eb;">{student['full_name']}</h2>
+            <div style="font-size:13px;color:#5a8ebd;margin-top:8px;font-family:monospace;">ID: {student['student_id']}</div>
+            <div style="font-size:12px;color:#3a4a5a;margin-top:4px;">Registered: {str(student.get('registered_at',''))[:10]}</div>
+        </div>
+    </div>
+
+    <!-- Attendance summary -->
+    <div style="background:#17212b;border-radius:16px;overflow:hidden;margin-bottom:16px;">
+        <div style="padding:14px 16px;border-bottom:1px solid #0f1923;font-size:12px;font-weight:700;color:#5a8ebd;text-transform:uppercase;letter-spacing:0.06em;">
+            Attendance in {class_row['class_name']}
+        </div>
+        <div style="padding:16px;display:flex;align-items:center;gap:16px;">
+            <div style="flex:1;">
+                <div style="font-size:28px;font-weight:800;color:{color_bar};">{pct}%</div>
+                <div style="font-size:12px;color:#5a8ebd;margin-top:2px;">{present_count} present / {total_count} total</div>
+                <div style="height:6px;background:#1e3048;border-radius:4px;margin-top:10px;overflow:hidden;">
+                    <div style="height:100%;width:{pct}%;background:{color_bar};border-radius:4px;transition:width 0.5s;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent attendance -->
+    <div style="background:#17212b;border-radius:16px;overflow:hidden;">
+        <div style="padding:14px 16px;border-bottom:1px solid #0f1923;font-size:12px;font-weight:700;color:#5a8ebd;text-transform:uppercase;letter-spacing:0.06em;">
+            Recent Records
+        </div>
+        {att_rows}
+    </div>
+</div>
+</body>
+</html>"""
+    return html
 
 
 @app.route("/student/classmate/<int:classmate_db_id>")
@@ -6357,6 +6918,8 @@ def student_view_classmate(classmate_db_id):
 *{{box-sizing:border-box;margin:0;padding:0;}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;color:#e4e7eb;min-height:100vh;}}
 .tg-letter-av{{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:32px;flex-shrink:0;}}
+.class-link{{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#1a2635;border-radius:12px;text-decoration:none;transition:background 0.15s;}}
+.class-link:hover{{background:#1e3048;}}
 </style>
 </head>
 <body>
@@ -6369,9 +6932,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 
     <!-- Profile card -->
     <div style="background:#17212b;border-radius:20px;overflow:hidden;margin-bottom:16px;">
-        <!-- Cover -->
         <div style="height:80px;background:linear-gradient(135deg,#1a3a5c,#2b1a5c);"></div>
-        <!-- Avatar -->
         <div style="display:flex;justify-content:center;margin-top:-45px;margin-bottom:12px;">
             <div style="border:4px solid #17212b;border-radius:50%;">{av_html}</div>
         </div>
@@ -6388,7 +6949,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
     </div>
 
     <!-- Shared classes -->
-    <div style="background:#17212b;border-radius:16px;overflow:hidden;">
+    <div style="background:#17212b;border-radius:16px;overflow:hidden;margin-bottom:16px;">
         <div style="padding:14px 16px;border-bottom:1px solid #0f1923;font-size:12px;font-weight:700;color:#5a8ebd;text-transform:uppercase;letter-spacing:0.06em;">
             Shared Classes ({len(shared_classes)})
         </div>
