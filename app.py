@@ -3810,6 +3810,7 @@ const statusDiv = document.getElementById('status');
 let currentFacingMode = "user";
 let stream = null;
 let intervalId = null;
+let ambiguousActive = false;
 
 async function startCamera() {{
     try {{
@@ -3859,6 +3860,7 @@ function startScanningLoops() {{
     if(intervalId) clearInterval(intervalId);
     intervalId = setInterval(async () => {{
         if(video.paused || video.ended) return;
+        if(ambiguousActive) return;  // pause scanning while teacher resolves a twin match
         try {{
             const canvas = document.createElement('canvas');
             canvas.width = video.videoWidth || 640;
@@ -3873,7 +3875,9 @@ function startScanningLoops() {{
                 body: JSON.stringify({{ image: image }})
             }});
             const data = await res.json();
-            if (data.name && data.name !== "Unknown") {{
+            if (data.ambiguous && Array.isArray(data.candidates) && data.candidates.length) {{
+                showAmbiguousPicker(data.candidates, data.message);
+            }} else if (data.name && data.name !== "Unknown") {{
                 resultDiv.innerText = "🎉 " + data.name;
                 statusDiv.innerText = data.message || "Match successfully logged.";
             }} else {{
@@ -3883,6 +3887,52 @@ function startScanningLoops() {{
             console.log("Parsing framework error exception captured context loops", err);
         }}
     }}, 2000);
+}}
+
+function showAmbiguousPicker(candidates, message) {{
+    ambiguousActive = true;
+    statusDiv.innerText = message || "Multiple close matches found.";
+    resultDiv.innerText = "⏸ Paused — confirm identity below";
+    const picker = document.getElementById('ambiguousPicker');
+    const list = document.getElementById('ambiguousCandidates');
+    list.innerHTML = '';
+    candidates.forEach(c => {{
+        const enrolledNote = c.enrolled ? '' : ' <span class="text-rose-500">(not enrolled in this class)</span>';
+        const btn = document.createElement('button');
+        btn.className = "w-full text-left bg-white border border-amber-300 hover:border-amber-500 hover:bg-amber-100 rounded-xl px-4 py-2.5 font-semibold text-slate-800 text-sm transition";
+        btn.innerHTML = c.full_name + ' <span class="text-slate-400 font-mono text-xs">(' + c.student_id + ')</span>' + enrolledNote;
+        btn.onclick = () => confirmAmbiguous(c.db_id);
+        list.appendChild(btn);
+    }});
+    picker.classList.remove('hidden');
+}}
+
+async function confirmAmbiguous(dbId) {{
+    statusDiv.innerText = "Confirming...";
+    try {{
+        const res = await fetch('/teacher/class/{class_id}/scan-confirm', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{ db_id: dbId }})
+        }});
+        const data = await res.json();
+        if (data.success) {{
+            resultDiv.innerText = "🎉 " + data.name;
+            statusDiv.innerText = data.message;
+        }} else {{
+            resultDiv.innerText = "Scanning framework loops state...";
+            statusDiv.innerText = data.message || "Could not confirm identity.";
+        }}
+    }} catch(err) {{
+        statusDiv.innerText = "Error confirming identity.";
+    }}
+    cancelAmbiguous();
+}}
+
+function cancelAmbiguous() {{
+    ambiguousActive = false;
+    document.getElementById('ambiguousPicker').classList.add('hidden');
+    resultDiv.innerText = "Scanning framework loops state...";
 }}
 
 window.addEventListener('beforeunload', () => {{
@@ -3927,39 +3977,127 @@ def teacher_scan_frame_matrix_lookup(class_id):
             return jsonify({"name": "Unknown"})
 
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        face_locations = face_recognition.face_locations(rgb_frame)
-        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
-        if len(face_encodings) == 0:
+        # NOTE: this previously called the `face_recognition` library, which is
+        # never imported in this app (it depends on dlib, a heavy native build
+        # that's unreliable on most lightweight cloud hosts). That made this
+        # route silently fail and always return "Unknown". It now uses the same
+        # MediaPipe landmark-embedding engine that already powers student
+        # self-check-in, so it actually works.
+        face_embedding = _get_face_embedding(rgb_frame)
+
+        if face_embedding is None:
+            return jsonify({"name": "Unknown", "message": "No face detected — center your face in frame."})
+
+        if len(known_encodings) == 0:
+            return jsonify({"name": "Unknown", "message": "No registered faces found."})
+
+        best_match_index = None
+        best_dist = float("inf")
+        second_match_index = None
+        second_dist = float("inf")
+        for i, known_emb in enumerate(known_encodings):
+            matched, dist = _compare_embeddings(known_emb, face_embedding, tolerance=0.6)
+            if matched and dist < best_dist:
+                second_match_index = best_match_index
+                second_dist = best_dist
+                best_match_index = i
+                best_dist = dist
+            elif matched and dist < second_dist:
+                second_match_index = i
+                second_dist = dist
+
+        if best_match_index is None:
             return jsonify({"name": "Unknown"})
 
-        for face_encoding in face_encodings:
-            if len(known_encodings) == 0:
-                break
-            matches = face_recognition.compare_faces(known_encodings, face_encoding, tolerance=0.5)
-            face_distances = face_recognition.face_distance(known_encodings, face_encoding)
+        # ── TWIN / LOOKALIKE AMBIGUITY CHECK ──
+        # If the runner-up match is nearly as close as the best match (and it's a
+        # genuinely different student), the face alone can't reliably tell them
+        # apart — e.g. twins or siblings. Rather than silently logging the closest
+        # guess, surface both names so the teacher can pick the right one.
+        AMBIGUITY_MARGIN = 0.12
+        if (second_match_index is not None
+                and known_students[second_match_index]["db_id"] != known_students[best_match_index]["db_id"]
+                and (second_dist - best_dist) < AMBIGUITY_MARGIN):
 
-            if len(face_distances) > 0:
-                best_match_index = np.argmin(face_distances)
-                if matches[best_match_index]:
-                    student = known_students[best_match_index]
-                    if not student_belongs_to_class(student["db_id"], class_id):
-                        return jsonify({
-                            "name": f"{student['student_id']} - {student['full_name']}",
-                            "message": "Recognized, but student is NOT enrolled in this specific roster mapping template"
-                        })
+            candidates = []
+            seen_ids = set()
+            for idx in (best_match_index, second_match_index):
+                cand = known_students[idx]
+                if cand["db_id"] in seen_ids:
+                    continue
+                seen_ids.add(cand["db_id"])
+                candidates.append({
+                    "db_id": cand["db_id"],
+                    "student_id": cand["student_id"],
+                    "full_name": cand["full_name"],
+                    "enrolled": student_belongs_to_class(cand["db_id"], class_id)
+                })
 
-                    student_row = get_student_row_by_db_id(student["db_id"])
-                    mark_attendance(student_row, class_row, "Present")
-                    return jsonify({
-                        "name": f"{student['student_id']} - {student['full_name']}",
-                        "message": f"Attendance verified & logged successfully into database for {class_row['class_name']}"
-                    })
+            return jsonify({
+                "name": "Unknown",
+                "ambiguous": True,
+                "message": "This face closely matches more than one student (e.g. twins/siblings). Select the correct name.",
+                "candidates": candidates
+            })
 
-        return jsonify({"name": "Unknown"})
+        student = known_students[best_match_index]
+        if not student_belongs_to_class(student["db_id"], class_id):
+            return jsonify({
+                "name": f"{student['student_id']} - {student['full_name']}",
+                "message": "Recognized, but student is NOT enrolled in this specific roster mapping template"
+            })
+
+        student_row = get_student_row_by_db_id(student["db_id"])
+        mark_attendance(student_row, class_row, "Present")
+        return jsonify({
+            "name": f"{student['student_id']} - {student['full_name']}",
+            "message": f"Attendance verified & logged successfully into database for {class_row['class_name']}"
+        })
     except Exception as e:
         print("SCAN BATCH ENCODING VECTOR LOOKUP EXCEPTION METRIC ERROR:", e)
         return jsonify({"name": "Unknown", "message": "Lookup processing matrix iteration break exception standard error"})
+
+
+@app.route("/teacher/class/<int:class_id>/scan-confirm", methods=["POST"])
+def teacher_scan_confirm_identity(class_id):
+    """
+    Called when the teacher resolves an ambiguous (twin/lookalike) match by
+    picking the correct student name from the candidate list shown for
+    scan-frame's "ambiguous" response. Marks that specific student Present.
+    """
+    try:
+        protect = teacher_required()
+        if protect:
+            return jsonify({"success": False, "message": "Authentication token missing"})
+
+        class_row = get_class_by_id(class_id)
+        if not class_row or class_row["teacher_id"] != get_logged_teacher_id():
+            return jsonify({"success": False, "message": "Context scope mapping target mismatch access denied"})
+
+        data = request.get_json(silent=True) or {}
+        db_id = data.get("db_id")
+        try:
+            db_id = int(db_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "message": "Invalid student selection."})
+
+        if not student_belongs_to_class(db_id, class_id):
+            return jsonify({"success": False, "message": "Selected student is not enrolled in this class."})
+
+        student_row = get_student_row_by_db_id(db_id)
+        if not student_row:
+            return jsonify({"success": False, "message": "Student not found."})
+
+        mark_attendance(student_row, class_row, "Present")
+        return jsonify({
+            "success": True,
+            "name": f"{student_row['student_id']} - {student_row['full_name']}",
+            "message": f"Attendance verified & logged successfully into database for {class_row['class_name']}"
+        })
+    except Exception as e:
+        print("teacher_scan_confirm_identity error:", e)
+        return jsonify({"success": False, "message": "Internal error confirming identity."})
 
 
 # =========================================================
@@ -4053,7 +4191,7 @@ def student_manual_checkin(class_id):
             <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
                 ⚠️ At least one verification must pass: <strong>GPS location</strong>, <strong>session code</strong>, or <strong>school WiFi</strong>.
             </div>
-            <form method="POST" class="space-y-4 bg-white border rounded-xl p-5 shadow-sm">
+            <form id="checkinForm" method="POST" class="space-y-4 bg-white border rounded-xl p-5 shadow-sm">
                 <input type="hidden" name="latitude" id="lat">
                 <input type="hidden" name="longitude" id="lng">
 
@@ -4066,11 +4204,13 @@ def student_manual_checkin(class_id):
 
                 <div id="gpsStatus" class="text-xs text-slate-400 text-center">📡 Detecting your location...</div>
 
-                <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl text-base transition">
+                <button type="submit" id="checkinSubmitBtn" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl text-base transition">
                     ✅ Submit Attendance
                 </button>
                 <a href="/student" class="block text-center text-sm text-slate-400 hover:underline mt-1">Cancel</a>
             </form>
+
+            <div id="checkinResult" class="hidden rounded-xl p-5 border-2 text-center space-y-1"></div>
         </div>
         <script>
         if (navigator.geolocation) {{
@@ -4086,6 +4226,49 @@ def student_manual_checkin(class_id):
         }} else {{
             document.getElementById('gpsStatus').innerText = '⚠️ GPS not supported on this device.';
         }}
+
+        document.getElementById('checkinForm').addEventListener('submit', function(e) {{
+            e.preventDefault();
+            const form = e.target;
+            const btn = document.getElementById('checkinSubmitBtn');
+            const resultBox = document.getElementById('checkinResult');
+            btn.disabled = true;
+            btn.textContent = 'Submitting…';
+
+            fetch(form.action || window.location.href, {{
+                method: 'POST',
+                body: new FormData(form),
+                headers: {{ 'X-Requested-With': 'XMLHttpRequest' }}
+            }})
+            .then(r => r.json())
+            .then(data => {{
+                form.classList.add('hidden');
+                resultBox.classList.remove('hidden');
+                if (data.ok) {{
+                    const isInfo = data.already_marked;
+                    resultBox.className = 'rounded-xl p-5 border-2 text-center space-y-1 ' +
+                        (isInfo ? 'bg-blue-50 border-blue-200' : 'bg-emerald-50 border-emerald-200');
+                    resultBox.innerHTML =
+                        '<div class="text-3xl">' + (isInfo ? 'ℹ️' : '✅') + '</div>' +
+                        '<div class="font-bold ' + (isInfo ? 'text-blue-800' : 'text-emerald-800') + '">' + data.message + '</div>' +
+                        '<div class="text-xs text-slate-400 mt-2">Redirecting to your dashboard…</div>';
+                }} else {{
+                    resultBox.className = 'rounded-xl p-5 border-2 text-center space-y-1 bg-rose-50 border-rose-200';
+                    resultBox.innerHTML =
+                        '<div class="text-3xl">❌</div>' +
+                        '<div class="font-bold text-rose-800">' + (data.message || 'Could not verify attendance.') + '</div>' +
+                        '<div class="text-xs text-slate-400 mt-2">Redirecting to your dashboard…</div>';
+                }}
+                setTimeout(() => {{ window.location.href = '/student'; }}, 2200);
+            }})
+            .catch(() => {{
+                btn.disabled = false;
+                btn.textContent = '✅ Submit Attendance';
+                resultBox.classList.remove('hidden');
+                resultBox.className = 'rounded-xl p-5 border-2 text-center space-y-1 bg-rose-50 border-rose-200';
+                resultBox.innerHTML = '<div class="text-3xl">⚠️</div><div class="font-bold text-rose-800">Network error — please try again.</div>';
+            }});
+        }});
         </script>
         """
         return page_wrapper(f"Mark Attendance — {class_row['class_name']}", body, is_student=True, student_context=student_row)
@@ -4107,13 +4290,21 @@ def student_manual_checkin(class_id):
         dist_str = f' ({int(dist_m)}m from teacher)' if dist_m is not None else ''
         result = mark_attendance(student_row, class_row, 'Present', student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
         if result.get('already_marked'):
-            return "<script>alert('\u2139\ufe0f Attendance already recorded as Present today. No changes made.'); window.location.href='/student';</script>"
-        return f"<script>alert('✅ Attendance marked Present!\\n({reason}){dist_str}'); window.location.href='/student';</script>"
+            msg = "ℹ️ Attendance already recorded as Present today. No changes made."
+            if is_ajax(): return jsonify({"ok": True, "already_marked": True, "message": msg})
+            return f"<script>alert('{msg}'); window.location.href='/student';</script>"
+        msg = f"Attendance marked Present! ({reason}){dist_str}"
+        if is_ajax(): return jsonify({"ok": True, "already_marked": False, "message": msg})
+        return f"<script>alert('✅ {msg}'); window.location.href='/student';</script>"
     else:
         result = mark_attendance(student_row, class_row, 'Absent', student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
         if result.get('already_marked'):
-            return "<script>alert('\u2139\ufe0f Attendance already recorded as Present today. No changes made.'); window.location.href='/student';</script>"
-        return f"<script>alert('❌ Marked Absent — none of the verification checks passed.\\nReasons: {reason}'); window.location.href='/student';</script>"
+            msg = "ℹ️ Attendance already recorded as Present today. No changes made."
+            if is_ajax(): return jsonify({"ok": True, "already_marked": True, "message": msg})
+            return f"<script>alert('{msg}'); window.location.href='/student';</script>"
+        msg = f"Marked Absent — none of the verification checks passed. Reasons: {reason}"
+        if is_ajax(): return jsonify({"ok": False, "message": msg})
+        return f"<script>alert('❌ {msg}'); window.location.href='/student';</script>"
 
 
 
@@ -4609,6 +4800,12 @@ def student_scan_portal():
         
         <div id="result" class="text-2xl font-bold text-emerald-600 mt-4 tracking-tight animate-pulse">Initializing face capture...</div>
         <div id="status" class="text-xs font-semibold text-slate-400">Please allow camera access</div>
+
+        <div id="ambiguousPicker" class="hidden max-w-md mx-auto bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 space-y-3 text-left">
+            <div class="text-sm font-bold text-amber-800">⚠️ This face matches more than one student. Who is this?</div>
+            <div id="ambiguousCandidates" class="space-y-2"></div>
+            <button onclick="cancelAmbiguous()" class="text-xs text-slate-400 hover:text-slate-600 font-semibold">Cancel — keep scanning</button>
+        </div>
         
         <div class="flex justify-center gap-2 flex-wrap pt-2">
             <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl" onclick="switchCamera()">Switch Camera</button>
