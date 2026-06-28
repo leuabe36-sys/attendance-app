@@ -161,8 +161,15 @@ known_students = []
 # DATABASE
 # =========================================================
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
-    return conn
+    last_err = None
+    for attempt in range(2):
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor, connect_timeout=10)
+            return conn
+        except Exception as e:
+            last_err = e
+            print(f"get_db connection attempt {attempt + 1} failed:", repr(e), flush=True)
+    raise last_err
 
 
 def init_db():
@@ -4566,18 +4573,31 @@ def teacher_start_session(class_id):
     code = secrets.token_hex(2).upper()  # e.g. "A4F9"
     expires_at = datetime.now() + timedelta(minutes=duration_minutes)
     now = datetime.now()
-    conn = get_db()
-    cur = conn.cursor()
-    # Expire any existing active sessions for this class
-    cur.execute("UPDATE class_sessions SET active=FALSE WHERE class_id=%s AND school_id=%s", (class_id, school_id))
-    cur.execute("""
-        INSERT INTO class_sessions
-            (school_id, class_id, code, expires_at, active,
-             teacher_lat, teacher_lng, teacher_ip, rotate_seconds, last_rotated)
-        VALUES (%s, %s, %s, %s, TRUE, %s, %s, %s, %s, %s)
-    """, (school_id, class_id, code, expires_at, teacher_lat, teacher_lng, teacher_ip, rotate_seconds, now))
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        # Expire any existing active sessions for this class
+        cur.execute("UPDATE class_sessions SET active=FALSE WHERE class_id=%s AND school_id=%s", (class_id, school_id))
+        cur.execute("""
+            INSERT INTO class_sessions
+                (school_id, class_id, code, expires_at, active,
+                 teacher_lat, teacher_lng, teacher_ip, rotate_seconds, last_rotated)
+            VALUES (%s, %s, %s, %s, TRUE, %s, %s, %s, %s, %s)
+        """, (school_id, class_id, code, expires_at, teacher_lat, teacher_lng, teacher_ip, rotate_seconds, now))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        try:
+            conn.rollback()
+            conn.close()
+        except Exception:
+            pass
+        err_msg = str(e).split("\n")[0].replace("'", "")
+        print("teacher_start_session DB error:", repr(e), flush=True)
+        if is_ajax():
+            return jsonify({"ok": False, "message": f"Could not start session: {err_msg}"}), 500
+        return f"<script>alert('Could not start session: {err_msg}');window.location.href='/teacher/class/{class_id}';</script>"
+
     if is_ajax():
         return jsonify({"ok": True, "code": code, "duration_minutes": duration_minutes,
                         "rotate_seconds": rotate_seconds,
@@ -4934,7 +4954,16 @@ async function startSession(e) {{
             headers: {{ 'X-Requested-With': 'XMLHttpRequest' }},
             body: fd
         }});
-        const data = await res.json();
+        let data;
+        try {{
+            data = await res.json();
+        }} catch (parseErr) {{
+            const text = await res.text().catch(() => '');
+            console.error('Non-JSON response from start-session:', res.status, text.slice(0, 300));
+            alert('Server error (status ' + res.status + '). Check server logs for details.');
+            btn.disabled = false; btn.innerText = '▶ Start Attendance Timer';
+            return;
+        }}
         if (data.ok) {{
             currentCode = data.code;
             currentRotateSecs = data.rotate_seconds || 60;
@@ -4952,11 +4981,13 @@ async function startSession(e) {{
             startQRRotation(currentRotateSecs);
             startLocRefresh();
         }} else {{
-            alert('Error starting session.');
+            alert(data.message || 'Error starting session.');
             btn.disabled = false; btn.innerText = '▶ Start Attendance Timer';
         }}
     }} catch(e2) {{
-        alert('Network error.'); btn.disabled = false; btn.innerText = '▶ Start Attendance Timer';
+        console.error('startSession network error:', e2);
+        alert('Network error: ' + (e2 && e2.message ? e2.message : 'request failed') + '. Check your internet connection and try again.');
+        btn.disabled = false; btn.innerText = '▶ Start Attendance Timer';
     }}
 }}
 
