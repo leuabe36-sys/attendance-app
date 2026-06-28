@@ -4194,6 +4194,37 @@ def student_checkin_api():
                         "class_name": class_row["class_name"]})
 
 
+@app.route("/student/attendance-status")
+def student_attendance_status():
+    """
+    Lightweight JSON poll used by the student dashboard to know which classes
+    the student has already marked Present for today — so an open "time left
+    to scan" countdown can disappear live, without a full page reload, the
+    moment attendance is recorded (e.g. from another tab/device).
+    """
+    protect = student_required()
+    if protect:
+        return jsonify({"ok": False, "error": "Not logged in.", "marked_class_ids": []})
+
+    student_id = session.get("student_id")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT class_id FROM attendance
+            WHERE student_id=%s AND date=%s AND status='Present'
+        """, (student_id, today_str))
+        rows = cur.fetchall()
+        conn.close()
+        marked_class_ids = [r["class_id"] for r in rows]
+    except Exception as e:
+        print("student_attendance_status error:", e)
+        return jsonify({"ok": False, "error": str(e), "marked_class_ids": []})
+
+    return jsonify({"ok": True, "marked_class_ids": marked_class_ids})
+
+
 @app.route("/student/qr-scan")
 def student_qr_scan_portal():
     """
@@ -4830,10 +4861,21 @@ def student_dashboard_portal():
     history = get_attendance_for_student(student_id)
     school_id = get_current_school_id()
 
+    # Build a quick lookup of classes the student has already marked Present for *today*,
+    # so the "time left to scan" countdown disappears once they've checked in.
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    marked_present_today_class_ids = {
+        h["class_id"] for h in history
+        if h["date"] == today_str and h["status"] == "Present"
+    }
+
     # Check which of the student's classes currently have an open attendance window,
-    # so we can show a live "time left to scan" countdown for each.
+    # so we can show a live "time left to scan" countdown for each — but only for
+    # classes this student hasn't already checked into today.
     open_sessions = []
     for c in classes:
+        if c["id"] in marked_present_today_class_ids:
+            continue
         active_sess = get_active_session_for_class(c["id"], school_id)
         if active_sess and active_sess.get("expires_at"):
             open_sessions.append({
@@ -4848,7 +4890,7 @@ def student_dashboard_portal():
         rows_html = ""
         for s in open_sessions:
             rows_html += f"""
-                <div class="flex items-center justify-between gap-3 bg-white/70 rounded-xl px-4 py-2.5">
+                <div class="flex items-center justify-between gap-3 bg-white/70 rounded-xl px-4 py-2.5" data-class-id="{s['class_id']}" data-role="session-row">
                     <div class="flex items-center gap-2 min-w-0">
                         <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
                             <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -4866,11 +4908,13 @@ def student_dashboard_portal():
                 </div>
             """
         open_sessions_html = f"""
-        <div class="lg:col-span-3 bg-gradient-to-r from-emerald-50 to-teal-50 border-2 border-emerald-300 rounded-2xl p-4 space-y-2 shadow-sm">
+        <div class="lg:col-span-3 bg-gradient-to-r from-emerald-50 to-teal-50 border-2 border-emerald-300 rounded-2xl p-4 space-y-2 shadow-sm" id="openSessionsBanner">
             <div class="flex items-center gap-2 px-1">
                 <span class="text-emerald-700 font-extrabold text-sm uppercase tracking-wide">⏳ Attendance Open — Time Left to Scan</span>
             </div>
-            {rows_html}
+            <div id="openSessionsRows" class="space-y-2">
+                {rows_html}
+            </div>
         </div>
         """
 
@@ -4984,6 +5028,16 @@ def student_dashboard_portal():
         body += """
         <script>
         (function() {
+            function removeRow(classId) {
+                var row = document.querySelector('[data-role="session-row"][data-class-id="' + classId + '"]');
+                if (row) row.remove();
+                var rows = document.getElementById('openSessionsRows');
+                if (rows && rows.children.length === 0) {
+                    var banner = document.getElementById('openSessionsBanner');
+                    if (banner) banner.remove();
+                }
+            }
+
             function tick() {
                 document.querySelectorAll('[data-role="countdown"]').forEach(function(el) {
                     var expires = new Date(el.getAttribute('data-expires'));
@@ -4993,6 +5047,11 @@ def student_dashboard_portal():
                         el.innerText = "Closed";
                         el.classList.remove('text-emerald-700');
                         el.classList.add('text-rose-500');
+                        var row = el.closest('[data-role="session-row"]');
+                        if (row) {
+                            // Give the student a beat to see "Closed" before the row disappears
+                            setTimeout(function() { row.remove(); checkBannerEmpty(); }, 2000);
+                        }
                         return;
                     }
                     var totalSecs = Math.floor(diffMs / 1000);
@@ -5006,8 +5065,31 @@ def student_dashboard_portal():
                     }
                 });
             }
+
+            function checkBannerEmpty() {
+                var rows = document.getElementById('openSessionsRows');
+                if (rows && rows.children.length === 0) {
+                    var banner = document.getElementById('openSessionsBanner');
+                    if (banner) banner.remove();
+                }
+            }
+
+            // Poll the server for attendance just marked in another tab/device,
+            // and immediately drop the timer for that class — no reload needed.
+            function pollAttendanceStatus() {
+                fetch('/student/attendance-status')
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (!data || !data.ok || !Array.isArray(data.marked_class_ids)) return;
+                        data.marked_class_ids.forEach(function(cid) { removeRow(cid); });
+                    })
+                    .catch(function() { /* silent — non-critical background poll */ });
+            }
+
             tick();
             setInterval(tick, 1000);
+            pollAttendanceStatus();
+            setInterval(pollAttendanceStatus, 8000);
         })();
         </script>
         """
