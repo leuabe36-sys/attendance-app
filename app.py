@@ -4311,78 +4311,82 @@ def student_manual_checkin(class_id):
 @app.route("/student/checkin/api", methods=["POST"])
 def student_checkin_api():
     """JSON endpoint used by the in-app QR scanner — no page reload."""
-    protect = student_required()
-    if protect:
-        return jsonify({"ok": False, "error": "Not logged in."})
-
-    student_db_id = get_logged_student_db_id()
-    school_id = get_current_school_id()
-
-    data = request.get_json(silent=True) or {}
-    code = data.get("session_code", "").strip().upper()
-    lat_raw = data.get("latitude")
-    lng_raw = data.get("longitude")
-    gps_acc = data.get("gps_accuracy")
-
-    # Resolve class from session code
     try:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT class_id FROM class_sessions
-            WHERE code=%s AND school_id=%s AND active=TRUE AND expires_at > NOW()
-            ORDER BY id DESC LIMIT 1
-        """, (code, school_id))
-        row = cur.fetchone()
-        conn.close()
-    except Exception as e:
-        return jsonify({"ok": False, "error": "Database error: " + str(e)})
+        protect = student_required()
+        if protect:
+            return jsonify({"ok": False, "error": "Not logged in."})
 
-    if not row:
-        return jsonify({"ok": False, "error": "QR code has expired or is invalid. Ask your teacher to refresh it."})
+        student_db_id = get_logged_student_db_id()
+        school_id = get_current_school_id()
 
-    class_id = row["class_id"]
+        data = request.get_json(silent=True) or {}
+        code = data.get("session_code", "").strip().upper()
+        lat_raw = data.get("latitude")
+        lng_raw = data.get("longitude")
+        gps_acc = data.get("gps_accuracy")
 
-    if not student_belongs_to_class(student_db_id, class_id):
-        return jsonify({"ok": False, "error": "You are not enrolled in this class."})
+        # Resolve class from session code
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT class_id FROM class_sessions
+                WHERE code=%s AND school_id=%s AND active=TRUE AND expires_at > NOW()
+                ORDER BY id DESC LIMIT 1
+            """, (code, school_id))
+            row = cur.fetchone()
+            conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": "Database error: " + str(e)})
 
-    student_row = get_student_row_by_db_id(student_db_id)
-    class_row = get_class_by_id(class_id)
+        if not row:
+            return jsonify({"ok": False, "error": "QR code has expired or is invalid. Ask your teacher to refresh it."})
 
-    if not student_row or not class_row:
-        return jsonify({"ok": False, "error": "Student or class not found."})
+        class_id = row["class_id"]
 
-    try:
-        lat_f = float(lat_raw) if lat_raw is not None else None
-        lng_f = float(lng_raw) if lng_raw is not None else None
-        if gps_acc is not None and float(gps_acc) > 200:
+        if not student_belongs_to_class(student_db_id, class_id):
+            return jsonify({"ok": False, "error": "You are not enrolled in this class."})
+
+        student_row = get_student_row_by_db_id(student_db_id)
+        class_row = get_class_by_id(class_id)
+
+        if not student_row or not class_row:
+            return jsonify({"ok": False, "error": "Student or class not found."})
+
+        try:
+            lat_f = float(lat_raw) if lat_raw is not None else None
+            lng_f = float(lng_raw) if lng_raw is not None else None
+            if gps_acc is not None and float(gps_acc) > 200:
+                lat_f = lng_f = None
+        except:
             lat_f = lng_f = None
-    except:
-        lat_f = lng_f = None
 
-    passed, reason, dist_m = run_location_checks(lat_f, lng_f, code, class_id, school_id, request)
+        passed, reason, dist_m = run_location_checks(lat_f, lng_f, code, class_id, school_id, request)
 
-    if passed:
-        result = mark_attendance(student_row, class_row, "Present",
-                                 student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
-        if result.get("already_marked"):
-            return jsonify({"ok": True, "already_marked": True,
-                            "message": "Attendance already recorded as Present today. No changes made.",
+        if passed:
+            result = mark_attendance(student_row, class_row, "Present",
+                                     student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+            if result.get("already_marked"):
+                return jsonify({"ok": True, "already_marked": True,
+                                "message": "Attendance already recorded as Present today. No changes made.",
+                                "class_name": class_row["class_name"]})
+            dist_str = f" ({int(dist_m)}m from teacher)" if dist_m is not None else ""
+            return jsonify({"ok": True, "already_marked": False,
+                            "message": f"Marked Present! {reason}{dist_str}",
                             "class_name": class_row["class_name"]})
-        dist_str = f" ({int(dist_m)}m from teacher)" if dist_m is not None else ""
-        return jsonify({"ok": True, "already_marked": False,
-                        "message": f"Marked Present! {reason}{dist_str}",
-                        "class_name": class_row["class_name"]})
-    else:
-        result = mark_attendance(student_row, class_row, "Absent",
-                                 student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
-        if result.get("already_marked"):
-            return jsonify({"ok": True, "already_marked": True,
-                            "message": "Attendance already recorded as Present today. No changes made.",
+        else:
+            result = mark_attendance(student_row, class_row, "Absent",
+                                     student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+            if result.get("already_marked"):
+                return jsonify({"ok": True, "already_marked": True,
+                                "message": "Attendance already recorded as Present today. No changes made.",
+                                "class_name": class_row["class_name"]})
+            return jsonify({"ok": False, "absent": True,
+                            "message": f"Marked Absent — verification failed. {reason}",
                             "class_name": class_row["class_name"]})
-        return jsonify({"ok": False, "absent": True,
-                        "message": f"Marked Absent — verification failed. {reason}",
-                        "class_name": class_row["class_name"]})
+    except Exception as e:
+        print("student_checkin_api error:", e)
+        return jsonify({"ok": False, "error": "Something went wrong recording your attendance. Please try again."})
 
 
 @app.route("/student/attendance-status")
@@ -4719,18 +4723,24 @@ def student_qr_scan_portal():
                 gps_accuracy: _qrBestAcc < Infinity ? _qrBestAcc : null
             }})
         }})
-        .then(r => r.json())
+        .then(r => r.json().catch(() => {{
+            // Server returned something that isn't valid JSON (e.g. an error page) —
+            // surface that clearly instead of leaving the screen blank/silent.
+            throw new Error('bad_json');
+        }}))
         .then(data => {{
             clearTimeout(qrSubmitTimeout);
             clearTimeout(qrAbortTimer);
             const resultBox = document.getElementById('qrResultBox');
             if (data.ok) {{
-                const icon = data.already_marked ? '\u2139\ufe0f' : '\u2705';
+                const icon = data.already_marked ? 'ℹ️' : '✅';
+                const title = data.already_marked ? 'Already Marked Present' : 'Attendance Recorded';
                 const color = data.already_marked ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800';
                 resultBox.innerHTML = `
                     <div class="rounded-2xl border-2 p-5 ${{color}} text-center space-y-2">
                         <div class="text-4xl">${{icon}}</div>
-                        <div class="font-bold text-lg">${{data.message}}</div>
+                        <div class="font-extrabold text-xl">${{title}}</div>
+                        <div class="font-semibold">${{data.message}}</div>
                         ${{data.class_name ? '<div class="text-sm opacity-70">Class: ' + data.class_name + '</div>' : ''}}
                         <div class="text-xs opacity-60 mt-2">Redirecting to your dashboard…</div>
                     </div>`;
@@ -4766,9 +4776,13 @@ def student_qr_scan_portal():
             clearTimeout(qrSubmitTimeout);
             clearTimeout(qrAbortTimer);
             const timedOut = err && err.name === 'AbortError';
+            const badJson = err && err.message === 'bad_json';
+            let msg = 'Network error. Please check your connection.';
+            if (timedOut) msg = 'Request timed out. Please try again.';
+            else if (badJson) msg = 'Server error while recording attendance. Please try again.';
             document.getElementById('qrResultBox').innerHTML = `
                 <div class="rounded-2xl border-2 bg-amber-50 border-amber-200 text-amber-800 text-center p-5">
-                    <div class="font-bold">${{timedOut ? 'Request timed out. Please try again.' : 'Network error. Please check your connection.'}}</div>
+                    <div class="font-bold">${{msg}}</div>
                     <div class="flex justify-center gap-3 mt-3 flex-wrap">
                         <button onclick="retryQR()" class="bg-blue-600 text-white font-bold px-5 py-2 rounded-xl text-sm">↺ Try Again</button>
                         <a href="/student" class="bg-slate-800 text-white font-bold px-5 py-2 rounded-xl text-sm">Dashboard</a>
@@ -5797,9 +5811,9 @@ def teacher_session_panel(class_id):
     </div>
 
     <!-- FULLSCREEN OVERLAY -->
-    <div id="fullscreenOverlay" class="fixed inset-0 bg-white z-50 hidden flex-col items-center text-center" style="overflow-y:auto;-webkit-overflow-scrolling:touch;">
+    <div id="fullscreenOverlay" class="bg-white z-50 hidden flex-col items-center text-center" style="position:fixed;top:0;left:0;right:0;bottom:0;height:100vh;height:100dvh;overflow-y:scroll;-webkit-overflow-scrolling:touch;">
         <button onclick="closeFullscreen()" class="fixed top-5 right-6 z-[60] bg-slate-800 hover:bg-slate-900 text-white text-sm font-bold px-4 py-2 rounded-full shadow-lg">✕ Close</button>
-        <div class="w-full flex flex-col items-center px-8 py-8" style="min-height:100%;">
+        <div class="w-full flex flex-col items-center px-8 py-8" style="min-height:100%;box-sizing:border-box;">
         <div class="text-slate-400 text-sm font-semibold uppercase tracking-widest mb-2 mt-10">{class_row['class_name']} — Scan to Mark Attendance</div>
         <div id="fsCode" class="text-8xl font-black font-mono tracking-[0.2em] text-slate-800 mb-4"></div>
         <canvas id="fsQrCanvas" class="rounded-2xl shadow-lg border-4 border-slate-100" style="width:300px;height:300px;"></canvas>
@@ -5818,7 +5832,7 @@ def teacher_session_panel(class_id):
         <div id="fsRotateBar" class="mt-2 w-64 h-1.5 bg-slate-100 rounded-full overflow-hidden">
             <div id="fsRotateProgress" class="h-1.5 bg-emerald-400 rounded-full transition-all duration-1000" style="width:100%"></div>
         </div>
-        <div class="text-xs text-slate-400 mt-1 mb-10">🔄 QR refreshes automatically</div>
+        <div class="text-xs text-slate-400 mt-1 mb-16">🔄 QR refreshes automatically</div>
         </div>
     </div>
 
