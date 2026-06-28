@@ -318,6 +318,15 @@ def init_db():
 # =========================================================
 # HELPERS
 # =========================================================
+def is_ajax():
+    return request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
+def ajax_ok(message="Done!", redirect_url=None):
+    return jsonify({"ok": True, "message": message, "redirect": redirect_url})
+
+def ajax_err(message="Something went wrong."):
+    return jsonify({"ok": False, "error": message})
+
 def format_time_12hr(time_str):
     """Convert HH:MM:SS or HH:MM to 12-hour AM/PM format."""
     if not time_str:
@@ -1434,6 +1443,71 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             }});
         </script>
         <meta name="theme-color" content="#0f172a">
+        <style>
+        #_toast {{
+            position:fixed;bottom:24px;right:24px;z-index:9999;
+            padding:13px 22px;border-radius:12px;font-size:14px;font-weight:600;
+            box-shadow:0 4px 24px rgba(0,0,0,0.18);transition:opacity 0.4s,transform 0.3s;
+            pointer-events:none;transform:translateY(0);
+        }}
+        #_toast.hidden {{ opacity:0; transform:translateY(12px); }}
+        </style>
+        <script>
+        // ── AJAX FORM INTERCEPTOR ──
+        document.addEventListener('DOMContentLoaded', function() {{
+            document.querySelectorAll('form[data-ajax]').forEach(function(form) {{
+                form.addEventListener('submit', function(e) {{
+                    e.preventDefault();
+                    const btn = form.querySelector('[type=submit]');
+                    const origLabel = btn ? btn.textContent : '';
+                    if (btn) {{ btn.disabled = true; btn.textContent = 'Saving…'; }}
+                    fetch(form.action || window.location.href, {{
+                        method: (form.method || 'POST').toUpperCase(),
+                        body: new FormData(form),
+                        headers: {{ 'X-Requested-With': 'XMLHttpRequest' }}
+                    }})
+                    .then(r => r.json())
+                    .then(data => {{
+                        if (btn) {{ btn.disabled = false; btn.textContent = origLabel; }}
+                        if (data.ok) {{
+                            showToast(data.message || 'Saved!', 'success');
+                            if (data.redirect) {{
+                                setTimeout(() => window.location.href = data.redirect, 900);
+                            }} else {{
+                                setTimeout(() => window.location.reload(), 900);
+                            }}
+                        }} else {{
+                            showToast(data.error || 'Something went wrong.', 'error');
+                        }}
+                    }})
+                    .catch(() => {{
+                        if (btn) {{ btn.disabled = false; btn.textContent = origLabel; }}
+                        showToast('Network error — please try again.', 'error');
+                    }});
+                }});
+            }});
+        }});
+
+        function showToast(msg, type) {{
+            let t = document.getElementById('_toast');
+            if (!t) {{
+                t = document.createElement('div');
+                t.id = '_toast';
+                document.body.appendChild(t);
+            }}
+            t.textContent = msg;
+            t.style.background = type === 'success' ? '#059669' : '#dc2626';
+            t.style.color = 'white';
+            t.classList.remove('hidden');
+            t.style.opacity = '1';
+            t.style.transform = 'translateY(0)';
+            clearTimeout(t._timer);
+            t._timer = setTimeout(() => {{
+                t.style.opacity = '0';
+                t.style.transform = 'translateY(12px)';
+            }}, 3200);
+        }}
+        </script>
     </head>
     <body>
         {content_html}
@@ -1486,9 +1560,11 @@ def user_settings():
         if role == "admin":
             if old_password != get_admin_password():
                 conn.close()
+                if is_ajax(): return ajax_err("Incorrect existing password.")
                 return page_wrapper("Settings", "<p class='text-red-500 font-bold'>Incorrect existing password.</p>")
             set_admin_password(new_password)
             conn.close()
+            if is_ajax(): return ajax_ok("Admin password updated successfully!", redirect_url="/admin")
             return "<script>alert('Admin password updated successfully!'); window.location.href='/admin';</script>"
 
         elif role == "teacher":
@@ -1496,11 +1572,12 @@ def user_settings():
             row = cur.fetchone()
             if not row or row["password"] != old_password:
                 conn.close()
+                if is_ajax(): return ajax_err("Incorrect old password.")
                 return page_wrapper("Settings", "<p class='text-red-500 font-bold'>Incorrect old password.</p>", is_teacher=True, teacher_name=teacher_name_str)
-            
             cur.execute("UPDATE teachers SET password=%s WHERE id=%s", (new_password, user_id))
             conn.commit()
             conn.close()
+            if is_ajax(): return ajax_ok("Teacher password updated successfully!", redirect_url="/teacher")
             return "<script>alert('Teacher password updated successfully!'); window.location.href='/teacher';</script>"
 
         elif role == "student":
@@ -1508,18 +1585,19 @@ def user_settings():
             row = cur.fetchone()
             if not row or row["password"] != old_password:
                 conn.close()
+                if is_ajax(): return ajax_err("Incorrect old password.")
                 return page_wrapper("Settings", "<p class='text-red-500 font-bold'>Incorrect old password.</p>", is_student=True, student_context=student_ctx)
-            
             cur.execute("UPDATE students SET password=%s WHERE id=%s", (new_password, user_id))
             conn.commit()
             conn.close()
+            if is_ajax(): return ajax_ok("Password updated successfully!", redirect_url="/student")
             return "<script>alert('Student password updated successfully!'); window.location.href='/student';</script>"
 
     body = f"""
     <div class="max-w-xl">
         <h1 class="text-2xl font-bold text-slate-800 mb-2">Account Portal Settings</h1>
         <p class="text-sm text-slate-500 mb-6">Change local password credentials below for {display_name}</p>
-        <form method="POST" action="/settings" class="space-y-4">
+        <form method="POST" action="/settings" class="space-y-4" data-ajax>
             <div>
                 <label class="block text-sm font-medium text-slate-700">Current Password</label>
                 <input type="password" name="old_password" class="mt-1 block w-full px-3 py-2 border rounded-lg" required>
@@ -2207,7 +2285,7 @@ def admin_dashboard():
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div class="card card-body">
                 <h2 class="text-xl font-bold text-slate-800 mb-4">Add New Instructor</h2>
-                <form method="POST" action="/admin/create-teacher" class="space-y-3">
+                <form method="POST" action="/admin/create-teacher" class="space-y-3" data-ajax>
                     <input type="text" name="teacher_name" placeholder="Full Name" class="form-input" required>
                     <input type="text" name="username" placeholder="Username" class="form-input" required>
                     <input type="text" name="password" placeholder="Password" class="form-input" required>
@@ -2217,7 +2295,7 @@ def admin_dashboard():
 
             <div class="card card-body">
                 <h2 class="text-xl font-bold text-slate-800 mb-4">Create New Class</h2>
-                <form method="POST" action="/admin/create-class" class="space-y-2">
+                <form method="POST" action="/admin/create-class" class="space-y-2" data-ajax>
                     <input type="text" name="class_name" placeholder="Class Name" class="form-input" required>
                     <input type="text" name="department" placeholder="Department" class="form-input">
                     <input type="text" name="course" placeholder="Course ID" class="form-input">
@@ -2237,7 +2315,7 @@ def admin_dashboard():
 
         <div class="card card-body">
             <h2 class="text-xl font-bold text-slate-800 mb-4">Enroll Student in Class</h2>
-            <form method="POST" action="/admin/assign-student-class" class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+            <form method="POST" action="/admin/assign-student-class" class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end" data-ajax>
                 <select name="student_db_id" class="form-input" required>
                     <option value="">Select Student</option>
     """
@@ -2630,6 +2708,7 @@ def admin_create_teacher():
     """, (school_id, teacher_name, username, password, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
+    if is_ajax(): return ajax_ok("Instructor created successfully!", redirect_url="/admin")
     return "<script>alert('Instructor profile instantiated successfully');window.location.href='/admin';</script>"
 
 
@@ -2660,12 +2739,13 @@ def admin_edit_teacher(teacher_id):
         conn.commit()
         
         conn.close()
+        if is_ajax(): return ajax_ok("Teacher updated successfully!", redirect_url="/admin")
         return "<script>alert('Teacher entity parameters updated successfully');window.location.href='/admin';</script>"
 
     body = f"""
     <div class="max-w-md">
         <h1 class="text-2xl font-bold mb-4">Modify Instructor Record</h1>
-        <form method="POST" class="space-y-4">
+        <form method="POST" class="space-y-4" data-ajax>
             <div>
                 <label class="block text-sm font-medium">Instructor Display Full Name</label>
                 <input type="text" name="teacher_name" value="{teacher["teacher_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
@@ -2730,6 +2810,7 @@ def admin_create_class():
     """, (get_current_school_id(), class_name, department, course, section_name, subject_name, teacher["id"], teacher["teacher_name"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
+    if is_ajax(): return ajax_ok("Class created successfully!", redirect_url="/admin")
     return "<script>alert('New classroom created successfully');window.location.href='/admin';</script>"
 
 
@@ -2764,13 +2845,14 @@ def admin_edit_class(class_id):
         """, (class_name, department, course, section_name, subject_name, teacher_id, t_name, class_id))
         conn.commit()
         conn.close()
+        if is_ajax(): return ajax_ok("Class updated successfully!", redirect_url="/admin")
         return "<script>alert('Classroom record adjustments committed!');window.location.href='/admin';</script>"
 
     teachers = get_all_teachers()
     body = f"""
     <div class="max-w-md">
         <h1 class="text-2xl font-bold mb-4">Edit Classroom Configuration</h1>
-        <form method="POST" class="space-y-3">
+        <form method="POST" class="space-y-3" data-ajax>
             <input type="text" name="class_name" value="{class_row["class_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
             <input type="text" name="department" value="{class_row["department"] or ""}" class="w-full px-3 py-2 border rounded-lg">
             <input type="text" name="course" value="{class_row["course"] or ""}" class="w-full px-3 py-2 border rounded-lg">
@@ -2813,8 +2895,10 @@ def admin_assign_student_class():
     student_db_id = request.form.get("student_db_id", "").strip()
     class_id = request.form.get("class_id", "").strip()
     if not student_db_id or not class_id:
+        if is_ajax(): return ajax_err("All enrollment parameters are needed.")
         return "<script>alert('All enrollment parameters are needed');window.location.href='/admin';</script>"
     assign_student_to_class(int(student_db_id), int(class_id))
+    if is_ajax(): return ajax_ok("Student enrolled successfully!", redirect_url="/admin")
     return "<script>alert('Student enrollment map updated dynamically!');window.location.href='/admin';</script>"
 
 
@@ -2866,6 +2950,7 @@ def admin_edit_student(student_db_id):
         conn.commit()
         conn.close()
         load_known_faces()
+        if is_ajax(): return ajax_ok("Student profile updated successfully!", redirect_url="/admin")
         return "<script>alert('Student profile updated successfully');window.location.href='/admin';</script>"
 
     body = f"""
@@ -3251,7 +3336,7 @@ def teacher_view_class(class_id):
                 </div>
             </div>
 
-            <form id="attendanceForm" method="POST" action="/teacher/class/{class_id}/manual-submit">
+            <form id="attendanceForm" method="POST" action="/teacher/class/{class_id}/manual-submit" data-ajax>
                 <div class="divide-y divide-slate-100">
     """
     if students:
@@ -3328,6 +3413,7 @@ def teacher_manual_submit_batch(class_id):
         status = "Present" if s["student_id"] in ticked_present_ids else "Absent"
         mark_attendance(s, class_row, status=status)
 
+    if is_ajax(): return ajax_ok("Attendance submitted successfully!", redirect_url="/teacher")
     return "<script>alert('Attendance roster processing batch committed successfully!'); window.location.href='/teacher';</script>"
 
 
@@ -3958,6 +4044,7 @@ def student_edit_profile():
             conn.close()
             session["student_name"] = full_name
             load_known_faces()
+            if is_ajax(): return ajax_ok("Profile updated successfully!", redirect_url="/student")
             return "<script>alert('Profile updated successfully!');window.location.href='/student';</script>"
 
     body = f"""
@@ -3974,7 +4061,7 @@ def student_edit_profile():
             </div>
         </div>
 
-        <form method="POST" enctype="multipart/form-data" class="space-y-4" id="profileForm">
+        <form method="POST" enctype="multipart/form-data" class="space-y-4" id="profileForm" data-ajax>
             <input type="hidden" name="photo_b64" id="photo_b64">
             <div>
                 <label class="block text-sm font-semibold text-slate-700 mb-1">Full Name</label>
@@ -4193,14 +4280,17 @@ def super_admin_change_credentials():
     new_pw = request.form.get("new_password", "").strip()
     confirm = request.form.get("confirm_password", "").strip()
     if current != get_super_admin_password():
+        if is_ajax(): return ajax_err("Incorrect current password.")
         return "<script>alert('Incorrect current password.');window.location.href='/super-admin';</script>"
     if new_name:
         set_super_admin_setting("name", new_name)
         session["super_admin_name"] = new_name
     if new_pw:
         if new_pw != confirm:
+            if is_ajax(): return ajax_err("New passwords do not match.")
             return "<script>alert('New passwords do not match.');window.location.href='/super-admin';</script>"
         set_super_admin_password(new_pw)
+    if is_ajax(): return ajax_ok("Credentials updated successfully!", redirect_url="/super-admin")
     return "<script>alert('Credentials updated successfully!');window.location.href='/super-admin';</script>"
 
 @app.route("/super-admin")
@@ -4265,7 +4355,7 @@ def super_admin_dashboard():
         <div class="card card-body">
             <h2 class="text-xl font-bold text-slate-800 mb-1">🔐 Update Credentials</h2>
             <p class="text-sm text-slate-500 mb-4">Change your display name and/or password. Leave new password blank to keep current.</p>
-            <form method="POST" action="/super-admin/change-credentials" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <form method="POST" action="/super-admin/change-credentials" class="grid grid-cols-1 md:grid-cols-2 gap-3" data-ajax>
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-slate-700 mb-1">Display Name</label>
                     <input type="text" name="new_name" value="{super_name}" class="form-input">
@@ -4291,7 +4381,7 @@ def super_admin_dashboard():
         <div class="card card-body">
             <h2 class="text-xl font-bold text-slate-800 mb-4">➕ Register New School</h2>
             <p class="text-sm text-slate-500 mb-4">Each school gets a unique <b>School Code</b>. Staff and students enter this code when logging in to access their school's data.</p>
-            <form method="POST" action="/super-admin/create-school" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <form method="POST" action="/super-admin/create-school" class="grid grid-cols-1 md:grid-cols-2 gap-3" data-ajax>
                 <div>
                     <label class="block text-sm font-medium text-slate-700 mb-1">School Full Name</label>
                     <input type="text" name="name" placeholder="e.g. Green Hills Secondary School" class="form-input" required>
@@ -4350,6 +4440,7 @@ def super_admin_create_school():
     admin_username = request.form.get("admin_username", "").strip()
     admin_password = request.form.get("admin_password", "").strip()
     if not name or not code or not admin_username or not admin_password:
+        if is_ajax(): return ajax_err("All fields are required.")
         return "<script>alert('All fields are required');window.location.href='/super-admin';</script>"
     conn = get_db()
     cur = conn.cursor()
@@ -4370,8 +4461,10 @@ def super_admin_create_school():
         conn.rollback()
         conn.close()
         msg = str(e).split('\n')[0].replace("'", "")
+        if is_ajax(): return ajax_err(f"Error: {msg}")
         return f"<script>alert('Error: {msg}');window.location.href='/super-admin';</script>"
     conn.close()
+    if is_ajax(): return ajax_ok(f"School '{name}' created! Code: {code}", redirect_url="/super-admin")
     return f"<script>alert('School {name} created! Code: {code}');window.location.href='/super-admin';</script>"
 
 @app.route("/super-admin/delete-school/<int:school_id>")
