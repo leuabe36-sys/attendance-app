@@ -2173,11 +2173,12 @@ def admin_dashboard():
     classes = get_all_classes()
     attendance = get_all_attendance()
 
+    school_name = session.get("school_name", "")
     body = f"""
     <div class="section-stack">
         <div class="page-header">
             <div class="page-title">Admin Dashboard</div>
-            <div class="page-sub">Manage classes, instructors, students, and review attendance records.</div>
+            <div class="page-sub">{f'🏫 {school_name} · ' if school_name else ''}Manage classes, instructors, students, and review attendance records.</div>
         </div>
 
         <div class="stat-grid">
@@ -3105,6 +3106,7 @@ def teacher_dashboard():
 
     teacher_id = get_logged_teacher_id()
     teacher_name = session.get("teacher_name", "Instructor")
+    school_name = session.get("school_name", "")
     classes = get_teacher_classes(teacher_id)
     attendance = get_attendance_for_teacher(teacher_name)
 
@@ -3113,7 +3115,7 @@ def teacher_dashboard():
         <div class="bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-2xl text-white shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
                 <h1 class="text-3xl font-extrabold tracking-tight">Welcome Back, {teacher_name}!</h1>
-                <p class="text-blue-100 text-sm mt-1">Manage active classrooms, launch live face-recognition streams, or complete fast manual manual ticking sheets.</p>
+                <p class="text-blue-100 text-sm mt-1">{f'🏫 {school_name} · ' if school_name else ''}Manage active classrooms, launch live face-recognition streams, or complete fast manual manual ticking sheets.</p>
             </div>
             <div class="bg-white/10 px-4 py-2 rounded-xl text-xs font-mono backdrop-blur-sm">
                 System Session Verified ✓
@@ -3772,6 +3774,7 @@ def student_dashboard_portal():
 
     student_db_id = get_logged_student_db_id()
     student_id = session.get("student_id")
+    school_name = session.get("school_name", "")
     student_ctx = get_student_row_by_db_id(student_db_id)
 
     classes = get_classes_for_student(student_db_id)
@@ -3784,6 +3787,7 @@ def student_dashboard_portal():
                 <img class="w-24 h-24 object-cover rounded-full mx-auto border-2 border-blue-500 mb-3 shadow-inner" src="{supabase_public_url(student_ctx["image_file"])}">
                 <h2 class="text-xl font-bold text-slate-800">{student_ctx["full_name"]}</h2>
                 <p class="text-xs font-mono text-slate-400 mt-1">ID: {student_ctx["student_id"]}</p>
+                {f'<p class="text-xs font-semibold text-blue-600 mt-1">🏫 {school_name}</p>' if school_name else ''}
                 <div class="mt-3 inline-block bg-emerald-50 text-emerald-700 text-xs font-bold px-3 py-1 rounded-full border border-emerald-200">✓ Active Enrolled Student</div>
                 
                 <div class="mt-6 border-t pt-4 space-y-2">
