@@ -5320,8 +5320,15 @@ def teacher_session_panel(class_id):
 
                     <!-- QR Code box -->
                     <div class="flex flex-col items-center gap-2">
-                        <div id="qrBox" class="bg-white border-2 border-slate-200 rounded-2xl p-3 shadow-sm flex items-center justify-center" style="width:200px;height:200px;">
+                        <div id="qrBox" class="bg-white border-2 border-slate-200 rounded-2xl p-3 shadow-sm flex items-center justify-center transition-all" style="width:200px;height:200px;">
                             <canvas id="qrCanvas"></canvas>
+                        </div>
+                        <div class="flex items-center gap-2 w-full max-w-[220px]">
+                            <span class="text-xs text-slate-400">🔍</span>
+                            <input type="range" id="qrSizeSlider" min="120" max="500" value="174" step="2"
+                                oninput="resizeQR(this.value)"
+                                class="flex-1 h-1.5 accent-indigo-600 cursor-pointer">
+                            <span class="text-xs text-slate-400 font-mono w-10 text-right" id="qrSizeLabel">174px</span>
                         </div>
                         <button onclick="openFullscreen()" class="text-xs bg-slate-800 hover:bg-slate-900 text-white font-bold px-4 py-2 rounded-xl transition">
                             🖥️ Fullscreen for Class
@@ -5417,6 +5424,13 @@ def teacher_session_panel(class_id):
         <div class="text-slate-400 text-sm font-semibold uppercase tracking-widest mb-2">{class_row['class_name']} — Scan to Mark Attendance</div>
         <div id="fsCode" class="text-8xl font-black font-mono tracking-[0.2em] text-slate-800 mb-4"></div>
         <canvas id="fsQrCanvas" class="rounded-2xl shadow-lg border-4 border-slate-100" style="width:300px;height:300px;"></canvas>
+        <div class="flex items-center gap-2 w-64 mt-3">
+            <span class="text-xs text-slate-400">🔍</span>
+            <input type="range" id="fsQrSizeSlider" min="150" max="700" value="300" step="2"
+                oninput="resizeFsQR(this.value)"
+                class="flex-1 h-1.5 accent-indigo-600 cursor-pointer">
+            <span class="text-xs text-slate-400 font-mono w-10 text-right" id="fsQrSizeLabel">300px</span>
+        </div>
         <div class="mt-4 text-slate-400 text-sm">Scan with your phone camera · Or type the code above · QR rotates automatically</div>
         <div id="fsCountdown" class="mt-3 text-4xl font-black font-mono text-indigo-600"></div>
         <div class="mt-2 w-64 h-2 bg-slate-200 rounded-full overflow-hidden">
@@ -5473,6 +5487,9 @@ function checkinUrl(code) {{
     return window.location.origin + '/checkin/' + code;
 }}
 
+let qrCurrentSize = 174;
+let fsQrCurrentSize = 300;
+
 function renderQR(code) {{
     try {{
         const canvas = document.getElementById('qrCanvas');
@@ -5480,9 +5497,10 @@ function renderQR(code) {{
             console.error('QR library not available — check the qrcode CDN script tag.');
             return;
         }}
-        canvas.width = 174; canvas.height = 174;
+        const size = qrCurrentSize;
+        canvas.width = size; canvas.height = size;
         QRCode.toCanvas(canvas, checkinUrl(code), {{
-            width: 174, margin: 1,
+            width: size, margin: 1,
             color: {{ dark: '#1e293b', light: '#ffffff' }}
         }}, function(err) {{ if(err) console.error(err); }});
     }} catch(e) {{ console.error('renderQR failed:', e); }}
@@ -5495,12 +5513,41 @@ function renderFsQR(code) {{
             console.error('QR library not available — check the qrcode CDN script tag.');
             return;
         }}
-        canvas.width = 300; canvas.height = 300;
+        const size = fsQrCurrentSize;
+        canvas.width = size; canvas.height = size;
+        canvas.style.width = size + 'px';
+        canvas.style.height = size + 'px';
         QRCode.toCanvas(canvas, checkinUrl(code), {{
-            width: 300, margin: 1,
+            width: size, margin: 1,
             color: {{ dark: '#1e293b', light: '#ffffff' }}
         }}, function(err) {{ if(err) console.error(err); }});
     }} catch(e) {{ console.error('renderFsQR failed:', e); }}
+}}
+
+function resizeQR(size) {{
+    size = parseInt(size, 10);
+    qrCurrentSize = size;
+    const box = document.getElementById('qrBox');
+    if (box) {{
+        // box padding (p-3 = 12px each side) so the QR sits comfortably inside
+        box.style.width = (size + 24) + 'px';
+        box.style.height = (size + 24) + 'px';
+    }}
+    const label = document.getElementById('qrSizeLabel');
+    if (label) label.innerText = size + 'px';
+    if (typeof currentCode !== 'undefined' && currentCode) {{
+        renderQR(currentCode);
+    }}
+}}
+
+function resizeFsQR(size) {{
+    size = parseInt(size, 10);
+    fsQrCurrentSize = size;
+    const label = document.getElementById('fsQrSizeLabel');
+    if (label) label.innerText = size + 'px';
+    if (typeof currentCode !== 'undefined' && currentCode) {{
+        renderFsQR(currentCode);
+    }}
 }}
 
 function setDuration(min) {{
