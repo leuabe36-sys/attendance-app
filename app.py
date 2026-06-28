@@ -1769,6 +1769,8 @@ def student_register():
             <p class="text-sm text-slate-500 mb-6">Input student data fields and click register to create face vector profile mappings</p>
             
             <div class="space-y-3 max-w-md mx-auto mb-6 text-left">
+                <input type="text" id="schoolName" placeholder="School Name (e.g. Green Hills Secondary School)" class="w-full px-3 py-2 border rounded-lg">
+                <input type="text" id="schoolCode" placeholder="School Code (e.g. ABC123)" class="w-full px-3 py-2 border rounded-lg">
                 <input type="text" id="studentId" placeholder="Student Alphanumeric ID" class="w-full px-3 py-2 border rounded-lg">
                 <input type="text" id="fullName" placeholder="Full Registered Name" class="w-full px-3 py-2 border rounded-lg">
                 <input type="password" id="password" placeholder="Roster Login Password" class="w-full px-3 py-2 border rounded-lg">
@@ -1851,11 +1853,13 @@ function switchCamera() {
 
 async function registerFace() {
     try {
+        const schoolName = document.getElementById('schoolName').value.trim();
+        const schoolCode = document.getElementById('schoolCode').value.trim();
         const studentId = document.getElementById('studentId').value.trim();
         const fullName = document.getElementById('fullName').value.trim();
         const password = document.getElementById('password').value.trim();
         
-        if (!studentId || !fullName || !password) {
+        if (!schoolName || !schoolCode || !studentId || !fullName || !password) {
             alert("All values are required prior to scanning");
             return;
         }
@@ -1872,7 +1876,7 @@ async function registerFace() {
         const response = await fetch('/register-face', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ student_id: studentId, full_name: fullName, password: password, image: image })
+            body: JSON.stringify({ school_name: schoolName, school_code: schoolCode, student_id: studentId, full_name: fullName, password: password, image: image })
         });
         const data = await response.json();
         statusDiv.innerText = data.message;
@@ -1894,14 +1898,24 @@ def register_face():
         data = request.get_json()
         if not data:
             return jsonify({"success": False, "message": "No data received"})
+        school_name = data.get("school_name", "").strip()
+        school_code = data.get("school_code", "").strip().upper()
         student_id = data.get("student_id", "").strip()
         full_name = data.get("full_name", "").strip()
         password = data.get("password", "").strip()
         image_data = data.get("image", "")
 
-        if not student_id or not full_name or not password or not image_data:
+        if not school_name or not school_code or not student_id or not full_name or not password or not image_data:
             return jsonify({"success": False, "message": "All database fields are required"})
-        if student_exists(student_id):
+
+        school = get_school_by_code(school_code)
+        if not school:
+            return jsonify({"success": False, "message": "School code not found"})
+        if school_name.strip().lower() != school["name"].strip().lower():
+            return jsonify({"success": False, "message": "School name does not match this school code"})
+        school_id = school["id"]
+
+        if student_exists(student_id, school_id=school_id):
             return jsonify({"success": False, "message": "This Student ID already holds a target map registry record"})
 
         safe_id = sanitize_filename(student_id)
@@ -1942,7 +1956,6 @@ def register_face():
 
         conn = get_db()
         cur = conn.cursor()
-        school_id = get_current_school_id()
         cur.execute("""
             INSERT INTO students (school_id, student_id, full_name, password, image_file, registered_at)
             VALUES (%s, %s, %s, %s, %s, %s)
