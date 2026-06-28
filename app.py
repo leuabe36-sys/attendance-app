@@ -4116,6 +4116,84 @@ def student_manual_checkin(class_id):
         return f"<script>alert('❌ Marked Absent — none of the verification checks passed.\\nReasons: {reason}'); window.location.href='/student';</script>"
 
 
+
+@app.route("/student/checkin/api", methods=["POST"])
+def student_checkin_api():
+    """JSON endpoint used by the in-app QR scanner — no page reload."""
+    protect = student_required()
+    if protect:
+        return jsonify({"ok": False, "error": "Not logged in."})
+
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+
+    data = request.get_json(silent=True) or {}
+    code = data.get("session_code", "").strip().upper()
+    lat_raw = data.get("latitude")
+    lng_raw = data.get("longitude")
+    gps_acc = data.get("gps_accuracy")
+
+    # Resolve class from session code
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT class_id FROM class_sessions
+            WHERE code=%s AND school_id=%s AND active=TRUE AND expires_at > NOW()
+            ORDER BY id DESC LIMIT 1
+        """, (code, school_id))
+        row = cur.fetchone()
+        conn.close()
+    except Exception as e:
+        return jsonify({"ok": False, "error": "Database error: " + str(e)})
+
+    if not row:
+        return jsonify({"ok": False, "error": "QR code has expired or is invalid. Ask your teacher to refresh it."})
+
+    class_id = row["class_id"]
+
+    if not student_belongs_to_class(student_db_id, class_id):
+        return jsonify({"ok": False, "error": "You are not enrolled in this class."})
+
+    student_row = get_student_row_by_db_id(student_db_id)
+    class_row = get_class_by_id(class_id)
+
+    if not student_row or not class_row:
+        return jsonify({"ok": False, "error": "Student or class not found."})
+
+    try:
+        lat_f = float(lat_raw) if lat_raw is not None else None
+        lng_f = float(lng_raw) if lng_raw is not None else None
+        if gps_acc is not None and float(gps_acc) > 200:
+            lat_f = lng_f = None
+    except:
+        lat_f = lng_f = None
+
+    passed, reason, dist_m = run_location_checks(lat_f, lng_f, code, class_id, school_id, request)
+
+    if passed:
+        result = mark_attendance(student_row, class_row, "Present",
+                                 student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+        if result.get("already_marked"):
+            return jsonify({"ok": True, "already_marked": True,
+                            "message": "Attendance already recorded as Present today. No changes made.",
+                            "class_name": class_row["class_name"]})
+        dist_str = f" ({int(dist_m)}m from teacher)" if dist_m is not None else ""
+        return jsonify({"ok": True, "already_marked": False,
+                        "message": f"Marked Present! {reason}{dist_str}",
+                        "class_name": class_row["class_name"]})
+    else:
+        result = mark_attendance(student_row, class_row, "Absent",
+                                 student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
+        if result.get("already_marked"):
+            return jsonify({"ok": True, "already_marked": True,
+                            "message": "Attendance already recorded as Present today. No changes made.",
+                            "class_name": class_row["class_name"]})
+        return jsonify({"ok": False, "absent": True,
+                        "message": f"Marked Absent — verification failed. {reason}",
+                        "class_name": class_row["class_name"]})
+
+
 @app.route("/student/qr-scan")
 def student_qr_scan_portal():
     """
@@ -4164,6 +4242,8 @@ def student_qr_scan_portal():
 
         <div id="qrStatus" class="text-sm font-semibold text-slate-500">📡 Starting camera…</div>
         <div id="gpsStatus" class="text-xs text-slate-400">📡 Detecting your GPS location…</div>
+
+        <div id="qrResultBox" class="max-w-md mx-auto"></div>
 
         <div class="flex justify-center gap-2 flex-wrap pt-2">
             <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl text-sm" onclick="switchCamera()">🔄 Switch Camera</button>
@@ -4370,20 +4450,14 @@ def student_qr_scan_portal():
     function handleScannedText(text) {{
         if (qrHandledCode) return;
         qrHandledCode = true;
-        qrStatus.innerText = "✅ QR code detected — checking you in…";
-        qrStatus.className = "text-sm font-semibold text-emerald-600";
 
-        // Extract the session code whether the QR holds a full /checkin/<code> URL
-        // or (just in case) a bare code by itself.
+        // Extract the session code from a full /checkin/<code> URL or bare code
         let code = null;
         try {{
             const url = new URL(text);
             const parts = url.pathname.split('/').filter(Boolean);
-            if (parts[0] === 'checkin' && parts[1]) {{
-                code = parts[1];
-            }}
+            if (parts[0] === 'checkin' && parts[1]) code = parts[1];
         }} catch (e) {{
-            // Not a URL — treat the raw scanned text as the code itself
             code = text.trim();
         }}
 
@@ -4395,16 +4469,77 @@ def student_qr_scan_portal():
             return;
         }}
 
-        if (qrStream) {{
-            qrStream.getTracks().forEach(track => track.stop());
-            qrStream = null;
-        }}
+        // Stop camera
+        if (qrStream) {{ qrStream.getTracks().forEach(t => t.stop()); qrStream = null; }}
 
-        // Hand off to the same landing route a phone's native camera would hit
-        // when scanning the QR — it resolves the class, pre-fills the code,
-        // and (since we're already logged in as a student) goes straight to
-        // the check-in form with GPS captured.
-        window.location.href = '/checkin/' + encodeURIComponent(code);
+        // Show spinner inline — no page reload
+        qrStatus.innerText = "⏳ Submitting attendance…";
+        qrStatus.className = "text-sm font-semibold text-blue-500";
+
+        fetch('/student/checkin/api', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{
+                session_code: code,
+                latitude: qrStudentLat,
+                longitude: qrStudentLng,
+                gps_accuracy: _qrBestAcc < Infinity ? _qrBestAcc : null
+            }})
+        }})
+        .then(r => r.json())
+        .then(data => {{
+            const resultBox = document.getElementById('qrResultBox');
+            if (data.ok) {{
+                const icon = data.already_marked ? '\u2139\ufe0f' : '\u2705';
+                const color = data.already_marked ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800';
+                resultBox.innerHTML = `
+                    <div class="rounded-2xl border-2 p-5 ${{color}} text-center space-y-2">
+                        <div class="text-4xl">${{icon}}</div>
+                        <div class="font-bold text-lg">${{data.message}}</div>
+                        ${{data.class_name ? '<div class="text-sm opacity-70">Class: ' + data.class_name + '</div>' : ''}}
+                        <a href="/student" class="inline-block mt-3 bg-slate-800 text-white font-bold px-6 py-2 rounded-xl text-sm">Go to Dashboard</a>
+                    </div>`;
+                qrStatus.innerText = '';
+            }} else if (data.absent) {{
+                resultBox.innerHTML = `
+                    <div class="rounded-2xl border-2 bg-red-50 border-red-200 text-red-800 text-center p-5 space-y-2">
+                        <div class="text-4xl">\u274c</div>
+                        <div class="font-bold text-lg">Marked Absent</div>
+                        <div class="text-sm opacity-80">${{data.message}}</div>
+                        ${{data.class_name ? '<div class="text-sm opacity-70">Class: ' + data.class_name + '</div>' : ''}}
+                        <div class="flex justify-center gap-3 mt-3 flex-wrap">
+                            <button onclick="retryQR()" class="bg-blue-600 text-white font-bold px-5 py-2 rounded-xl text-sm">↺ Try Again</button>
+                            <a href="/student" class="bg-slate-800 text-white font-bold px-5 py-2 rounded-xl text-sm">Dashboard</a>
+                        </div>
+                    </div>`;
+                qrStatus.innerText = '';
+            }} else {{
+                resultBox.innerHTML = `
+                    <div class="rounded-2xl border-2 bg-amber-50 border-amber-200 text-amber-800 text-center p-5 space-y-2">
+                        <div class="text-4xl">\u26a0\ufe0f</div>
+                        <div class="font-bold">${{data.error || 'Something went wrong.'}}</div>
+                        <div class="flex justify-center gap-3 mt-3 flex-wrap">
+                            <button onclick="retryQR()" class="bg-blue-600 text-white font-bold px-5 py-2 rounded-xl text-sm">↺ Try Again</button>
+                            <a href="/student" class="bg-slate-800 text-white font-bold px-5 py-2 rounded-xl text-sm">Dashboard</a>
+                        </div>
+                    </div>`;
+                qrStatus.innerText = '';
+            }}
+        }})
+        .catch(err => {{
+            document.getElementById('qrResultBox').innerHTML = `
+                <div class="rounded-2xl border-2 bg-amber-50 border-amber-200 text-amber-800 text-center p-5">
+                    <div class="font-bold">Network error. Please check your connection.</div>
+                    <button onclick="retryQR()" class="mt-3 bg-blue-600 text-white font-bold px-5 py-2 rounded-xl text-sm">↺ Try Again</button>
+                </div>`;
+            qrStatus.innerText = '';
+        }});
+    }}
+
+    function retryQR() {{
+        document.getElementById('qrResultBox').innerHTML = '';
+        qrHandledCode = false;
+        startCamera();
     }}
 
     startCamera();
