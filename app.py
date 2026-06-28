@@ -5777,9 +5777,10 @@ def teacher_session_panel(class_id):
     </div>
 
     <!-- FULLSCREEN OVERLAY -->
-    <div id="fullscreenOverlay" class="fixed inset-0 bg-white z-50 hidden flex-col items-center justify-center p-8 text-center">
-        <button onclick="closeFullscreen()" class="absolute top-5 right-6 text-slate-400 hover:text-slate-700 text-sm font-bold">✕ Close</button>
-        <div class="text-slate-400 text-sm font-semibold uppercase tracking-widest mb-2">{class_row['class_name']} — Scan to Mark Attendance</div>
+    <div id="fullscreenOverlay" class="fixed inset-0 bg-white z-50 hidden flex-col items-center text-center" style="overflow-y:auto;-webkit-overflow-scrolling:touch;">
+        <button onclick="closeFullscreen()" class="fixed top-5 right-6 z-[60] bg-slate-800 hover:bg-slate-900 text-white text-sm font-bold px-4 py-2 rounded-full shadow-lg">✕ Close</button>
+        <div class="w-full flex flex-col items-center px-8 py-8" style="min-height:100%;">
+        <div class="text-slate-400 text-sm font-semibold uppercase tracking-widest mb-2 mt-10">{class_row['class_name']} — Scan to Mark Attendance</div>
         <div id="fsCode" class="text-8xl font-black font-mono tracking-[0.2em] text-slate-800 mb-4"></div>
         <canvas id="fsQrCanvas" class="rounded-2xl shadow-lg border-4 border-slate-100" style="width:300px;height:300px;"></canvas>
         <div class="flex items-center gap-2 w-64 mt-3">
@@ -5797,7 +5798,8 @@ def teacher_session_panel(class_id):
         <div id="fsRotateBar" class="mt-2 w-64 h-1.5 bg-slate-100 rounded-full overflow-hidden">
             <div id="fsRotateProgress" class="h-1.5 bg-emerald-400 rounded-full transition-all duration-1000" style="width:100%"></div>
         </div>
-        <div class="text-xs text-slate-400 mt-1">🔄 QR refreshes automatically</div>
+        <div class="text-xs text-slate-400 mt-1 mb-10">🔄 QR refreshes automatically</div>
+        </div>
     </div>
 
 <!-- qrcode.js from CDN (note: uses the soldair/node-qrcode "qrcode" package,
@@ -6153,12 +6155,19 @@ function openFullscreen() {{
     const overlay = document.getElementById('fullscreenOverlay');
     overlay.classList.remove('hidden');
     overlay.style.display = 'flex';
+    overlay.scrollTop = 0;
+    document.addEventListener('keydown', _fsEscHandler);
 }}
 
 function closeFullscreen() {{
     const overlay = document.getElementById('fullscreenOverlay');
     overlay.classList.add('hidden');
     overlay.style.display = 'none';
+    document.removeEventListener('keydown', _fsEscHandler);
+}}
+
+function _fsEscHandler(e) {{
+    if (e.key === 'Escape') closeFullscreen();
 }}
 
 // On load: if session already active, render QR, start countdown, rotation and locations
