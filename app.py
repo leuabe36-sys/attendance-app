@@ -13,7 +13,7 @@ import os
 import base64
 import psycopg2
 import psycopg2.extras
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests as http_requests
 import smtplib
 import secrets
@@ -360,6 +360,27 @@ def init_db():
 # HELPERS
 # =========================================================
 import math
+
+def utc_iso(dt):
+    """
+    Serialize a datetime to an ISO string the browser will parse correctly.
+
+    The server (datetime.now(), and Postgres TIMESTAMP-without-timezone columns
+    read back via psycopg2) produces NAIVE datetimes that represent UTC wall-clock
+    time, but carry no timezone marker. If we call .isoformat() on those directly,
+    the string looks like "2026-06-28T15:32:00" with no "Z"/"+00:00" suffix.
+    JavaScript's `new Date(...)` then parses that as LOCAL browser time, not UTC —
+    so for any visitor in a timezone ahead of UTC (e.g. UTC+3), the parsed expiry
+    time ends up hours in the past compared to the server's intent, and the
+    attendance countdown shows "Time is up!" immediately on page load.
+    Tagging the datetime as UTC before formatting fixes this for every timezone.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     """Returns distance in meters between two GPS coordinates."""
@@ -4601,7 +4622,7 @@ def teacher_start_session(class_id):
     if is_ajax():
         return jsonify({"ok": True, "code": code, "duration_minutes": duration_minutes,
                         "rotate_seconds": rotate_seconds,
-                        "expires_at": expires_at.isoformat(), "message": "Session started!"})
+                        "expires_at": utc_iso(expires_at), "message": "Session started!"})
     return f"<script>alert('Session code: {code}  (valid {duration_minutes} minutes)');window.location.href='/teacher/class/{class_id}';</script>"
 
 
@@ -4708,9 +4729,9 @@ def teacher_session_panel(class_id):
     conn.close()
 
     active_code = active["code"] if active else None
-    expires_iso = active["expires_at"].isoformat() if active else None
+    expires_iso = utc_iso(active["expires_at"]) if active else None
     rotate_seconds_init = active["rotate_seconds"] if active else 60
-    last_rotated_iso = active["last_rotated"].isoformat() if active else None
+    last_rotated_iso = utc_iso(active["last_rotated"]) if active else None
 
     body = f"""
     <div class="max-w-2xl mx-auto space-y-6">
@@ -5223,7 +5244,7 @@ def teacher_active_session(class_id):
     row = cur.fetchone()
     conn.close()
     if row:
-        return jsonify({"code": row["code"], "expires_at": str(row["expires_at"])})
+        return jsonify({"code": row["code"], "expires_at": utc_iso(row["expires_at"])})
     return jsonify({"code": None})
 
 
