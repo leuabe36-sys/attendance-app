@@ -1830,10 +1830,6 @@ def register_school():
                     <input type="text" name="name" placeholder="e.g. Green Hills Secondary School" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Your Email</label>
-                    <input type="email" name="email" placeholder="e.g. principal@greenhills.edu" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
-                </div>
-                <div>
                     <label class="block text-sm font-medium text-slate-700 mb-1">School Code <span class="text-slate-400">(short, unique, no spaces)</span></label>
                     <input type="text" name="code" placeholder="e.g. GREENHS" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
                 </div>
@@ -1854,14 +1850,11 @@ def register_school():
         """)
 
     name = request.form.get("name", "").strip()
-    email = request.form.get("email", "").strip().lower()
     code = request.form.get("code", "").strip().upper().replace(" ", "")
     admin_username = request.form.get("admin_username", "").strip()
     admin_password = request.form.get("admin_password", "").strip()
-    if not name or not email or not code or not admin_username or not admin_password:
+    if not name or not code or not admin_username or not admin_password:
         return "<script>alert('All fields are required');window.location.href='/register-school';</script>"
-    if "@" not in email or "." not in email.split("@")[-1]:
-        return "<script>alert('Please enter a valid email address');window.location.href='/register-school';</script>"
 
     conn = get_db()
     cur = conn.cursor()
@@ -1890,7 +1883,7 @@ def register_school():
         cur.execute("""
             INSERT INTO pending_school_registrations (token, name, code, admin_username, admin_password, email, expires_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (token, name, code, admin_username, admin_password, email, expires_at))
+        """, (token, name, code, admin_username, admin_password, "", expires_at))
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -4224,7 +4217,6 @@ def super_admin_dashboard():
         pending_rows_html += f"""
         <tr>
             <td class="p-3 font-semibold">{p['name']}</td>
-            <td class="p-3 text-slate-500 text-sm">{p['email']}</td>
             <td class="p-3 font-mono font-bold text-blue-700">{p['code']}</td>
             <td class="p-3 text-slate-500 text-sm">{p['admin_username']}</td>
             <td class="p-3 text-xs text-slate-400">{p['created_at']}</td>
@@ -4322,10 +4314,10 @@ def super_admin_dashboard():
             <div class="tbl-wrap">
             <table>
                 <thead><tr>
-                    <th>School Name</th><th>Email</th><th>Requested Code</th>
+                    <th>School Name</th><th>Requested Code</th>
                     <th>Admin Username</th><th>Submitted</th><th>Action</th>
                 </tr></thead>
-                <tbody>{pending_rows_html if pending_rows_html else "<tr><td colspan='6' style='padding:24px;text-align:center;color:#94a3b8;'>No pending requests.</td></tr>"}</tbody>
+                <tbody>{pending_rows_html if pending_rows_html else "<tr><td colspan='5' style='padding:24px;text-align:center;color:#94a3b8;'>No pending requests.</td></tr>"}</tbody>
             </table>
             </div>
         </div>
