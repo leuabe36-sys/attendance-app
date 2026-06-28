@@ -3881,12 +3881,11 @@ def export_attendance():
     return Response(csv_data, mimetype="text/csv", headers={"Content-disposition": "attachment; filename=attendance_sheet.csv"})
 
 
-if __name__ == '__main__':
-    init_db()
-    load_known_faces()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 # =========================================================
+
+
 # SUPER-ADMIN — SCHOOL MANAGEMENT
 # Set SUPER_ADMIN_PASSWORD env var to secure this panel.
 # Default: "superadmin123" — change this in production!
@@ -4050,3 +4049,8 @@ def super_admin_delete_school(school_id):
 def super_admin_logout():
     session.pop("super_admin_logged_in", None)
     return redirect("/super-admin-login")
+
+if __name__ == '__main__':
+    init_db()
+    load_known_faces()
+    app.run(host='0.0.0.0', port=5000, debug=True)
