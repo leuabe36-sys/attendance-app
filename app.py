@@ -1973,7 +1973,7 @@ def register_school():
             "You will be able to log in once it is approved.');window.location.href='/';</script>")
 
 
-@app.route("/super-admin/approve-school/<int:pending_id>")
+@app.route("/super-admin/approve-school/<int:pending_id>", methods=["GET", "POST"])
 def super_admin_approve_school(pending_id):
     if not is_super_admin():
         return redirect("/super-admin-login")
@@ -1983,6 +1983,7 @@ def super_admin_approve_school(pending_id):
     pending = cur.fetchone()
     if not pending:
         conn.close()
+        if is_ajax(): return ajax_err("Request not found (it may have already been handled).")
         return "<script>alert('Request not found (it may have already been handled).');window.location.href='/super-admin';</script>"
 
     try:
@@ -2008,12 +2009,14 @@ def super_admin_approve_school(pending_id):
             msg = "That School Code was already taken by another approved school. Reject this request and ask them to resubmit with a different code."
         elif "schools_admin_username_key" in msg:
             msg = "That Admin Username was already taken by another approved school. Reject this request and ask them to resubmit with a different username."
+        if is_ajax(): return ajax_err(msg)
         return f"<script>alert('Error: {msg}');window.location.href='/super-admin';</script>"
     conn.close()
+    if is_ajax(): return ajax_ok(f"Approved! {pending['name']} is now active with code {pending['code']}.")
     return f"<script>alert('Approved! {pending['name']} is now active with code {pending['code']}.');window.location.href='/super-admin';</script>"
 
 
-@app.route("/super-admin/reject-school/<int:pending_id>")
+@app.route("/super-admin/reject-school/<int:pending_id>", methods=["GET", "POST"])
 def super_admin_reject_school(pending_id):
     if not is_super_admin():
         return redirect("/super-admin-login")
@@ -2022,6 +2025,7 @@ def super_admin_reject_school(pending_id):
     cur.execute("DELETE FROM pending_school_registrations WHERE id=%s", (pending_id,))
     conn.commit()
     conn.close()
+    if is_ajax(): return ajax_ok("Request rejected and removed.")
     return "<script>alert('Request rejected and removed.');window.location.href='/super-admin';</script>"
 
 
@@ -4308,36 +4312,38 @@ def super_admin_dashboard():
 
     pending_rows_html = ""
     for p in pending_requests:
+        safe_pname = p['name'].replace("'", "\\'")
         pending_rows_html += f"""
-        <tr>
+        <tr id="pending-row-{p['id']}">
+            <td class="p-3"><input type="checkbox" class="pending-cb w-4 h-4 rounded accent-emerald-600" value="{p['id']}"></td>
             <td class="p-3 font-semibold">{p['name']}</td>
             <td class="p-3 font-mono font-bold text-blue-700">{p['code']}</td>
             <td class="p-3 text-slate-500 text-sm">{p['admin_username']}</td>
             <td class="p-3 text-xs text-slate-400">{p['created_at']}</td>
             <td class="p-3 whitespace-nowrap">
-                <a class="text-emerald-600 hover:underline text-sm font-bold mr-3"
-                   href="/super-admin/approve-school/{p['id']}"
-                   onclick="return confirm('Approve this school? It will go live immediately.')">✅ Approve</a>
-                <a class="text-red-500 hover:underline text-sm font-medium"
-                   href="/super-admin/reject-school/{p['id']}"
-                   onclick="return confirm('Reject and delete this request?')">Reject</a>
+                <button class="text-emerald-600 hover:text-emerald-800 text-sm font-bold mr-3"
+                   onclick="handlePending({p['id']}, 'approve', '{safe_pname}')">✅ Approve</button>
+                <button class="text-red-500 hover:text-red-700 text-sm font-medium"
+                   onclick="handlePending({p['id']}, 'reject', '{safe_pname}')">Reject</button>
             </td>
         </tr>"""
 
     rows_html = ""
     for s in schools:
+        safe_name = s['name'].replace("'", "\\'")
         rows_html += f"""
-        <tr>
+        <tr id="school-row-{s['id']}">
             <td class="p-3 font-mono text-xs text-slate-500">#{s['id']}</td>
             <td class="p-3 font-semibold">{s['name']}</td>
             <td class="p-3 font-mono font-bold text-blue-700 text-lg">{s['code']}</td>
             <td class="p-3 text-slate-500 text-sm">{s['admin_username']}</td>
             <td class="p-3 font-mono text-xs text-slate-400">{s['admin_password']}</td>
             <td class="p-3 text-xs text-slate-400">{s['created_at']}</td>
-            <td class="p-3">
-                <a class="text-red-500 hover:underline text-sm font-medium"
-                   href="/super-admin/delete-school/{s['id']}"
-                   onclick="return confirm('Delete school and ALL its data? This cannot be undone.')">Delete</a>
+            <td class="p-3 whitespace-nowrap">
+                <a class="text-blue-600 hover:underline text-sm font-medium mr-3"
+                   href="/super-admin/edit-school/{s['id']}">Edit</a>
+                <button class="text-red-500 hover:text-red-700 text-sm font-medium"
+                   onclick="deleteSchool({s['id']}, '{safe_name}')">Delete</button>
             </td>
         </tr>"""
     body = f"""
@@ -4404,14 +4410,22 @@ def super_admin_dashboard():
             </form>
         </div>
         <div class="card">
-            <div class="card-header"><span class="card-header-title">📥 Pending School Requests {f'<span class="ml-2 inline-block bg-amber-100 text-amber-700 text-xs font-bold px-2 py-0.5 rounded-full">{len(pending_requests)}</span>' if pending_requests else ''}</span></div>
+            <div class="card-header">
+                <span class="card-header-title">📥 Pending School Requests {f'<span class="ml-2 inline-block bg-amber-100 text-amber-700 text-xs font-bold px-2 py-0.5 rounded-full">{len(pending_requests)}</span>' if pending_requests else ''}</span>
+                <div class="flex gap-2" id="pending-bulk-bar" style="display:none!important;">
+                    <span class="text-xs text-slate-500 self-center" id="pending-sel-count"></span>
+                    <button onclick="bulkPending('approve')" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg">✅ Approve Selected</button>
+                    <button onclick="bulkPending('reject')" class="bg-red-500 hover:bg-red-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg">✗ Reject Selected</button>
+                </div>
+            </div>
             <div class="tbl-wrap">
             <table>
                 <thead><tr>
+                    <th class="w-8"><input type="checkbox" id="pending-select-all" class="w-4 h-4 rounded accent-emerald-600" onclick="toggleAllPending(this)"></th>
                     <th>School Name</th><th>Requested Code</th>
                     <th>Admin Username</th><th>Submitted</th><th>Action</th>
                 </tr></thead>
-                <tbody>{pending_rows_html if pending_rows_html else "<tr><td colspan='5' style='padding:24px;text-align:center;color:#94a3b8;'>No pending requests.</td></tr>"}</tbody>
+                <tbody id="pending-tbody">{pending_rows_html if pending_rows_html else "<tr><td colspan='6' style='padding:24px;text-align:center;color:#94a3b8;'>No pending requests.</td></tr>"}</tbody>
             </table>
             </div>
         </div>
@@ -4428,6 +4442,98 @@ def super_admin_dashboard():
             </div>
         </div>
     </div>
+    <script>
+    // ── PENDING CHECKBOXES ──
+    function toggleAllPending(master) {
+        document.querySelectorAll('.pending-cb').forEach(cb => cb.checked = master.checked);
+        updateBulkBar();
+    }
+    document.addEventListener('change', function(e) {
+        if (e.target.classList.contains('pending-cb')) updateBulkBar();
+    });
+    function getCheckedPending() {
+        return [...document.querySelectorAll('.pending-cb:checked')].map(cb => cb.value);
+    }
+    function updateBulkBar() {
+        const ids = getCheckedPending();
+        const bar = document.getElementById('pending-bulk-bar');
+        const count = document.getElementById('pending-sel-count');
+        if (ids.length > 0) {
+            bar.style.cssText = 'display:flex!important;align-items:center;gap:8px;';
+            count.textContent = ids.length + ' selected';
+        } else {
+            bar.style.cssText = 'display:none!important;';
+        }
+        const all = document.querySelectorAll('.pending-cb');
+        document.getElementById('pending-select-all').indeterminate = ids.length > 0 && ids.length < all.length;
+        document.getElementById('pending-select-all').checked = ids.length === all.length && all.length > 0;
+    }
+
+    // ── SINGLE APPROVE / REJECT ──
+    async function handlePending(id, action, name) {
+        const msg = action === 'approve'
+            ? `Approve "${name}"? It will go live immediately.`
+            : `Reject and delete the request for "${name}"?`;
+        if (!confirm(msg)) return;
+        const url = action === 'approve'
+            ? `/super-admin/approve-school/${id}`
+            : `/super-admin/reject-school/${id}`;
+        try {
+            const res = await fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            const data = await res.json();
+            if (data.ok) {
+                showToast(data.message, 'success');
+                const row = document.getElementById('pending-row-' + id);
+                if (row) row.remove();
+                updateBulkBar();
+            } else {
+                showToast(data.error || 'Something went wrong.', 'error');
+            }
+        } catch(e) { showToast('Network error.', 'error'); }
+    }
+
+    // ── BULK APPROVE / REJECT ──
+    async function bulkPending(action) {
+        const ids = getCheckedPending();
+        if (!ids.length) return;
+        const label = action === 'approve' ? 'approve' : 'reject';
+        if (!confirm(`${label.charAt(0).toUpperCase()+label.slice(1)} ${ids.length} selected request(s)?`)) return;
+        try {
+            const res = await fetch('/super-admin/bulk-pending', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({ ids, action })
+            });
+            const data = await res.json();
+            if (data.ok) {
+                showToast(data.message, 'success');
+                ids.forEach(id => {
+                    const row = document.getElementById('pending-row-' + id);
+                    if (row) row.remove();
+                });
+                updateBulkBar();
+            } else {
+                showToast(data.error || 'Something went wrong.', 'error');
+            }
+        } catch(e) { showToast('Network error.', 'error'); }
+    }
+
+    // ── DELETE SCHOOL ──
+    async function deleteSchool(id, name) {
+        if (!confirm(`Delete "${name}" and ALL its data? This cannot be undone.`)) return;
+        try {
+            const res = await fetch(`/super-admin/delete-school/${id}`, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            const data = await res.json();
+            if (data.ok) {
+                showToast(data.message, 'success');
+                const row = document.getElementById('school-row-' + id);
+                if (row) row.remove();
+            } else {
+                showToast(data.error || 'Something went wrong.', 'error');
+            }
+        } catch(e) { showToast('Network error.', 'error'); }
+    }
+    </script>
     """
     return page_wrapper("School Manager", body, is_admin=True)
 
@@ -4467,11 +4573,94 @@ def super_admin_create_school():
     if is_ajax(): return ajax_ok(f"School '{name}' created! Code: {code}", redirect_url="/super-admin")
     return f"<script>alert('School {name} created! Code: {code}');window.location.href='/super-admin';</script>"
 
-@app.route("/super-admin/delete-school/<int:school_id>")
+@app.route("/super-admin/edit-school/<int:school_id>", methods=["GET", "POST"])
+def super_admin_edit_school(school_id):
+    if not is_super_admin():
+        return redirect("/super-admin-login")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM schools WHERE id=%s", (school_id,))
+    school = cur.fetchone()
+    if not school:
+        conn.close()
+        return "School not found", 404
+
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        code = request.form.get("code", "").strip().upper().replace(" ", "")
+        admin_username = request.form.get("admin_username", "").strip()
+        admin_password = request.form.get("admin_password", "").strip()
+
+        if not name or not code or not admin_username or not admin_password:
+            if is_ajax(): return ajax_err("All fields are required.")
+            return "<script>alert('All fields are required');window.location.href='/super-admin';</script>"
+
+        try:
+            cur.execute("""
+                UPDATE schools SET name=%s, code=%s, admin_username=%s, admin_password=%s
+                WHERE id=%s
+            """, (name, code, admin_username, admin_password, school_id))
+            # Also keep admin_settings in sync
+            cur.execute("""
+                INSERT INTO admin_settings (school_id, key, value) VALUES (%s, 'admin_password', %s)
+                ON CONFLICT (school_id, key) DO UPDATE SET value=%s
+            """, (school_id, admin_password, admin_password))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            msg = str(e).split('\n')[0].replace("'", "")
+            if is_ajax(): return ajax_err(f"Error: {msg}")
+            return f"<script>alert('Error: {msg}');window.location.href='/super-admin';</script>"
+        conn.close()
+        if is_ajax(): return ajax_ok(f"School '{name}' updated successfully!", redirect_url="/super-admin")
+        return f"<script>alert('School updated successfully!');window.location.href='/super-admin';</script>"
+
+    conn.close()
+    body = f"""
+    <div class="max-w-lg">
+        <div class="flex items-center gap-3 mb-6">
+            <a href="/super-admin" class="text-slate-400 hover:text-slate-700 text-sm font-medium">← Back to School Manager</a>
+        </div>
+        <h1 class="text-2xl font-bold text-slate-800 mb-1">✏️ Edit School</h1>
+        <p class="text-sm text-slate-500 mb-6">Update any detail for <b>{school['name']}</b>. Changes take effect immediately.</p>
+
+        <div class="card card-body space-y-4">
+            <form method="POST" class="space-y-4" data-ajax>
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">School Full Name</label>
+                    <input type="text" name="name" value="{school['name']}" class="form-input" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">School Code <span class="text-slate-400 font-normal">(short, unique, no spaces)</span></label>
+                    <input type="text" name="code" value="{school['code']}" class="form-input" required>
+                    <p class="text-xs text-amber-600 mt-1">⚠️ Changing the code means all users must use the new code to log in.</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">Admin Username</label>
+                    <input type="text" name="admin_username" value="{school['admin_username']}" class="form-input" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">Admin Password</label>
+                    <input type="text" name="admin_password" value="{school['admin_password']}" class="form-input" required>
+                </div>
+                <div class="pt-2 flex gap-3">
+                    <button type="submit" class="btn green">Save Changes</button>
+                    <a href="/super-admin" class="inline-flex items-center px-4 py-2 bg-slate-100 text-slate-700 font-semibold rounded-lg hover:bg-slate-200 text-sm">Cancel</a>
+                </div>
+            </form>
+        </div>
+    </div>
+    """
+    return page_wrapper(f"Edit School — {school['name']}", body, is_admin=True)
+
+
+@app.route("/super-admin/delete-school/<int:school_id>", methods=["GET", "POST"])
 def super_admin_delete_school(school_id):
     if not is_super_admin():
         return redirect("/super-admin-login")
     if school_id == 1:
+        if is_ajax(): return ajax_err("Cannot delete the default school.")
         return "<script>alert('Cannot delete the default school.');window.location.href='/super-admin';</script>"
     conn = get_db()
     cur = conn.cursor()
@@ -4487,7 +4676,71 @@ def super_admin_delete_school(school_id):
     cur.execute("DELETE FROM schools WHERE id=%s", (school_id,))
     conn.commit()
     conn.close()
+    if is_ajax(): return ajax_ok("School and all its data deleted.")
     return "<script>alert('School and all its data deleted.');window.location.href='/super-admin';</script>"
+
+@app.route("/super-admin/bulk-pending", methods=["POST"])
+def super_admin_bulk_pending():
+    if not is_super_admin():
+        return ajax_err("Not authorized.")
+    data = request.get_json()
+    if not data:
+        return ajax_err("No data received.")
+    ids = data.get("ids", [])
+    action = data.get("action", "")
+    if not ids or action not in ("approve", "reject"):
+        return ajax_err("Invalid request.")
+
+    conn = get_db()
+    cur = conn.cursor()
+    approved = 0
+    rejected = 0
+    errors = []
+
+    for pid in ids:
+        try:
+            pid = int(pid)
+        except:
+            continue
+        if action == "approve":
+            cur.execute("SELECT * FROM pending_school_registrations WHERE id=%s", (pid,))
+            pending = cur.fetchone()
+            if not pending:
+                errors.append(f"Request #{pid} not found.")
+                continue
+            try:
+                cur.execute("""
+                    INSERT INTO schools (name, code, admin_username, admin_password, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (pending["name"], pending["code"], pending["admin_username"], pending["admin_password"],
+                      datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                cur.execute("SELECT id FROM schools WHERE code=%s", (pending["code"],))
+                new_school = cur.fetchone()
+                if new_school:
+                    cur.execute("""
+                        INSERT INTO admin_settings (school_id, key, value) VALUES (%s, 'admin_password', %s)
+                        ON CONFLICT (school_id, key) DO UPDATE SET value=%s
+                    """, (new_school["id"], pending["admin_password"], pending["admin_password"]))
+                cur.execute("DELETE FROM pending_school_registrations WHERE id=%s", (pid,))
+                conn.commit()
+                approved += 1
+            except Exception as e:
+                conn.rollback()
+                errors.append(f"{pending['name']}: {str(e).split(chr(10))[0]}")
+        else:
+            cur.execute("DELETE FROM pending_school_registrations WHERE id=%s", (pid,))
+            conn.commit()
+            rejected += 1
+
+    conn.close()
+    parts = []
+    if approved: parts.append(f"{approved} approved")
+    if rejected: parts.append(f"{rejected} rejected")
+    msg = ", ".join(parts) + " successfully."
+    if errors:
+        msg += " Errors: " + "; ".join(errors)
+    return ajax_ok(msg)
+
 
 @app.route("/super-admin-logout", methods=["POST", "GET"])
 def super_admin_logout():
