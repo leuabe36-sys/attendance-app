@@ -136,31 +136,59 @@ def init_db():
     conn = get_db()
     cur = conn.cursor()
 
+    # ── SCHOOLS TABLE (multi-tenancy root) ──
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS schools (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            code TEXT UNIQUE NOT NULL,
+            admin_username TEXT UNIQUE NOT NULL,
+            admin_password TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    # Seed a default school so existing data isn't broken
+    cur.execute("""
+        INSERT INTO schools (name, code, admin_username, admin_password, created_at)
+        VALUES ('Default School', 'DEFAULT', 'admin', 'admin123', %s)
+        ON CONFLICT (code) DO NOTHING
+    """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS teachers (
             id SERIAL PRIMARY KEY,
+            school_id INTEGER NOT NULL DEFAULT 1,
             teacher_name TEXT NOT NULL,
-            username TEXT UNIQUE NOT NULL,
+            username TEXT NOT NULL,
             password TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            photo_path TEXT
+            photo_path TEXT,
+            UNIQUE(school_id, username),
+            FOREIGN KEY (school_id) REFERENCES schools(id)
         )
     """)
+    # Migrate existing teachers: assign to school 1 if column missing
+    cur.execute("ALTER TABLE teachers ADD COLUMN IF NOT EXISTS school_id INTEGER NOT NULL DEFAULT 1")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS students (
             id SERIAL PRIMARY KEY,
-            student_id TEXT UNIQUE NOT NULL,
+            school_id INTEGER NOT NULL DEFAULT 1,
+            student_id TEXT NOT NULL,
             full_name TEXT NOT NULL,
             password TEXT NOT NULL,
             image_file TEXT NOT NULL,
-            registered_at TEXT NOT NULL
+            registered_at TEXT NOT NULL,
+            UNIQUE(school_id, student_id),
+            FOREIGN KEY (school_id) REFERENCES schools(id)
         )
     """)
+    cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS school_id INTEGER NOT NULL DEFAULT 1")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS classes (
             id SERIAL PRIMARY KEY,
+            school_id INTEGER NOT NULL DEFAULT 1,
             class_name TEXT NOT NULL,
             department TEXT,
             course TEXT,
@@ -169,9 +197,11 @@ def init_db():
             teacher_id INTEGER NOT NULL,
             teacher_display_name TEXT,
             created_at TEXT NOT NULL,
-            FOREIGN KEY (teacher_id) REFERENCES teachers(id)
+            FOREIGN KEY (teacher_id) REFERENCES teachers(id),
+            FOREIGN KEY (school_id) REFERENCES schools(id)
         )
     """)
+    cur.execute("ALTER TABLE classes ADD COLUMN IF NOT EXISTS school_id INTEGER NOT NULL DEFAULT 1")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS student_classes (
@@ -187,6 +217,7 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS attendance (
             id SERIAL PRIMARY KEY,
+            school_id INTEGER NOT NULL DEFAULT 1,
             student_id TEXT NOT NULL,
             full_name TEXT NOT NULL,
             class_id INTEGER NOT NULL,
@@ -199,21 +230,29 @@ def init_db():
             status TEXT NOT NULL,
             date TEXT NOT NULL,
             time TEXT NOT NULL,
-            UNIQUE(student_id, class_id, date),
+            UNIQUE(school_id, student_id, class_id, date),
             FOREIGN KEY (class_id) REFERENCES classes(id)
         )
     """)
+    cur.execute("ALTER TABLE attendance ADD COLUMN IF NOT EXISTS school_id INTEGER NOT NULL DEFAULT 1")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS admin_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
+            school_id INTEGER NOT NULL DEFAULT 1,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (school_id, key)
         )
     """)
-    # Seed default admin password if not already set
+    # Migrate old admin_settings if it has a different PK
+    try:
+        cur.execute("ALTER TABLE admin_settings ADD COLUMN IF NOT EXISTS school_id INTEGER NOT NULL DEFAULT 1")
+    except Exception:
+        pass
+    # Seed default admin password for school 1 if not already set
     cur.execute("""
-        INSERT INTO admin_settings (key, value)
-        VALUES ('admin_password', 'admin123')
-        ON CONFLICT (key) DO NOTHING
+        INSERT INTO admin_settings (school_id, key, value)
+        VALUES (1, 'admin_password', 'admin123')
+        ON CONFLICT (school_id, key) DO NOTHING
     """)
     conn.commit()
     conn.close()
@@ -246,10 +285,11 @@ def sanitize_filename(text):
 
 
 def get_admin_password():
+    school_id = session.get("school_id", 1)
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT value FROM admin_settings WHERE key='admin_password'")
+        cur.execute("SELECT value FROM admin_settings WHERE school_id=%s AND key='admin_password'", (school_id,))
         row = cur.fetchone()
         conn.close()
         return row["value"] if row else "admin123"
@@ -257,11 +297,43 @@ def get_admin_password():
         return "admin123"
 
 def set_admin_password(new_password):
+    school_id = session.get("school_id", 1)
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("INSERT INTO admin_settings (key, value) VALUES ('admin_password', %s) ON CONFLICT (key) DO UPDATE SET value=%s", (new_password, new_password))
+    cur.execute(
+        "INSERT INTO admin_settings (school_id, key, value) VALUES (%s, 'admin_password', %s) ON CONFLICT (school_id, key) DO UPDATE SET value=%s",
+        (school_id, new_password, new_password)
+    )
     conn.commit()
     conn.close()
+
+# ── SCHOOL HELPERS ──
+def get_current_school_id():
+    return session.get("school_id", 1)
+
+def get_all_schools():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM schools ORDER BY name")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_school_by_id(school_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM schools WHERE id=%s", (school_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def get_school_by_code(code):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM schools WHERE upper(code)=upper(%s)", (code,))
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 def is_admin_logged_in():
     return session.get("admin_logged_in") is True
@@ -301,51 +373,62 @@ def student_required():
     return None
 
 
-def student_exists(student_id):
+def student_exists(student_id, school_id=None):
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM students WHERE lower(student_id)=lower(%s)", (student_id.strip(),))
+    cur.execute("SELECT 1 FROM students WHERE lower(student_id)=lower(%s) AND school_id=%s", (student_id.strip(), school_id))
     row = cur.fetchone()
     conn.close()
     return row is not None
 
 
-def teacher_username_exists(username):
+def teacher_username_exists(username, school_id=None):
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM teachers WHERE lower(username)=lower(%s)", (username.strip(),))
+    cur.execute("SELECT 1 FROM teachers WHERE lower(username)=lower(%s) AND school_id=%s", (username.strip(), school_id))
     row = cur.fetchone()
     conn.close()
     return row is not None
 
 
-def get_all_students():
+def get_all_students(school_id=None):
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM students ORDER BY id DESC")
+    cur.execute("SELECT * FROM students WHERE school_id=%s ORDER BY id DESC", (school_id,))
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
-def get_all_teachers():
+def get_all_teachers(school_id=None):
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM teachers ORDER BY id DESC")
+    cur.execute("SELECT * FROM teachers WHERE school_id=%s ORDER BY id DESC", (school_id,))
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
-def get_all_classes():
+def get_all_classes(school_id=None):
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
         SELECT c.*, t.teacher_name
         FROM classes c
         LEFT JOIN teachers t ON c.teacher_id = t.id
+        WHERE c.school_id=%s
         ORDER BY c.id DESC
-    """)
+    """, (school_id,))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -380,10 +463,12 @@ def get_class_by_id(class_id):
     return row
 
 
-def get_student_row_by_student_id(student_id_text):
+def get_student_row_by_student_id(student_id_text, school_id=None):
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM students WHERE student_id=%s", (student_id_text,))
+    cur.execute("SELECT * FROM students WHERE student_id=%s AND school_id=%s", (student_id_text, school_id))
     row = cur.fetchone()
     conn.close()
     return row
@@ -453,23 +538,27 @@ def remove_student_from_class(student_db_id, class_id):
     conn.close()
 
 
-def get_all_attendance():
+def get_all_attendance(school_id=None):
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM attendance ORDER BY id DESC")
+    cur.execute("SELECT * FROM attendance WHERE school_id=%s ORDER BY id DESC", (school_id,))
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
-def get_attendance_for_teacher(teacher_name):
+def get_attendance_for_teacher(teacher_name, school_id=None):
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
         SELECT * FROM attendance
-        WHERE teacher_name=%s
+        WHERE teacher_name=%s AND school_id=%s
         ORDER BY id DESC
-    """, (teacher_name,))
+    """, (teacher_name, school_id))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -501,14 +590,17 @@ def get_attendance_for_student(student_id):
     return rows
 
 
-def load_known_faces():
+def load_known_faces(school_id=None):
     global known_encodings, known_students
     known_encodings = []
     known_students = []
 
+    if school_id is None:
+        school_id = session.get("school_id", 1)
+
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, student_id, full_name, image_file FROM students")
+    cur.execute("SELECT id, student_id, full_name, image_file FROM students WHERE school_id=%s", (school_id,))
     rows = cur.fetchall()
     conn.close()
 
@@ -565,14 +657,15 @@ def mark_attendance(student_row, class_row, status="Present"):
     # Fetches local system date and time
     today = datetime.now().strftime("%Y-%m-%d")
     now_time = datetime.now().strftime("%I:%M:%S %p")
+    school_id = get_current_school_id()
 
     conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
         SELECT * FROM attendance
-        WHERE student_id=%s AND class_id=%s AND date=%s
-    """, (student_row["student_id"], class_row["id"], today))
+        WHERE student_id=%s AND class_id=%s AND date=%s AND school_id=%s
+    """, (student_row["student_id"], class_row["id"], today, school_id))
     existing = cur.fetchone()
 
     teacher_name = class_row["teacher_display_name"] or class_row["teacher_name"] or ""
@@ -586,11 +679,12 @@ def mark_attendance(student_row, class_row, status="Present"):
     else:
         cur.execute("""
             INSERT INTO attendance (
-                student_id, full_name, class_id, class_name,
+                school_id, student_id, full_name, class_id, class_name,
                 department, course, section_name, subject_name,
                 teacher_name, status, date, time
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
+            school_id,
             student_row["student_id"],
             student_row["full_name"],
             class_row["id"],
@@ -636,7 +730,9 @@ def get_percentage(student_id, class_id):
     return round((present_count / total_count) * 100, 2)
 
 
-def get_report_records(period="daily"):
+def get_report_records(period="daily", school_id=None):
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
 
@@ -653,9 +749,9 @@ def get_report_records(period="daily"):
 
     cur.execute("""
         SELECT * FROM attendance
-        WHERE date >= %s
+        WHERE date >= %s AND school_id=%s
         ORDER BY date DESC, time DESC
-    """, (start_date.strftime("%Y-%m-%d"),))
+    """, (start_date.strftime("%Y-%m-%d"), school_id))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -1476,30 +1572,58 @@ def login_page(title, action, user_placeholder, pass_placeholder, error_message=
 @app.route("/admin-login", methods=["GET", "POST"])
 def admin_login():
     if request.method == "GET":
-        return login_page("Admin Login", "/admin-login", "Admin Username", "Admin Password")
+        return login_page("Admin Login", "/admin-login", "School Code", "Admin Password",
+                          extra_fields='<input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>')
 
-    username = request.form.get("username", "").strip()
+    school_code = request.form.get("school_code", "").strip().upper()
     password = request.form.get("password", "").strip()
 
-    if username == ADMIN_USERNAME and password == get_admin_password():
-        session.clear()
-        session["admin_logged_in"] = True
-        return redirect("/admin")
+    school = get_school_by_code(school_code)
+    if not school:
+        return login_page("Admin Login", "/admin-login", "School Code", "Admin Password",
+                          "School code not found.",
+                          extra_fields='<input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg" required>')
 
-    return login_page("Admin Login", "/admin-login", "Admin Username", "Admin Password", "Invalid admin username or password")
+    # Check school-specific admin password
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM admin_settings WHERE school_id=%s AND key='admin_password'", (school["id"],))
+    row = cur.fetchone()
+    conn.close()
+    stored_pw = row["value"] if row else school["admin_password"]
+
+    if password != stored_pw:
+        return login_page("Admin Login", "/admin-login", "School Code", "Admin Password",
+                          "Invalid password.",
+                          extra_fields='<input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg" required>')
+
+    session.clear()
+    session["admin_logged_in"] = True
+    session["school_id"] = school["id"]
+    session["school_name"] = school["name"]
+    return redirect("/admin")
 
 
 @app.route("/teacher-login", methods=["GET", "POST"])
 def teacher_login():
+    school_code_field = '<input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>'
     if request.method == "GET":
-        return login_page("Teacher Login", "/teacher-login", "Teacher Username", "Teacher Password")
+        return login_page("Teacher Login", "/teacher-login", "Teacher Username", "Teacher Password",
+                          extra_fields=school_code_field)
 
+    school_code = request.form.get("school_code", "").strip().upper()
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "").strip()
 
+    school = get_school_by_code(school_code)
+    if not school:
+        return login_page("Teacher Login", "/teacher-login", "Teacher Username", "Teacher Password",
+                          "School code not found.", extra_fields=school_code_field)
+
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM teachers WHERE username=%s AND password=%s", (username, password))
+    cur.execute("SELECT * FROM teachers WHERE username=%s AND password=%s AND school_id=%s",
+                (username, password, school["id"]))
     teacher = cur.fetchone()
     conn.close()
 
@@ -1508,22 +1632,34 @@ def teacher_login():
         session["teacher_logged_in"] = True
         session["teacher_id"] = teacher["id"]
         session["teacher_name"] = teacher["teacher_name"]
+        session["school_id"] = school["id"]
+        session["school_name"] = school["name"]
         return redirect("/teacher")
 
-    return login_page("Teacher Login", "/teacher-login", "Teacher Username", "Teacher Password", "Invalid teacher username or password")
+    return login_page("Teacher Login", "/teacher-login", "Teacher Username", "Teacher Password",
+                      "Invalid teacher username or password", extra_fields=school_code_field)
 
 
 @app.route("/student-login", methods=["GET", "POST"])
 def student_login():
+    school_code_field = '<input type="text" name="school_code" placeholder="School Code (e.g. ABC123)" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>'
     if request.method == "GET":
-        return login_page("Student Login", "/student-login", "Student ID", "Student Password")
+        return login_page("Student Login", "/student-login", "Student ID", "Student Password",
+                          extra_fields=school_code_field)
 
+    school_code = request.form.get("school_code", "").strip().upper()
     student_id = request.form.get("username", "").strip()
     password = request.form.get("password", "").strip()
 
+    school = get_school_by_code(school_code)
+    if not school:
+        return login_page("Student Login", "/student-login", "Student ID", "Student Password",
+                          "School code not found.", extra_fields=school_code_field)
+
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM students WHERE student_id=%s AND password=%s", (student_id, password))
+    cur.execute("SELECT * FROM students WHERE student_id=%s AND password=%s AND school_id=%s",
+                (student_id, password, school["id"]))
     student = cur.fetchone()
     conn.close()
 
@@ -1533,9 +1669,12 @@ def student_login():
         session["student_db_id"] = student["id"]
         session["student_id"] = student["student_id"]
         session["student_name"] = student["full_name"]
+        session["school_id"] = school["id"]
+        session["school_name"] = school["name"]
         return redirect("/student")
 
-    return login_page("Student Login", "/student-login", "Student ID", "Student Password", "Invalid student ID or password")
+    return login_page("Student Login", "/student-login", "Student ID", "Student Password",
+                      "Invalid student ID or password", extra_fields=school_code_field)
 
 
 @app.route("/admin-logout", methods=["GET", "POST"])
@@ -1780,14 +1919,15 @@ def register_face():
 
         conn = get_db()
         cur = conn.cursor()
+        school_id = get_current_school_id()
         cur.execute("""
-            INSERT INTO students (student_id, full_name, password, image_file, registered_at)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (student_id, full_name, password, public_url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            INSERT INTO students (school_id, student_id, full_name, password, image_file, registered_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (school_id, student_id, full_name, password, public_url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         conn.close()
 
-        load_known_faces()
+        load_known_faces(school_id)
         return jsonify({"success": True, "message": f"Successfully registered face map vector profile for {full_name}!"})
     except Exception as e:
         return jsonify({"success": False, "message": f"Internal mapping failure error: {str(e)}"})
@@ -2073,15 +2213,16 @@ def admin_charts():
 
     conn = get_db()
     cur = conn.cursor()
+    school_id = get_current_school_id()
 
     # Daily attendance last 14 days
     cur.execute("""
         SELECT date, COUNT(*) as total,
                SUM(CASE WHEN status='Present' THEN 1 ELSE 0 END) as present
         FROM attendance
-        WHERE date >= (CURRENT_DATE - INTERVAL '14 days')::text
+        WHERE date >= (CURRENT_DATE - INTERVAL '14 days')::text AND school_id=%s
         GROUP BY date ORDER BY date ASC
-    """)
+    """, (school_id,))
     daily = cur.fetchall()
 
     # Per-class attendance rate
@@ -2090,12 +2231,13 @@ def admin_charts():
                COUNT(*) as total,
                SUM(CASE WHEN status='Present' THEN 1 ELSE 0 END) as present
         FROM attendance
+        WHERE school_id=%s
         GROUP BY class_name ORDER BY total DESC LIMIT 10
-    """)
+    """, (school_id,))
     by_class = cur.fetchall()
 
     # Present vs Absent overall
-    cur.execute("SELECT status, COUNT(*) as c FROM attendance GROUP BY status")
+    cur.execute("SELECT status, COUNT(*) as c FROM attendance WHERE school_id=%s GROUP BY status", (school_id,))
     status_rows = cur.fetchall()
 
     # Top 5 students by attendance
@@ -2104,8 +2246,9 @@ def admin_charts():
                COUNT(*) as total,
                SUM(CASE WHEN status='Present' THEN 1 ELSE 0 END) as present
         FROM attendance
+        WHERE school_id=%s
         GROUP BY full_name ORDER BY present DESC LIMIT 8
-    """)
+    """, (school_id,))
     top_students = cur.fetchall()
 
     conn.close()
@@ -2253,10 +2396,11 @@ def admin_create_teacher():
 
     conn = get_db()
     cur = conn.cursor()
+    school_id = get_current_school_id()
     cur.execute("""
-        INSERT INTO teachers (teacher_name, username, password, created_at)
-        VALUES (%s, %s, %s, %s)
-    """, (teacher_name, username, password, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        INSERT INTO teachers (school_id, teacher_name, username, password, created_at)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (school_id, teacher_name, username, password, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
     return "<script>alert('Instructor profile instantiated successfully');window.location.href='/admin';</script>"
@@ -2354,9 +2498,9 @@ def admin_create_class():
 
     cur.execute("""
         INSERT INTO classes (
-            class_name, department, course, section_name, subject_name, teacher_id, teacher_display_name, created_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    """, (class_name, department, course, section_name, subject_name, teacher["id"], teacher["teacher_name"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            school_id, class_name, department, course, section_name, subject_name, teacher_id, teacher_display_name, created_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (get_current_school_id(), class_name, department, course, section_name, subject_name, teacher["id"], teacher["teacher_name"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
     return "<script>alert('New classroom created successfully');window.location.href='/admin';</script>"
@@ -3728,3 +3872,168 @@ if __name__ == '__main__':
     init_db()
     load_known_faces()
     app.run(host='0.0.0.0', port=5000, debug=True)
+
+# =========================================================
+# SUPER-ADMIN — SCHOOL MANAGEMENT
+# Set SUPER_ADMIN_PASSWORD env var to secure this panel.
+# Default: "superadmin123" — change this in production!
+# =========================================================
+SUPER_ADMIN_PASSWORD = os.environ.get("SUPER_ADMIN_PASSWORD", "superadmin123")
+
+def is_super_admin():
+    return session.get("super_admin_logged_in") is True
+
+@app.route("/super-admin-login", methods=["GET", "POST"])
+def super_admin_login():
+    err = ""
+    if request.method == "POST":
+        pw = request.form.get("password", "").strip()
+        if pw == SUPER_ADMIN_PASSWORD:
+            session["super_admin_logged_in"] = True
+            return redirect("/super-admin")
+        err = "Incorrect password."
+    return page_wrapper("Super Admin Login", f"""
+        <div class="max-w-md mx-auto my-8 p-6 bg-white border rounded-xl shadow-sm">
+            <h2 class="text-2xl font-bold text-slate-800 text-center mb-2">🏫 Super Admin</h2>
+            <p class="text-sm text-slate-500 text-center mb-5">Manage all schools on this platform</p>
+            <form method="POST" class="space-y-4">
+                <input type="password" name="password" placeholder="Super Admin Password"
+                    class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-slate-500" required>
+                <button class="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-2 rounded-lg" type="submit">Sign In</button>
+            </form>
+            {'<p class="mt-3 text-sm text-red-500 text-center font-semibold">' + err + '</p>' if err else ''}
+            <div class="mt-4 text-center"><a class="text-sm text-blue-600 hover:underline" href="/">← Back to Home</a></div>
+        </div>""")
+
+@app.route("/super-admin")
+def super_admin_dashboard():
+    if not is_super_admin():
+        return redirect("/super-admin-login")
+    schools = get_all_schools()
+    rows_html = ""
+    for s in schools:
+        rows_html += f"""
+        <tr>
+            <td class="p-3 font-mono text-xs text-slate-500">#{s['id']}</td>
+            <td class="p-3 font-semibold">{s['name']}</td>
+            <td class="p-3 font-mono font-bold text-blue-700 text-lg">{s['code']}</td>
+            <td class="p-3 text-slate-500 text-sm">{s['admin_username']}</td>
+            <td class="p-3 font-mono text-xs text-slate-400">{s['admin_password']}</td>
+            <td class="p-3 text-xs text-slate-400">{s['created_at']}</td>
+            <td class="p-3">
+                <a class="text-red-500 hover:underline text-sm font-medium"
+                   href="/super-admin/delete-school/{s['id']}"
+                   onclick="return confirm('Delete school and ALL its data? This cannot be undone.')">Delete</a>
+            </td>
+        </tr>"""
+    body = f"""
+    <div class="space-y-6">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+            <div>
+                <h1 class="text-3xl font-bold text-slate-800">🏫 School Manager</h1>
+                <p class="text-sm text-slate-500 mt-1">{len(schools)} school(s) on this platform</p>
+            </div>
+            <form method="POST" action="/super-admin-logout">
+                <button class="bg-slate-700 hover:bg-slate-900 text-white font-bold py-2 px-4 rounded-lg text-sm">Sign Out</button>
+            </form>
+        </div>
+        <div class="card card-body">
+            <h2 class="text-xl font-bold text-slate-800 mb-4">➕ Register New School</h2>
+            <p class="text-sm text-slate-500 mb-4">Each school gets a unique <b>School Code</b>. Staff and students enter this code when logging in to access their school's data.</p>
+            <form method="POST" action="/super-admin/create-school" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">School Full Name</label>
+                    <input type="text" name="name" placeholder="e.g. Green Hills Secondary School" class="form-input" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">School Code <span class="text-slate-400">(short, unique, no spaces)</span></label>
+                    <input type="text" name="code" placeholder="e.g. GREENHS or ABC01" class="form-input" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Admin Username</label>
+                    <input type="text" name="admin_username" placeholder="e.g. principal" class="form-input" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Admin Password</label>
+                    <input type="text" name="admin_password" placeholder="Strong password" class="form-input" required>
+                </div>
+                <div class="md:col-span-2 pt-1">
+                    <button class="btn green" type="submit">Create School</button>
+                </div>
+            </form>
+        </div>
+        <div class="card">
+            <div class="card-header"><span class="card-header-title">All Schools</span></div>
+            <div class="tbl-wrap">
+            <table>
+                <thead><tr>
+                    <th>ID</th><th>School Name</th><th>Code</th>
+                    <th>Admin Username</th><th>Admin Password</th><th>Created</th><th>Action</th>
+                </tr></thead>
+                <tbody>{rows_html if rows_html else "<tr><td colspan='7' style='padding:24px;text-align:center;color:#94a3b8;'>No schools yet.</td></tr>"}</tbody>
+            </table>
+            </div>
+        </div>
+    </div>
+    """
+    return page_wrapper("School Manager", body, is_admin=True)
+
+@app.route("/super-admin/create-school", methods=["POST"])
+def super_admin_create_school():
+    if not is_super_admin():
+        return redirect("/super-admin-login")
+    name = request.form.get("name", "").strip()
+    code = request.form.get("code", "").strip().upper().replace(" ", "")
+    admin_username = request.form.get("admin_username", "").strip()
+    admin_password = request.form.get("admin_password", "").strip()
+    if not name or not code or not admin_username or not admin_password:
+        return "<script>alert('All fields are required');window.location.href='/super-admin';</script>"
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO schools (name, code, admin_username, admin_password, created_at)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (name, code, admin_username, admin_password, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        cur.execute("SELECT id FROM schools WHERE code=%s", (code,))
+        new_school = cur.fetchone()
+        if new_school:
+            cur.execute("""
+                INSERT INTO admin_settings (school_id, key, value) VALUES (%s, 'admin_password', %s)
+                ON CONFLICT (school_id, key) DO UPDATE SET value=%s
+            """, (new_school["id"], admin_password, admin_password))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        msg = str(e).split('\n')[0].replace("'", "")
+        return f"<script>alert('Error: {msg}');window.location.href='/super-admin';</script>"
+    conn.close()
+    return f"<script>alert('School {name} created! Code: {code}');window.location.href='/super-admin';</script>"
+
+@app.route("/super-admin/delete-school/<int:school_id>")
+def super_admin_delete_school(school_id):
+    if not is_super_admin():
+        return redirect("/super-admin-login")
+    if school_id == 1:
+        return "<script>alert('Cannot delete the default school.');window.location.href='/super-admin';</script>"
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM attendance WHERE school_id=%s", (school_id,))
+    cur.execute("SELECT id FROM classes WHERE school_id=%s", (school_id,))
+    class_ids = [r["id"] for r in cur.fetchall()]
+    if class_ids:
+        cur.execute("DELETE FROM student_classes WHERE class_id_fk = ANY(%s)", (class_ids,))
+    cur.execute("DELETE FROM classes WHERE school_id=%s", (school_id,))
+    cur.execute("DELETE FROM students WHERE school_id=%s", (school_id,))
+    cur.execute("DELETE FROM teachers WHERE school_id=%s", (school_id,))
+    cur.execute("DELETE FROM admin_settings WHERE school_id=%s", (school_id,))
+    cur.execute("DELETE FROM schools WHERE id=%s", (school_id,))
+    conn.commit()
+    conn.close()
+    return "<script>alert('School and all its data deleted.');window.location.href='/super-admin';</script>"
+
+@app.route("/super-admin-logout", methods=["POST", "GET"])
+def super_admin_logout():
+    session.pop("super_admin_logged_in", None)
+    return redirect("/super-admin-login")
