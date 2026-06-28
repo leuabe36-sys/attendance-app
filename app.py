@@ -1117,7 +1117,8 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
         <nav class="sb-nav">
             <div class="sb-nav-label">STUDENT</div>
             <a href="/student" class="sb-link"><span class="sb-icon">📚</span> My Profile</a>
-            <a href="/student/scan" class="sb-link sb-link-checkin"><span class="sb-icon">📸</span> Face Check-In</a>
+            <a href="/student/qr-scan" class="sb-link sb-link-checkin"><span class="sb-icon">📷</span> Scan QR to Check In</a>
+            <a href="/student/scan" class="sb-link"><span class="sb-icon">📸</span> Face Check-In</a>
             <a href="/student/edit-profile" class="sb-link"><span class="sb-icon">✏️</span> Edit Profile</a>
             <div class="sb-nav-label" style="margin-top:16px;">ACCOUNT</div>
             <a href="/" class="sb-link sb-link-muted"><span class="sb-icon">🏠</span> Main Site</a>
@@ -3880,15 +3881,26 @@ def qr_checkin_landing(code):
     code = code.upper().strip()
     # Find the class this code belongs to
     school_id = session.get("school_id", 1)
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT class_id FROM class_sessions
-        WHERE code=%s AND active=TRUE AND expires_at > NOW()
-        ORDER BY id DESC LIMIT 1
-    """, (code,))
-    row = cur.fetchone()
-    conn.close()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT class_id FROM class_sessions
+            WHERE code=%s AND active=TRUE AND expires_at > NOW()
+            ORDER BY id DESC LIMIT 1
+        """, (code,))
+        row = cur.fetchone()
+        conn.close()
+    except Exception as e:
+        print("qr_checkin_landing DB error:", repr(e), flush=True)
+        return page_wrapper("QR Check-In", f"""
+        <div class="max-w-md mx-auto text-center py-16 space-y-4">
+            <div class="text-6xl">⚠️</div>
+            <h1 class="text-2xl font-bold text-red-600">Something went wrong</h1>
+            <p class="text-slate-500">Could not verify the QR code right now. Please try again in a moment.</p>
+            <a href="/student" class="inline-block mt-4 bg-slate-800 text-white font-bold px-6 py-2.5 rounded-xl">Go to My Dashboard</a>
+        </div>
+        """)
 
     if not row:
         # Code expired or invalid
@@ -4004,6 +4016,199 @@ def student_manual_checkin(class_id):
     else:
         mark_attendance(student_row, class_row, 'Absent', student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
         return f"<script>alert('❌ Marked Absent — none of the verification checks passed.\\nReasons: {reason}'); window.location.href='/student';</script>"
+
+
+@app.route("/student/qr-scan")
+def student_qr_scan_portal():
+    """
+    In-app camera QR scanner. Opens the device's back camera right inside the
+    website (no need to back out to the phone's native camera app) and uses
+    the jsQR library to decode QR codes from the live video feed in real time.
+    Once a /checkin/<code> URL is detected, it's handled exactly like a normal
+    QR scan: the code is parsed out and sent straight into the same check-in
+    flow used by qr_checkin_landing().
+    """
+    protect = student_required()
+    if protect:
+        return protect
+
+    student_db_id = get_logged_student_db_id()
+    student_ctx = get_student_row_by_db_id(student_db_id)
+
+    body = f"""
+    <div class="max-w-lg mx-auto text-center space-y-4">
+        <div>
+            <h1 class="text-2xl font-extrabold text-slate-800">📷 Scan Attendance QR Code</h1>
+            <p class="text-sm text-slate-500 mt-1">Point your camera at the QR code your teacher is showing.</p>
+        </div>
+
+        <div class="relative max-w-md mx-auto bg-black rounded-2xl overflow-hidden shadow-lg border border-slate-300" style="aspect-ratio:1/1;">
+            <video id="qrVideo" autoplay playsinline muted class="w-full h-full object-cover"></video>
+            <canvas id="qrCanvas" class="hidden"></canvas>
+            <!-- Scan-frame overlay -->
+            <div class="absolute inset-0 pointer-events-none flex items-center justify-center">
+                <div class="w-2/3 h-2/3 border-4 border-emerald-400 rounded-2xl" style="box-shadow:0 0 0 2000px rgba(0,0,0,0.35);"></div>
+            </div>
+        </div>
+
+        <div id="qrStatus" class="text-sm font-semibold text-slate-500">📡 Starting camera…</div>
+        <div id="gpsStatus" class="text-xs text-slate-400">📡 Detecting your GPS location…</div>
+
+        <div class="flex justify-center gap-2 flex-wrap pt-2">
+            <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl text-sm" onclick="switchCamera()">🔄 Switch Camera</button>
+            <button class="bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 px-4 rounded-xl text-sm" onclick="startCamera()">↺ Restart Camera</button>
+            <a class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-xl text-sm" href="/student">⌨️ Enter Code Manually Instead</a>
+            <a class="bg-slate-800 hover:bg-slate-900 text-white font-bold py-2 px-4 rounded-xl text-sm" href="/student">← Back</a>
+        </div>
+    </div>
+
+    <!-- jsQR: lightweight pure-JS QR decoder. Note: jsQR is NOT on cdnjs —
+         it's only published via jsDelivr (verified working URL below). -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <script>
+    const qrVideo = document.getElementById('qrVideo');
+    const qrCanvas = document.getElementById('qrCanvas');
+    const qrCtx = qrCanvas.getContext('2d', {{ willReadFrequently: true }});
+    const qrStatus = document.getElementById('qrStatus');
+    let qrStream = null;
+    let qrScanLoopId = null;
+    let qrCurrentFacingMode = "environment";  // back camera by default — that's what you point at a QR code
+    let qrHandledCode = false;  // prevent double-submitting once a code is found
+    let qrStudentLat = null;
+    let qrStudentLng = null;
+
+    // GPS capture (sent along once a code is found, same as the manual check-in form)
+    const gpsStatusEl = document.getElementById('gpsStatus');
+    if (navigator.geolocation) {{
+        navigator.geolocation.getCurrentPosition(function(pos) {{
+            qrStudentLat = pos.coords.latitude;
+            qrStudentLng = pos.coords.longitude;
+            if (gpsStatusEl) {{
+                gpsStatusEl.innerText = '✅ GPS captured (' + qrStudentLat.toFixed(4) + ', ' + qrStudentLng.toFixed(4) + ')';
+                gpsStatusEl.className = 'text-xs text-emerald-600 font-semibold';
+            }}
+        }}, function(err) {{
+            if (gpsStatusEl) {{
+                gpsStatusEl.innerText = '⚠️ GPS unavailable — session code from the QR will still work.';
+                gpsStatusEl.className = 'text-xs text-amber-600 font-semibold';
+            }}
+        }}, {{ enableHighAccuracy: true, timeout: 8000 }});
+    }} else {{
+        if (gpsStatusEl) gpsStatusEl.innerText = '⚠️ GPS not supported on this device.';
+    }}
+
+    async function startCamera() {{
+        try {{
+            qrHandledCode = false;
+            if (qrScanLoopId) {{ cancelAnimationFrame(qrScanLoopId); qrScanLoopId = null; }}
+            qrStatus.innerText = "Starting camera…";
+            qrStatus.className = "text-sm font-semibold text-slate-500";
+            if (typeof jsQR === 'undefined') {{
+                qrStatus.innerText = "❌ QR scanner library failed to load. Check your internet connection and reload the page.";
+                qrStatus.className = "text-sm font-semibold text-red-600";
+                return;
+            }}
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
+                qrStatus.innerText = "Camera not supported. Please use HTTPS and a modern browser.";
+                return;
+            }}
+            if (qrStream) {{
+                qrStream.getTracks().forEach(track => track.stop());
+                qrStream = null;
+            }}
+            let constraints = [
+                {{ video: {{ facingMode: {{ exact: qrCurrentFacingMode }}, width: {{ ideal: 1280 }}, height: {{ ideal: 1280 }} }}, audio: false }},
+                {{ video: {{ facingMode: {{ ideal: qrCurrentFacingMode }}, width: {{ ideal: 1280 }}, height: {{ ideal: 1280 }} }}, audio: false }},
+                {{ video: true, audio: false }}
+            ];
+            let lastErr = null;
+            for (let c of constraints) {{
+                try {{ qrStream = await navigator.mediaDevices.getUserMedia(c); break; }}
+                catch (e) {{ lastErr = e; qrStream = null; }}
+            }}
+            if (!qrStream) throw lastErr;
+            qrVideo.srcObject = qrStream;
+            await new Promise((resolve) => {{ qrVideo.onloadedmetadata = () => resolve(); }});
+            await qrVideo.play();
+            qrStatus.innerText = "✅ Camera ready — point at the QR code (" + (qrCurrentFacingMode === "environment" ? "Back" : "Front") + ")";
+            qrStatus.className = "text-sm font-semibold text-emerald-600";
+            scanLoop();
+        }} catch (err) {{
+            if (err && err.name === "NotAllowedError") {{ qrStatus.innerText = "❌ Camera permission denied. Please allow camera access and reload."; }}
+            else if (err && err.name === "NotFoundError") {{ qrStatus.innerText = "❌ No camera found on this device."; }}
+            else if (location.protocol !== "https:") {{ qrStatus.innerText = "❌ Camera requires HTTPS."; }}
+            else {{ qrStatus.innerText = "❌ Camera error: " + (err && err.message ? err.message : err); }}
+            qrStatus.className = "text-sm font-semibold text-red-600";
+        }}
+    }}
+
+    function switchCamera() {{
+        qrCurrentFacingMode = qrCurrentFacingMode === "environment" ? "user" : "environment";
+        startCamera();
+    }}
+
+    function scanLoop() {{
+        if (qrHandledCode) return;
+        if (qrVideo.readyState === qrVideo.HAVE_ENOUGH_DATA && typeof jsQR !== 'undefined') {{
+            qrCanvas.width = qrVideo.videoWidth;
+            qrCanvas.height = qrVideo.videoHeight;
+            qrCtx.drawImage(qrVideo, 0, 0, qrCanvas.width, qrCanvas.height);
+            try {{
+                const imageData = qrCtx.getImageData(0, 0, qrCanvas.width, qrCanvas.height);
+                const result = jsQR(imageData.data, imageData.width, imageData.height, {{ inversionAttempts: "dontInvert" }});
+                if (result && result.data) {{
+                    handleScannedText(result.data);
+                    return;  // stop the loop — handleScannedText takes over
+                }}
+            }} catch (e) {{ /* ignore transient decode errors and keep scanning */ }}
+        }}
+        qrScanLoopId = requestAnimationFrame(scanLoop);
+    }}
+
+    function handleScannedText(text) {{
+        if (qrHandledCode) return;
+        qrHandledCode = true;
+        qrStatus.innerText = "✅ QR code detected — checking you in…";
+        qrStatus.className = "text-sm font-semibold text-emerald-600";
+
+        // Extract the session code whether the QR holds a full /checkin/<code> URL
+        // or (just in case) a bare code by itself.
+        let code = null;
+        try {{
+            const url = new URL(text);
+            const parts = url.pathname.split('/').filter(Boolean);
+            if (parts[0] === 'checkin' && parts[1]) {{
+                code = parts[1];
+            }}
+        }} catch (e) {{
+            // Not a URL — treat the raw scanned text as the code itself
+            code = text.trim();
+        }}
+
+        if (!code) {{
+            qrStatus.innerText = "⚠️ That QR code isn't a valid attendance code. Try again.";
+            qrStatus.className = "text-sm font-semibold text-amber-600";
+            qrHandledCode = false;
+            qrScanLoopId = requestAnimationFrame(scanLoop);
+            return;
+        }}
+
+        if (qrStream) {{
+            qrStream.getTracks().forEach(track => track.stop());
+            qrStream = null;
+        }}
+
+        // Hand off to the same landing route a phone's native camera would hit
+        // when scanning the QR — it resolves the class, pre-fills the code,
+        // and (since we're already logged in as a student) goes straight to
+        // the check-in form with GPS captured.
+        window.location.href = '/checkin/' + encodeURIComponent(code);
+    }}
+
+    startCamera();
+    </script>
+    """
+    return page_wrapper("Scan Attendance QR Code", body, is_student=True, student_context=student_ctx)
 
 
 @app.route("/student/scan")
@@ -4284,6 +4489,9 @@ def student_dashboard_portal():
                 <div class="mt-3 inline-block bg-emerald-50 text-emerald-700 text-xs font-bold px-3 py-1 rounded-full border border-emerald-200">✓ Active Enrolled Student</div>
                 
                 <div class="mt-6 border-t pt-4 space-y-2">
+                    <a href="/student/qr-scan" class="w-full inline-block text-center bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl transition shadow-md shadow-indigo-100 text-xs">
+                        <i class="fas fa-qrcode mr-1"></i> Scan QR to Check In
+                    </a>
                     <a href="/student/scan" class="w-full inline-block text-center bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl transition shadow-md shadow-emerald-100 text-xs">
                         <i class="fas fa-camera mr-1"></i> Check-In with Face Scanner
                     </a>
