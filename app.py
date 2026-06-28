@@ -222,6 +222,24 @@ def init_db():
 # =========================================================
 # HELPERS
 # =========================================================
+def format_time_12hr(time_str):
+    """Convert HH:MM:SS or HH:MM to 12-hour AM/PM format."""
+    if not time_str:
+        return time_str
+    try:
+        # Already in 12hr format
+        if 'AM' in str(time_str).upper() or 'PM' in str(time_str).upper():
+            return time_str
+        from datetime import datetime as dt
+        for fmt in ('%H:%M:%S', '%H:%M'):
+            try:
+                return dt.strptime(time_str.strip(), fmt).strftime('%I:%M %p')
+            except:
+                continue
+        return time_str
+    except:
+        return time_str
+
 def sanitize_filename(text):
     text = "".join(c for c in text if c.isalnum() or c in (" ", "_", "-")).strip()
     return text.replace(" ", "_")
@@ -546,7 +564,7 @@ def student_belongs_to_class(student_db_id, class_id):
 def mark_attendance(student_row, class_row, status="Present"):
     # Fetches local system date and time
     today = datetime.now().strftime("%Y-%m-%d")
-    now_time = datetime.now().strftime("%H:%M:%S")
+    now_time = datetime.now().strftime("%I:%M:%S %p")
 
     conn = get_db()
     cur = conn.cursor()
@@ -1553,7 +1571,7 @@ def admin_dashboard():
             body += f"""
                 <tr class="border-b text-xs">
                     <td class="p-3 whitespace-nowrap">{a["date"]}</td>
-                    <td class="p-3 text-slate-500">{a["time"]}</td>
+                    <td class="p-3 text-slate-500">{format_time_12hr(a["time"])}</td>
                     <td class="p-3 font-mono">{a["student_id"]}</td>
                     <td class="p-3 font-medium text-slate-800">{a["full_name"]}</td>
                     <td class="p-3 font-semibold">{a["class_name"]}</td>
@@ -1979,7 +1997,7 @@ def admin_view_class(class_id):
             body += f"""
                 <tr class="border-b">
                     <td class="p-3">{a["date"]}</td>
-                    <td class="p-3 text-slate-500">{a["time"]}</td>
+                    <td class="p-3 text-slate-500">{format_time_12hr(a["time"])}</td>
                     <td class="p-3 font-mono">{a["student_id"]}</td>
                     <td class="p-3 font-medium">{a["full_name"]}</td>
                     <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-bold {'bg-emerald-100 text-emerald-800' if a['status']=='Present' else 'bg-rose-100 text-rose-800'}">{a["status"]}</span></td>
@@ -2157,7 +2175,7 @@ def teacher_dashboard():
             body += f"""
                 <tr class="hover:bg-slate-50/80 transition-colors">
                     <td class="p-3 font-medium whitespace-nowrap">{a["date"]}</td>
-                    <td class="p-3 text-slate-400">{a["time"]}</td>
+                    <td class="p-3 text-slate-400">{format_time_12hr(a["time"])}</td>
                     <td class="p-3 font-mono font-bold text-slate-600">{a["student_id"]}</td>
                     <td class="p-3 font-semibold text-slate-800">{a["full_name"]}</td>
                     <td class="p-3 text-slate-600">{a["class_name"]}</td>
@@ -2830,7 +2848,7 @@ def student_dashboard_portal():
             body += f"""
                 <tr class="border-b">
                     <td class="p-3 font-medium">{h["date"]}</td>
-                    <td class="p-3 text-slate-400 font-mono">{h["time"]}</td>
+                    <td class="p-3 text-slate-400 font-mono">{format_time_12hr(h["time"])}</td>
                     <td class="p-3 font-bold text-slate-700">{h["class_name"]}</td>
                     <td class="p-3">{h["subject_name"] or ""}</td>
                     <td class="p-3"><span class="px-2 py-0.5 rounded text-[11px] font-bold {'bg-emerald-100 text-emerald-800' if h['status']=='Present' else 'bg-rose-100 text-rose-800'}">{h['status']}</span></td>
