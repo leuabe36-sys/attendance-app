@@ -5530,8 +5530,21 @@ function closeCamera() {{
 
 
 # =========================================================
-# STUDENT — MY CLASSES HUB (browse classes, classmates, feed)
+# STUDENT — TELEGRAM-STYLE CLASS GROUP CHAT
 # =========================================================
+
+def _tg_avatar(image_file, name, size=40):
+    """Return an <img> tag or a letter-avatar div if image is missing."""
+    url = supabase_public_url(image_file) if image_file else ""
+    letter = (name or "?")[0].upper()
+    colors = ["#2196F3","#E91E63","#9C27B0","#FF9800","#4CAF50","#00BCD4","#F44336","#3F51B5"]
+    color = colors[sum(ord(c) for c in name) % len(colors)] if name else "#607D8B"
+    if url:
+        return f'<img src="{url}" style="width:{size}px;height:{size}px;border-radius:50%;object-fit:cover;flex-shrink:0;" onerror="this.style.display=\'none\';this.nextSibling.style.display=\'flex\'">' \
+               f'<div class="tg-letter-av" style="display:none;width:{size}px;height:{size}px;background:{color};">{letter}</div>'
+    return f'<div class="tg-letter-av" style="width:{size}px;height:{size}px;background:{color};">{letter}</div>'
+
+
 @app.route("/student/classes")
 def student_classes_hub():
     protect = student_required()
@@ -5540,51 +5553,167 @@ def student_classes_hub():
 
     student_db_id = get_logged_student_db_id()
     student_ctx = get_student_row_by_db_id(student_db_id)
+    school_id = get_current_school_id()
     classes = get_classes_for_student(student_db_id)
 
-    cards_html = ""
+    # Build class list items for the Telegram left sidebar
+    class_items = []
     for c in classes:
         classmates = get_students_in_class(c["id"])
         count = len(classmates)
-        cards_html += f"""
-        <a href="/student/class/{c['id']}/feed" class="block bg-white border rounded-2xl p-5 shadow-sm hover:shadow-md hover:border-indigo-300 transition group">
-            <div class="flex items-start justify-between gap-3">
-                <div>
-                    <div class="font-bold text-slate-800 text-base group-hover:text-indigo-700 transition">{c['class_name']}</div>
-                    <div class="text-xs text-slate-400 mt-0.5">{c.get('subject_name') or ''} {'· ' + c['section_name'] if c.get('section_name') else ''}</div>
-                    <div class="text-xs text-slate-500 mt-1">👨‍🏫 {c.get('teacher_display_name') or c.get('teacher_name') or ''}</div>
+        # Last message preview
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT student_name, comment, created_at FROM class_comments
+            WHERE class_id=%s AND school_id=%s ORDER BY created_at DESC LIMIT 1
+        """, (c["id"], school_id))
+        last = cur.fetchone()
+        conn.close()
+
+        preview = ""
+        ts_badge = ""
+        if last:
+            preview = f"{last['student_name'].split()[0]}: {last['comment'][:40]}{'…' if len(last['comment'])>40 else ''}"
+            ts = last["created_at"]
+            if hasattr(ts, "strftime"):
+                from datetime import date as _date
+                if ts.date() == _date.today():
+                    ts_badge = ts.strftime("%I:%M %p")
+                else:
+                    ts_badge = ts.strftime("%b %d")
+        else:
+            preview = "No messages yet"
+
+        letter = c["class_name"][0].upper()
+        colors = ["#2196F3","#E91E63","#9C27B0","#FF9800","#4CAF50","#00BCD4","#F44336","#3F51B5"]
+        color = colors[sum(ord(ch) for ch in c["class_name"]) % len(colors)]
+
+        class_items.append({
+            "id": c["id"],
+            "name": c["class_name"],
+            "subject": c.get("subject_name") or "",
+            "teacher": c.get("teacher_display_name") or c.get("teacher_name") or "",
+            "count": count,
+            "preview": preview,
+            "ts_badge": ts_badge,
+            "letter": letter,
+            "color": color,
+        })
+
+    list_html = ""
+    for ci in class_items:
+        list_html += f"""
+        <a href="/student/class/{ci['id']}/feed" class="tg-chat-item" data-class-id="{ci['id']}">
+            <div class="tg-chat-av" style="background:{ci['color']};">{ci['letter']}</div>
+            <div class="tg-chat-info">
+                <div class="tg-chat-top">
+                    <span class="tg-chat-name">{ci['name']}</span>
+                    <span class="tg-chat-ts">{ci['ts_badge']}</span>
                 </div>
-                <span class="bg-indigo-50 text-indigo-700 font-bold text-xs px-3 py-1.5 rounded-full border border-indigo-100 whitespace-nowrap">{count} classmates</span>
+                <div class="tg-chat-preview">{ci['preview']}</div>
+                <div class="tg-chat-sub">{ci['count']} members · {ci['subject']}</div>
             </div>
-            <div class="mt-3 flex gap-2 flex-wrap">
-                {''.join(f'<img src="{supabase_public_url(s["image_file"])}" title="{s["full_name"]}" class="w-7 h-7 rounded-full object-cover border border-white shadow-sm -ml-1 first:ml-0">' for s in classmates[:8])}
-                {f'<span class="text-xs text-slate-400 self-center ml-1">+{count-8} more</span>' if count > 8 else ''}
-            </div>
-            <div class="mt-3 text-xs text-indigo-600 font-semibold group-hover:underline">View class feed & classmates →</div>
         </a>
         """
 
-    if not cards_html:
-        cards_html = """
-        <div class="col-span-2 text-center py-16 text-slate-400">
-            <div class="text-4xl mb-3">📭</div>
-            <p class="font-semibold">You are not enrolled in any classes yet.</p>
-            <p class="text-sm mt-1">Ask your admin or teacher to add you to a class.</p>
+    if not list_html:
+        list_html = """
+        <div style="padding:40px 20px;text-align:center;color:#8e9aaf;">
+            <div style="font-size:48px;margin-bottom:12px;">📭</div>
+            <div style="font-weight:600;">No classes yet</div>
+            <div style="font-size:13px;margin-top:6px;">Ask your admin to add you to a class</div>
         </div>
         """
 
-    body = f"""
-    <div class="section-stack">
-        <div class="page-header">
-            <div class="page-title">👥 My Classes</div>
-            <div class="page-sub">Browse your enrolled classes, see classmates' profiles, and chat in the class feed.</div>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {cards_html}
-        </div>
+    my_name = student_ctx["full_name"]
+    my_img = supabase_public_url(student_ctx["image_file"])
+    letter = my_name[0].upper()
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Class Groups</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1c2130;height:100vh;display:flex;overflow:hidden;}}
+
+/* ── TG LEFT PANEL ── */
+.tg-left{{width:340px;min-width:260px;background:#17212b;display:flex;flex-direction:column;border-right:1px solid #0d1117;flex-shrink:0;}}
+.tg-header{{padding:12px 16px;background:#17212b;border-bottom:1px solid #0f1923;display:flex;align-items:center;gap:12px;}}
+.tg-header-av{{width:38px;height:38px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid #2b5278;}}
+.tg-header-letter{{width:38px;height:38px;border-radius:50%;background:#2b5278;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:16px;flex-shrink:0;}}
+.tg-header-name{{font-weight:600;color:#e4e7eb;font-size:14px;flex:1;}}
+.tg-back-btn{{color:#5b9bd9;font-size:13px;font-weight:600;text-decoration:none;padding:6px 10px;border-radius:8px;transition:background 0.15s;}}
+.tg-back-btn:hover{{background:rgba(91,155,217,0.12);}}
+.tg-search{{padding:8px 12px;background:#17212b;border-bottom:1px solid #0f1923;}}
+.tg-search input{{width:100%;background:#242f3d;border:none;border-radius:20px;padding:8px 14px;color:#e4e7eb;font-size:13px;outline:none;}}
+.tg-search input::placeholder{{color:#5a6a7a;}}
+.tg-chat-list{{flex:1;overflow-y:auto;}}
+.tg-chat-item{{display:flex;align-items:center;gap:12px;padding:10px 14px;cursor:pointer;text-decoration:none;border-bottom:1px solid #1b2633;transition:background 0.12s;}}
+.tg-chat-item:hover,.tg-chat-item.active{{background:#2b3c4e;}}
+.tg-chat-av{{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:#fff;flex-shrink:0;}}
+.tg-chat-info{{flex:1;min-width:0;}}
+.tg-chat-top{{display:flex;justify-content:space-between;align-items:center;}}
+.tg-chat-name{{font-weight:600;color:#e4e7eb;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;}}
+.tg-chat-ts{{font-size:11px;color:#5a6a7a;flex-shrink:0;}}
+.tg-chat-preview{{font-size:13px;color:#7a8a9a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}}
+.tg-chat-sub{{font-size:11px;color:#4a5a6a;margin-top:2px;}}
+
+/* ── TG RIGHT PANEL (welcome) ── */
+.tg-right{{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0e1621;gap:16px;}}
+.tg-right-icon{{font-size:80px;opacity:0.3;}}
+.tg-right-title{{color:#4a5a6a;font-size:22px;font-weight:700;}}
+.tg-right-sub{{color:#3a4a5a;font-size:14px;}}
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar{{width:4px;}}
+::-webkit-scrollbar-track{{background:transparent;}}
+::-webkit-scrollbar-thumb{{background:#2b3c4e;border-radius:4px;}}
+
+/* ── MOBILE ── */
+@media(max-width:640px){{
+    .tg-left{{width:100%;}}
+    .tg-right{{display:none;}}
+}}
+</style>
+</head>
+<body>
+<!-- LEFT: class list -->
+<div class="tg-left">
+    <div class="tg-header">
+        <a href="/student" class="tg-back-btn">← Back</a>
+        <div style="flex:1;font-weight:700;color:#e4e7eb;font-size:15px;">Class Groups</div>
+        {'<img class="tg-header-av" src="' + my_img + '">' if my_img else '<div class="tg-header-letter">' + letter + '</div>'}
     </div>
-    """
-    return page_wrapper("My Classes", body, is_student=True, student_context=student_ctx)
+    <div class="tg-search">
+        <input type="text" id="searchInput" placeholder="Search classes…" oninput="filterChats(this.value)">
+    </div>
+    <div class="tg-chat-list" id="chatList">
+        {list_html}
+    </div>
+</div>
+
+<!-- RIGHT: welcome -->
+<div class="tg-right">
+    <div class="tg-right-icon">💬</div>
+    <div class="tg-right-title">Select a class group</div>
+    <div class="tg-right-sub">Choose a class from the left to open the group chat</div>
+</div>
+
+<script>
+function filterChats(q) {{
+    q = q.toLowerCase();
+    document.querySelectorAll('.tg-chat-item').forEach(el => {{
+        el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    }});
+}}
+</script>
+</body>
+</html>"""
+    return html
 
 
 @app.route("/student/class/<int:class_id>/feed")
@@ -5597,7 +5726,6 @@ def student_class_feed(class_id):
     school_id = get_current_school_id()
     student_ctx = get_student_row_by_db_id(student_db_id)
 
-    # Ensure the logged-in student is actually in this class
     if not student_belongs_to_class(student_db_id, class_id):
         return "<script>alert('You are not enrolled in this class.');window.location.href='/student/classes';</script>"
 
@@ -5606,151 +5734,533 @@ def student_class_feed(class_id):
         return "Class not found", 404
 
     classmates = get_students_in_class(class_id)
+    my_name = student_ctx["full_name"]
+    my_img = supabase_public_url(student_ctx["image_file"])
 
-    # Fetch comments newest first
+    # Fetch latest 80 messages oldest→newest
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT * FROM class_comments
+        SELECT id, student_db_id, student_name, student_image, comment, created_at
+        FROM class_comments
         WHERE class_id=%s AND school_id=%s
-        ORDER BY created_at DESC
-        LIMIT 60
+        ORDER BY created_at ASC
+        LIMIT 80
     """, (class_id, school_id))
-    comments = cur.fetchall()
+    messages = cur.fetchall()
     conn.close()
 
-    # Build classmates grid
-    classmates_html = ""
+    # Build initial messages HTML
+    def _msg_html(m, is_me):
+        ts = m["created_at"]
+        if hasattr(ts, "strftime"):
+            from datetime import date as _date
+            if ts.date() == __import__("datetime").date.today():
+                ts_str = ts.strftime("%I:%M %p")
+            else:
+                ts_str = ts.strftime("%b %d, %I:%M %p")
+        else:
+            ts_str = str(ts)[:16]
+
+        av = _tg_avatar(m["student_image"], m["student_name"], 34)
+        txt = m["comment"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        mid = m["id"]
+
+        if is_me:
+            return f"""
+            <div class="tg-msg-row tg-mine" id="msg-{mid}">
+                <div class="tg-bubble tg-bubble-mine">
+                    <div class="tg-bubble-text">{txt}</div>
+                    <div class="tg-bubble-ts">{ts_str} ✓✓</div>
+                </div>
+            </div>"""
+        else:
+            return f"""
+            <div class="tg-msg-row tg-theirs" id="msg-{mid}">
+                <div class="tg-av-wrap">
+                    <a href="/student/classmate/{m['student_db_id']}" style="display:contents;">{av}</a>
+                </div>
+                <div>
+                    <div class="tg-sender-name" style="color:{_name_color(m['student_name'])};">{m['student_name']}</div>
+                    <div class="tg-bubble tg-bubble-theirs">
+                        <div class="tg-bubble-text">{txt}</div>
+                        <div class="tg-bubble-ts">{ts_str}</div>
+                    </div>
+                </div>
+            </div>"""
+
+    def _name_color(name):
+        colors = ["#5b9bd9","#e8699a","#a876d8","#f4a623","#52c97f","#4db8d4","#e8645b","#7986cb"]
+        return colors[sum(ord(c) for c in name) % len(colors)]
+
+    msgs_html = "".join(_msg_html(m, m["student_db_id"] == student_db_id) for m in messages)
+    last_id = messages[-1]["id"] if messages else 0
+
+    # Members sidebar HTML
+    members_html = ""
     for s in classmates:
         is_me = s["id"] == student_db_id
-        badge = '<span class="text-[10px] bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full ml-1">You</span>' if is_me else ''
-        classmates_html += f"""
-        <a href="/student/classmate/{s['id']}" class="flex flex-col items-center gap-1.5 p-3 bg-white border rounded-xl hover:border-indigo-300 hover:shadow-sm transition text-center group">
-            <img src="{supabase_public_url(s['image_file'])}" class="w-14 h-14 rounded-full object-cover border-2 border-slate-200 group-hover:border-indigo-400 transition">
-            <div class="text-xs font-semibold text-slate-700 leading-tight">{s['full_name']}{badge}</div>
-            <div class="text-[10px] text-slate-400 font-mono">ID: {s['student_id']}</div>
+        av = _tg_avatar(s["image_file"], s["full_name"], 36)
+        me_badge = '<span class="tg-me-badge">You</span>' if is_me else ''
+        link = "javascript:void(0)" if is_me else f"/student/classmate/{s['id']}"
+        members_html += f"""
+        <a href="{link}" class="tg-member-item" {"style='cursor:default;'" if is_me else ""}>
+            <div class="tg-member-av">{av}</div>
+            <div class="tg-member-info">
+                <div class="tg-member-name">{s['full_name']} {me_badge}</div>
+                <div class="tg-member-id">ID: {s['student_id']}</div>
+            </div>
         </a>
         """
 
-    # Build comments list
-    comments_html = ""
-    for cm in comments:
-        from_me = cm["student_db_id"] == student_db_id
-        align = "justify-end" if from_me else "justify-start"
-        bubble_bg = "bg-indigo-600 text-white" if from_me else "bg-white border text-slate-800"
-        name_align = "text-right" if from_me else "text-left"
-        avatar_order = "order-last ml-2" if from_me else "order-first mr-2"
-        ts = cm["created_at"].strftime("%b %d, %I:%M %p") if hasattr(cm["created_at"], "strftime") else str(cm["created_at"])[:16]
-        comments_html += f"""
-        <div class="flex items-end gap-0 {align}">
-            <img src="{supabase_public_url(cm['student_image'] or '')}" class="w-8 h-8 rounded-full object-cover flex-shrink-0 {avatar_order}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22%3E%3Ccircle cx=%2212%22 cy=%2212%22 r=%2212%22 fill=%22%23e2e8f0%22/%3E%3C/svg%3E'">
-            <div class="max-w-xs">
-                <div class="text-[10px] text-slate-400 mb-0.5 {name_align}">{'' if from_me else cm['student_name']} <span class="opacity-60">{ts}</span></div>
-                <div class="px-3 py-2 rounded-2xl text-sm {bubble_bg} shadow-sm">{cm['comment']}</div>
-            </div>
+    cname = class_row["class_name"]
+    csubject = class_row.get("subject_name") or ""
+    cteacher = class_row.get("teacher_display_name") or class_row.get("teacher_name") or ""
+    cdept = class_row.get("department") or ""
+    letter = cname[0].upper()
+    colors = ["#2196F3","#E91E63","#9C27B0","#FF9800","#4CAF50","#00BCD4","#F44336","#3F51B5"]
+    color = colors[sum(ord(c) for c in cname) % len(colors)]
+
+    EMOJIS = ["😀","😂","🥰","😎","🤔","👍","👏","🙌","🔥","💯","❤️","🎉","📚","✅","🤝","😅","🙏","💪","😴","🎓"]
+    emoji_btns = "".join(f'<button class="tg-emoji-btn" onclick="insertEmoji(\'{e}\')">{e}</button>' for e in EMOJIS)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{cname} · Group Chat</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;height:100vh;display:flex;flex-direction:column;overflow:hidden;color:#e4e7eb;}}
+
+/* ── TOPBAR ── */
+.tg-topbar{{
+    height:56px;background:#17212b;border-bottom:1px solid #0f1923;
+    display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0;
+    box-shadow:0 1px 8px rgba(0,0,0,0.3);
+}}
+.tg-topbar-av{{
+    width:40px;height:40px;border-radius:50%;display:flex;align-items:center;
+    justify-content:center;font-size:18px;font-weight:700;color:#fff;flex-shrink:0;
+    background:{color};cursor:pointer;
+}}
+.tg-topbar-info{{flex:1;min-width:0;cursor:pointer;}}
+.tg-topbar-title{{font-weight:700;font-size:15px;color:#e4e7eb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
+.tg-topbar-sub{{font-size:12px;color:#5a8ebd;margin-top:1px;}}
+.tg-back{{color:#5b9bd9;font-size:13px;font-weight:600;text-decoration:none;padding:6px 10px;border-radius:8px;transition:background 0.15s;white-space:nowrap;}}
+.tg-back:hover{{background:rgba(91,155,217,0.12);}}
+.tg-members-toggle{{
+    background:none;border:none;cursor:pointer;color:#5a8ebd;font-size:22px;
+    padding:6px 8px;border-radius:8px;transition:background 0.15s;flex-shrink:0;
+}}
+.tg-members-toggle:hover{{background:rgba(91,155,217,0.12);}}
+
+/* ── LAYOUT ── */
+.tg-body{{flex:1;display:flex;overflow:hidden;}}
+
+/* ── MESSAGES AREA ── */
+.tg-messages-wrap{{flex:1;display:flex;flex-direction:column;background:#0e1621;min-width:0;}}
+.tg-chat-bg{{
+    flex:1;overflow-y:auto;padding:16px 12px;display:flex;flex-direction:column;gap:2px;
+    background-image:radial-gradient(ellipse at 20% 80%,rgba(37,99,235,0.04) 0%,transparent 60%),
+                     radial-gradient(ellipse at 80% 20%,rgba(139,92,246,0.04) 0%,transparent 60%);
+}}
+
+/* ── MESSAGE ROWS ── */
+.tg-msg-row{{display:flex;align-items:flex-end;gap:8px;margin-bottom:2px;}}
+.tg-mine{{flex-direction:row-reverse;}}
+.tg-theirs{{flex-direction:row;}}
+.tg-av-wrap{{flex-shrink:0;width:34px;align-self:flex-end;}}
+.tg-letter-av{{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:13px;flex-shrink:0;}}
+.tg-sender-name{{font-size:12px;font-weight:700;margin-bottom:3px;padding-left:2px;}}
+
+/* ── BUBBLES ── */
+.tg-bubble{{
+    max-width:min(420px,72vw);padding:8px 12px 4px;border-radius:16px;
+    position:relative;word-break:break-word;
+    box-shadow:0 1px 4px rgba(0,0,0,0.25);
+}}
+.tg-bubble-mine{{
+    background:#2b5278;border-radius:16px 4px 16px 16px;
+}}
+.tg-bubble-theirs{{
+    background:#182533;border:1px solid #1e3048;border-radius:4px 16px 16px 16px;
+}}
+.tg-bubble-text{{font-size:14px;line-height:1.5;color:#e4e7eb;}}
+.tg-bubble-ts{{
+    font-size:10px;color:#7a9bbf;text-align:right;margin-top:4px;
+}}
+
+/* ── DATE DIVIDER ── */
+.tg-date-divider{{
+    text-align:center;margin:12px 0 8px;
+}}
+.tg-date-divider span{{
+    background:#17212b;color:#5a8ebd;font-size:11px;font-weight:600;
+    padding:4px 12px;border-radius:12px;border:1px solid #1e3048;
+}}
+
+/* ── COMPOSER ── */
+.tg-composer{{
+    background:#17212b;border-top:1px solid #0f1923;padding:10px 12px;flex-shrink:0;
+}}
+.tg-composer-row{{display:flex;align-items:flex-end;gap:8px;}}
+.tg-emoji-toggle{{
+    background:none;border:none;font-size:22px;cursor:pointer;padding:6px;
+    border-radius:50%;transition:background 0.15s;flex-shrink:0;line-height:1;
+}}
+.tg-emoji-toggle:hover{{background:rgba(255,255,255,0.07);}}
+.tg-input{{
+    flex:1;background:#242f3d;border:none;border-radius:20px;
+    padding:10px 16px;color:#e4e7eb;font-size:14px;outline:none;
+    resize:none;max-height:120px;min-height:42px;line-height:1.4;
+    font-family:inherit;
+}}
+.tg-input::placeholder{{color:#4a5a6a;}}
+.tg-send-btn{{
+    width:42px;height:42px;background:#2b5278;border:none;border-radius:50%;
+    cursor:pointer;display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;transition:background 0.15s;font-size:18px;
+}}
+.tg-send-btn:hover{{background:#3a6a9a;}}
+.tg-send-btn:disabled{{background:#1e2f3d;cursor:not-allowed;}}
+.tg-emoji-panel{{
+    display:none;background:#1a2635;border:1px solid #1e3048;border-radius:12px;
+    padding:10px;margin-bottom:8px;flex-wrap:wrap;gap:4px;max-height:140px;overflow-y:auto;
+}}
+.tg-emoji-panel.open{{display:flex;}}
+.tg-emoji-btn{{
+    background:none;border:none;font-size:22px;cursor:pointer;
+    padding:4px;border-radius:8px;transition:background 0.12s;line-height:1;
+}}
+.tg-emoji-btn:hover{{background:rgba(255,255,255,0.08);}}
+
+/* ── MEMBERS PANEL ── */
+.tg-members-panel{{
+    width:300px;background:#17212b;border-left:1px solid #0f1923;
+    display:flex;flex-direction:column;flex-shrink:0;
+    transition:transform 0.25s ease;
+}}
+.tg-members-panel.hidden{{display:none;}}
+.tg-members-header{{padding:16px;border-bottom:1px solid #0f1923;}}
+.tg-members-class-av{{
+    width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:28px;font-weight:700;color:#fff;margin:0 auto 10px;background:{color};
+}}
+.tg-members-class-name{{font-weight:700;font-size:15px;text-align:center;color:#e4e7eb;}}
+.tg-members-class-info{{font-size:12px;color:#5a8ebd;text-align:center;margin-top:4px;line-height:1.5;}}
+.tg-members-list{{flex:1;overflow-y:auto;padding:8px;}}
+.tg-members-title{{font-size:11px;font-weight:700;color:#5a8ebd;text-transform:uppercase;letter-spacing:0.05em;padding:8px 8px 4px;}}
+.tg-member-item{{display:flex;align-items:center;gap:10px;padding:8px;border-radius:10px;text-decoration:none;transition:background 0.12s;cursor:pointer;}}
+.tg-member-item:hover{{background:#1e3048;}}
+.tg-member-av{{flex-shrink:0;}}
+.tg-member-info{{min-width:0;}}
+.tg-member-name{{font-size:13px;font-weight:600;color:#c8d8e8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;}}
+.tg-member-id{{font-size:11px;color:#4a5a6a;font-family:monospace;}}
+.tg-me-badge{{
+    display:inline-block;background:#2b5278;color:#7bb8ef;font-size:10px;font-weight:700;
+    padding:1px 6px;border-radius:6px;margin-left:4px;
+}}
+
+/* ── SCROLL SNAP ── */
+::-webkit-scrollbar{{width:4px;}}
+::-webkit-scrollbar-track{{background:transparent;}}
+::-webkit-scrollbar-thumb{{background:#2b3c4e;border-radius:4px;}}
+
+/* ── TYPING INDICATOR ── */
+.tg-typing{{display:none;padding:4px 12px;}}
+.tg-typing.show{{display:block;}}
+.tg-typing span{{font-size:12px;color:#5a8ebd;font-style:italic;}}
+
+/* ── TOAST ── */
+.tg-toast{{
+    position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
+    background:#2b5278;color:#e4e7eb;font-size:13px;font-weight:600;
+    padding:8px 20px;border-radius:20px;opacity:0;transition:opacity 0.3s;pointer-events:none;z-index:999;
+}}
+.tg-toast.show{{opacity:1;}}
+
+/* ── MOBILE ── */
+@media(max-width:700px){{
+    .tg-members-panel{{
+        position:fixed;right:0;top:0;bottom:0;z-index:500;width:85vw;max-width:300px;
+        transform:translateX(100%);
+    }}
+    .tg-members-panel.open{{transform:translateX(0);display:flex;}}
+    .tg-members-panel.hidden{{transform:translateX(100%);}}
+    .tg-bubble{{max-width:80vw;}}
+}}
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="tg-topbar">
+    <a href="/student/classes" class="tg-back">← Back</a>
+    <div class="tg-topbar-av" onclick="toggleMembers()" title="View members">{letter}</div>
+    <div class="tg-topbar-info" onclick="toggleMembers()">
+        <div class="tg-topbar-title">{cname}</div>
+        <div class="tg-topbar-sub">{len(classmates)} members{(' · ' + csubject) if csubject else ''}</div>
+    </div>
+    <button class="tg-members-toggle" onclick="toggleMembers()" title="Members">☰</button>
+</div>
+
+<div class="tg-body">
+    <!-- MESSAGES -->
+    <div class="tg-messages-wrap">
+        <div class="tg-chat-bg" id="chatBg">
+            {'<div class="tg-date-divider"><span>Welcome to ' + cname + '</span></div>' if not messages else ''}
+            {msgs_html if msgs_html else '<div style="text-align:center;color:#3a4a5a;padding:40px 20px;"><div style="font-size:40px;margin-bottom:10px;">👋</div><div style="font-size:14px;">No messages yet. Say hello!</div></div>'}
+            <div id="messagesEnd"></div>
         </div>
-        """
+        <div class="tg-typing" id="typingIndicator"><span>someone is typing…</span></div>
 
-    if not comments_html:
-        comments_html = '<div class="text-center text-slate-400 py-8 text-sm">No messages yet. Be the first to say something! 👋</div>'
-
-    body = f"""
-    <div class="max-w-5xl mx-auto space-y-6">
-        <div class="flex items-center gap-3">
-            <a href="/student/classes" class="text-slate-400 hover:text-slate-700 text-sm font-medium">← My Classes</a>
-            <span class="text-slate-300">/</span>
-            <span class="font-bold text-slate-700">{class_row['class_name']}</span>
-        </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <!-- Classmates panel -->
-            <div class="lg:col-span-1 space-y-4">
-                <div class="bg-white border rounded-2xl overflow-hidden shadow-sm">
-                    <div class="px-4 py-3 bg-slate-50 border-b font-bold text-slate-700 text-sm">
-                        👥 Classmates ({len(classmates)})
-                    </div>
-                    <div class="p-3 grid grid-cols-2 gap-2 max-h-[520px] overflow-y-auto">
-                        {classmates_html if classmates_html else '<p class="text-xs text-slate-400 col-span-2 text-center py-4">No classmates found.</p>'}
-                    </div>
-                </div>
-                <div class="bg-white border rounded-2xl p-4 shadow-sm text-sm text-slate-600 space-y-1">
-                    <div class="font-semibold text-slate-700">Class Info</div>
-                    <div>📖 <span class="text-slate-500">{class_row.get('subject_name') or '—'}</span></div>
-                    <div>🏛️ <span class="text-slate-500">{class_row.get('department') or '—'}</span></div>
-                    <div>👨‍🏫 <span class="text-slate-500">{class_row.get('teacher_display_name') or class_row.get('teacher_name') or '—'}</span></div>
-                </div>
-            </div>
-
-            <!-- Feed panel -->
-            <div class="lg:col-span-2 flex flex-col bg-white border rounded-2xl shadow-sm overflow-hidden" style="min-height:480px;">
-                <div class="px-4 py-3 bg-slate-50 border-b font-bold text-slate-700 text-sm">
-                    💬 Class Feed
-                </div>
-
-                <!-- Messages -->
-                <div id="feedMessages" class="flex-1 overflow-y-auto p-4 space-y-3" style="max-height:420px;">
-                    {comments_html}
-                </div>
-
-                <!-- Composer -->
-                <div class="border-t p-3 bg-slate-50">
-                    <div class="flex gap-2">
-                        <input id="commentInput" type="text" maxlength="500"
-                            placeholder="Write a message to your class…"
-                            class="flex-1 px-3 py-2 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                            onkeydown="if(event.key==='Enter')postComment()">
-                        <button onclick="postComment()" id="postBtn"
-                            class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-xl text-sm transition">
-                            Send
-                        </button>
-                    </div>
-                    <div id="postStatus" class="text-xs text-slate-400 mt-1 hidden"></div>
-                </div>
+        <!-- COMPOSER -->
+        <div class="tg-composer">
+            <div class="tg-emoji-panel" id="emojiPanel">{emoji_btns}</div>
+            <div class="tg-composer-row">
+                <button class="tg-emoji-toggle" onclick="toggleEmoji()" title="Emoji">🙂</button>
+                <textarea class="tg-input" id="msgInput" placeholder="Message {cname}…" rows="1"
+                    oninput="autoResize(this)" onkeydown="handleKey(event)"></textarea>
+                <button class="tg-send-btn" id="sendBtn" onclick="sendMessage()" title="Send">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </button>
             </div>
         </div>
     </div>
 
-    <script>
-    function postComment() {{
-        const input = document.getElementById('commentInput');
-        const btn = document.getElementById('postBtn');
-        const status = document.getElementById('postStatus');
-        const text = input.value.trim();
-        if (!text) return;
-        btn.disabled = true;
-        btn.textContent = '…';
-        fetch('/student/class/{class_id}/comment', {{
-            method: 'POST',
-            headers: {{'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}},
-            body: JSON.stringify({{comment: text}})
-        }})
-        .then(r => r.json())
-        .then(data => {{
-            btn.disabled = false;
-            btn.textContent = 'Send';
-            if (data.ok) {{
-                input.value = '';
-                status.classList.add('hidden');
-                // Append new message bubble to top (newest first) or reload
-                window.location.reload();
-            }} else {{
-                status.textContent = data.error || 'Could not post.';
-                status.classList.remove('hidden');
-            }}
-        }})
-        .catch(() => {{
-            btn.disabled = false;
-            btn.textContent = 'Send';
-            status.textContent = 'Network error.';
-            status.classList.remove('hidden');
-        }});
+    <!-- MEMBERS PANEL -->
+    <div class="tg-members-panel" id="membersPanel">
+        <div class="tg-members-header">
+            <div class="tg-members-class-av">{letter}</div>
+            <div class="tg-members-class-name">{cname}</div>
+            <div class="tg-members-class-info">
+                {'👨‍🏫 ' + cteacher + '<br>' if cteacher else ''}
+                {'📖 ' + csubject + '<br>' if csubject else ''}
+                {'🏛️ ' + cdept if cdept else ''}
+            </div>
+        </div>
+        <div class="tg-members-list">
+            <div class="tg-members-title">Members · {len(classmates)}</div>
+            {members_html}
+        </div>
+    </div>
+</div>
+
+<div class="tg-toast" id="toast"></div>
+
+<script>
+const MY_DB_ID = {student_db_id};
+const CLASS_ID = {class_id};
+let lastId = {last_id};
+let membersOpen = false;
+let pollTimer = null;
+
+// ── Auto-resize textarea ──
+function autoResize(el) {{
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}}
+
+// ── Handle Enter key ──
+function handleKey(e) {{
+    if (e.key === 'Enter' && !e.shiftKey) {{
+        e.preventDefault();
+        sendMessage();
     }}
-    // Auto-scroll feed to bottom on load (oldest messages at top, newest at bottom)
-    const feed = document.getElementById('feedMessages');
-    feed.scrollTop = feed.scrollHeight;
-    </script>
-    """
-    return page_wrapper(f"{class_row['class_name']} — Class Feed", body, is_student=True, student_context=student_ctx)
+}}
+
+// ── Emoji panel ──
+function toggleEmoji() {{
+    const p = document.getElementById('emojiPanel');
+    p.classList.toggle('open');
+    if (p.classList.contains('open')) document.getElementById('msgInput').focus();
+}}
+function insertEmoji(em) {{
+    const inp = document.getElementById('msgInput');
+    const start = inp.selectionStart, end = inp.selectionEnd;
+    inp.value = inp.value.slice(0,start) + em + inp.value.slice(end);
+    inp.selectionStart = inp.selectionEnd = start + em.length;
+    inp.focus();
+    autoResize(inp);
+}}
+
+// ── Members panel ──
+function toggleMembers() {{
+    membersOpen = !membersOpen;
+    const p = document.getElementById('membersPanel');
+    if (membersOpen) {{ p.classList.add('open'); p.classList.remove('hidden'); }}
+    else {{ p.classList.remove('open'); }}
+}}
+
+// ── Toast ──
+function showToast(msg) {{
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2200);
+}}
+
+// ── Name color ──
+const NAME_COLORS = ["#5b9bd9","#e8699a","#a876d8","#f4a623","#52c97f","#4db8d4","#e8645b","#7986cb"];
+function nameColor(name) {{
+    let s = 0; for(let c of name) s += c.charCodeAt(0);
+    return NAME_COLORS[s % NAME_COLORS.length];
+}}
+
+// ── Render a single message bubble ──
+function renderMsg(m) {{
+    const isMe = m.student_db_id === MY_DB_ID;
+    const ts = m.ts_display || '';
+    const txt = m.comment.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    if (isMe) {{
+        return `<div class="tg-msg-row tg-mine" id="msg-${{m.id}}">
+            <div class="tg-bubble tg-bubble-mine">
+                <div class="tg-bubble-text">${{txt}}</div>
+                <div class="tg-bubble-ts">${{ts}} ✓✓</div>
+            </div>
+        </div>`;
+    }} else {{
+        const color = nameColor(m.student_name);
+        const avStyle = m.student_image
+            ? `<img src="${{m.student_image}}" style="width:34px;height:34px;border-radius:50%;object-fit:cover;" onerror="this.style.display='none'">`
+            : `<div class="tg-letter-av" style="width:34px;height:34px;background:${{color}};">${{m.student_name[0].toUpperCase()}}</div>`;
+        return `<div class="tg-msg-row tg-theirs" id="msg-${{m.id}}">
+            <div class="tg-av-wrap">
+                <a href="/student/classmate/${{m.student_db_id}}" style="display:contents;">${{avStyle}}</a>
+            </div>
+            <div>
+                <div class="tg-sender-name" style="color:${{color}};">${{m.student_name}}</div>
+                <div class="tg-bubble tg-bubble-theirs">
+                    <div class="tg-bubble-text">${{txt}}</div>
+                    <div class="tg-bubble-ts">${{ts}}</div>
+                </div>
+            </div>
+        </div>`;
+    }}
+}}
+
+// ── Send message ──
+async function sendMessage() {{
+    const input = document.getElementById('msgInput');
+    const btn = document.getElementById('sendBtn');
+    const text = input.value.trim();
+    if (!text) return;
+
+    input.value = '';
+    autoResize(input);
+    btn.disabled = true;
+    document.getElementById('emojiPanel').classList.remove('open');
+
+    try {{
+        const res = await fetch('/student/class/{class_id}/comment', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{comment: text}})
+        }});
+        const data = await res.json();
+        if (!data.ok) {{ showToast(data.error || 'Could not send'); input.value = text; }}
+        else {{ pollMessages(); }}
+    }} catch(e) {{
+        showToast('Network error');
+        input.value = text;
+    }} finally {{
+        btn.disabled = false;
+        input.focus();
+    }}
+}}
+
+// ── Poll for new messages ──
+async function pollMessages() {{
+    try {{
+        const res = await fetch('/student/class/{class_id}/messages?after=' + lastId);
+        const data = await res.json();
+        if (!data.messages || !data.messages.length) return;
+        const bg = document.getElementById('chatBg');
+        const end = document.getElementById('messagesEnd');
+        data.messages.forEach(m => {{
+            if (document.getElementById('msg-' + m.id)) return;
+            const div = document.createElement('div');
+            div.innerHTML = renderMsg(m);
+            bg.insertBefore(div.firstElementChild, end);
+            lastId = Math.max(lastId, m.id);
+        }});
+        scrollToBottom();
+    }} catch(e) {{ /* silent */ }}
+}}
+
+function scrollToBottom() {{
+    const bg = document.getElementById('chatBg');
+    bg.scrollTop = bg.scrollHeight;
+}}
+
+// ── Init ──
+scrollToBottom();
+pollMessages();
+pollTimer = setInterval(pollMessages, 3000);
+
+// Click outside to close members on mobile
+document.addEventListener('click', e => {{
+    const panel = document.getElementById('membersPanel');
+    const toggle = document.querySelector('.tg-members-toggle');
+    const av = document.querySelector('.tg-topbar-av');
+    if (membersOpen && !panel.contains(e.target) && e.target !== toggle && e.target !== av) {{
+        membersOpen = false;
+        panel.classList.remove('open');
+    }}
+}});
+
+window.addEventListener('beforeunload', () => clearInterval(pollTimer));
+</script>
+</body>
+</html>"""
+    return html
+
+
+@app.route("/student/class/<int:class_id>/messages")
+def student_class_messages(class_id):
+    """Polling endpoint — returns new messages after a given id."""
+    protect = student_required()
+    if protect:
+        return jsonify({"messages": []})
+
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+
+    if not student_belongs_to_class(student_db_id, class_id):
+        return jsonify({"messages": []})
+
+    after = int(request.args.get("after", 0))
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, student_db_id, student_name, student_image, comment, created_at
+        FROM class_comments
+        WHERE class_id=%s AND school_id=%s AND id>%s
+        ORDER BY created_at ASC LIMIT 30
+    """, (class_id, school_id, after))
+    rows = cur.fetchall()
+    conn.close()
+
+    from datetime import date as _date
+    result = []
+    for r in rows:
+        ts = r["created_at"]
+        if hasattr(ts, "strftime"):
+            ts_display = ts.strftime("%I:%M %p") if ts.date() == _date.today() else ts.strftime("%b %d, %I:%M %p")
+        else:
+            ts_display = str(ts)[:16]
+        result.append({
+            "id": r["id"],
+            "student_db_id": r["student_db_id"],
+            "student_name": r["student_name"],
+            "student_image": supabase_public_url(r["student_image"] or ""),
+            "comment": r["comment"],
+            "ts_display": ts_display,
+        })
+    return jsonify({"messages": result})
 
 
 @app.route("/student/class/<int:class_id>/comment", methods=["POST"])
@@ -5794,14 +6304,12 @@ def student_view_classmate(classmate_db_id):
     school_id = get_current_school_id()
     student_ctx = get_student_row_by_db_id(viewer_db_id)
 
-    # Verify they share at least one class
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
         SELECT sc1.class_id_fk FROM student_classes sc1
         INNER JOIN student_classes sc2 ON sc1.class_id_fk = sc2.class_id_fk
-        WHERE sc1.student_id_fk=%s AND sc2.student_id_fk=%s
-        LIMIT 1
+        WHERE sc1.student_id_fk=%s AND sc2.student_id_fk=%s LIMIT 1
     """, (viewer_db_id, classmate_db_id))
     shared = cur.fetchone()
     conn.close()
@@ -5813,7 +6321,6 @@ def student_view_classmate(classmate_db_id):
     if not classmate or classmate.get("school_id", school_id) != school_id:
         return "Student not found", 404
 
-    # Get shared classes
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
@@ -5826,48 +6333,73 @@ def student_view_classmate(classmate_db_id):
     conn.close()
 
     is_me = viewer_db_id == classmate_db_id
+    av_html = _tg_avatar(classmate["image_file"], classmate["full_name"], 90)
 
-    shared_classes_html = ""
-    for sc in shared_classes:
-        shared_classes_html += f"""
-        <a href="/student/class/{sc['id']}/feed"
-            class="flex items-center gap-2 px-3 py-2 bg-slate-50 hover:bg-indigo-50 border rounded-xl text-sm text-slate-700 hover:text-indigo-700 font-medium transition">
-            <span class="text-base">📚</span> {sc['class_name']}
-            {('<span class="ml-auto text-xs text-slate-400">' + (sc.get('subject_name') or '') + '</span>') if sc.get('subject_name') else ''}
-        </a>
-        """
-
-    body = f"""
-    <div class="max-w-lg mx-auto space-y-6">
-        <a href="javascript:history.back()" class="text-slate-400 hover:text-slate-700 text-sm font-medium">← Back</a>
-
-        <!-- Profile card -->
-        <div class="bg-white border rounded-2xl p-6 shadow-sm text-center space-y-3">
-            <img src="{supabase_public_url(classmate['image_file'])}"
-                class="w-24 h-24 rounded-full object-cover mx-auto border-4 border-indigo-200 shadow">
-            <div>
-                <h2 class="text-xl font-bold text-slate-800">{classmate['full_name']}</h2>
-                {('<span class="text-xs bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">You</span>' if is_me else '')}
-                <p class="text-xs font-mono text-slate-400 mt-1">Student ID: {classmate['student_id']}</p>
-                <p class="text-xs text-slate-400 mt-0.5">Enrolled since {str(classmate.get('registered_at',''))[:10]}</p>
-            </div>
-            <div class="inline-block bg-emerald-50 text-emerald-700 text-xs font-bold px-3 py-1 rounded-full border border-emerald-200">
-                ✓ Active Student
-            </div>
+    shared_html = "".join(f"""
+    <a href="/student/class/{sc['id']}/feed" style="display:flex;align-items:center;gap:10px;padding:10px 16px;
+        background:#1a2635;border-radius:12px;text-decoration:none;transition:background 0.15s;"
+        onmouseover="this.style.background='#1e3048'" onmouseout="this.style.background='#1a2635'">
+        <span style="font-size:20px;">📚</span>
+        <div>
+            <div style="font-weight:600;color:#c8d8e8;font-size:14px;">{sc['class_name']}</div>
+            <div style="font-size:12px;color:#4a6a8a;">{sc.get('subject_name') or ''}</div>
         </div>
+        <svg style="margin-left:auto;color:#4a6a8a;" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+    </a>""" for sc in shared_classes)
 
-        <!-- Shared classes -->
-        <div class="bg-white border rounded-2xl shadow-sm overflow-hidden">
-            <div class="px-4 py-3 bg-slate-50 border-b font-bold text-slate-700 text-sm">
-                📚 Shared Classes ({len(shared_classes)})
-            </div>
-            <div class="p-3 space-y-2">
-                {shared_classes_html if shared_classes_html else '<p class="text-sm text-slate-400 text-center py-4">No shared classes found.</p>'}
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{classmate['full_name']}</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;color:#e4e7eb;min-height:100vh;}}
+.tg-letter-av{{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:32px;flex-shrink:0;}}
+</style>
+</head>
+<body>
+<div style="max-width:480px;margin:0 auto;padding:20px 16px;">
+    <!-- Back -->
+    <a href="javascript:history.back()" style="display:inline-flex;align-items:center;gap:6px;color:#5b9bd9;font-size:14px;font-weight:600;text-decoration:none;margin-bottom:20px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+        Back
+    </a>
+
+    <!-- Profile card -->
+    <div style="background:#17212b;border-radius:20px;overflow:hidden;margin-bottom:16px;">
+        <!-- Cover -->
+        <div style="height:80px;background:linear-gradient(135deg,#1a3a5c,#2b1a5c);"></div>
+        <!-- Avatar -->
+        <div style="display:flex;justify-content:center;margin-top:-45px;margin-bottom:12px;">
+            <div style="border:4px solid #17212b;border-radius:50%;">{av_html}</div>
+        </div>
+        <div style="text-align:center;padding:0 20px 24px;">
+            <h2 style="font-size:20px;font-weight:700;color:#e4e7eb;">{classmate['full_name']}</h2>
+            {('<span style="display:inline-block;background:#2b5278;color:#7bb8ef;font-size:11px;font-weight:700;padding:2px 10px;border-radius:8px;margin-top:4px;">You</span>' if is_me else '')}
+            <div style="font-size:13px;color:#5a8ebd;margin-top:8px;font-family:monospace;">ID: {classmate['student_id']}</div>
+            <div style="font-size:12px;color:#3a4a5a;margin-top:4px;">Member since {str(classmate.get('registered_at',''))[:10]}</div>
+            <div style="display:inline-flex;align-items:center;gap:6px;background:#1a3a2a;color:#52c97f;font-size:12px;font-weight:700;padding:4px 14px;border-radius:20px;margin-top:12px;border:1px solid #1e4a2a;">
+                <span style="width:7px;height:7px;background:#52c97f;border-radius:50%;display:inline-block;"></span>
+                Active Student
             </div>
         </div>
     </div>
-    """
-    return page_wrapper(f"{classmate['full_name']} — Profile", body, is_student=True, student_context=student_ctx)
+
+    <!-- Shared classes -->
+    <div style="background:#17212b;border-radius:16px;overflow:hidden;">
+        <div style="padding:14px 16px;border-bottom:1px solid #0f1923;font-size:12px;font-weight:700;color:#5a8ebd;text-transform:uppercase;letter-spacing:0.06em;">
+            Shared Classes ({len(shared_classes)})
+        </div>
+        <div style="padding:10px;display:flex;flex-direction:column;gap:6px;">
+            {shared_html if shared_html else '<p style="text-align:center;color:#3a4a5a;padding:20px;font-size:13px;">No shared classes</p>'}
+        </div>
+    </div>
+</div>
+</body>
+</html>"""
+    return html
 
 
 # =========================================================
