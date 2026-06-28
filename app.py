@@ -4969,13 +4969,26 @@ async function startSession(e) {{
             currentRotateSecs = data.rotate_seconds || 60;
             rotateSecsLeft = currentRotateSecs;
             currentExpiresAt = new Date(data.expires_at);
-            document.getElementById('codeDisplay').innerText = data.code;
-            document.getElementById('noSession').classList.add('hidden');
-            document.getElementById('activeSession').classList.remove('hidden');
-            document.getElementById('startForm').classList.add('hidden');
-            document.getElementById('locationsPanel').classList.remove('hidden');
-            document.getElementById('sessionPanel').classList.remove('border-slate-200');
-            document.getElementById('sessionPanel').classList.add('border-emerald-400');
+
+            const codeDisplayEl = document.getElementById('codeDisplay');
+            if (codeDisplayEl) codeDisplayEl.innerText = data.code;
+            const noSessionEl = document.getElementById('noSession');
+            if (noSessionEl) noSessionEl.classList.add('hidden');
+            const activeSessionEl = document.getElementById('activeSession');
+            if (activeSessionEl) activeSessionEl.classList.remove('hidden');
+            const expiredMsg = document.getElementById('sessionExpiredMsg');
+            if (expiredMsg) expiredMsg.classList.add('hidden');
+            const startFormEl = document.getElementById('startForm');
+            if (startFormEl) startFormEl.classList.add('hidden');
+            const locationsPanelEl = document.getElementById('locationsPanel');
+            if (locationsPanelEl) locationsPanelEl.classList.remove('hidden');
+            const sessionPanelEl = document.getElementById('sessionPanel');
+            if (sessionPanelEl) {{
+                sessionPanelEl.classList.remove('border-slate-200');
+                sessionPanelEl.classList.add('border-emerald-400');
+            }}
+            btn.disabled = false; btn.innerText = '▶ Start Attendance Timer';
+
             renderQR(data.code);
             startCountdown(currentExpiresAt);
             startQRRotation(currentRotateSecs);
@@ -5012,12 +5025,14 @@ function startQRRotation(rotateSecs, elapsedSecs) {{
                 const data = await res.json();
                 if (data.ok && data.code) {{
                     currentCode = data.code;
-                    document.getElementById('codeDisplay').innerText = data.code;
+                    const cdEl = document.getElementById('codeDisplay');
+                    if (cdEl) cdEl.innerText = data.code;
                     renderQR(data.code);
                     // Update fullscreen if open
                     const overlay = document.getElementById('fullscreenOverlay');
                     if (overlay && overlay.style.display !== 'none') {{
-                        document.getElementById('fsCode').innerText = data.code;
+                        const fsCodeEl = document.getElementById('fsCode');
+                        if (fsCodeEl) fsCodeEl.innerText = data.code;
                         renderFsQR(data.code);
                     }}
                 }}
@@ -5039,11 +5054,14 @@ async function refreshLocations() {{
         const data = await res.json();
         const tbody = document.getElementById('locTableBody');
         const teacherInfo = document.getElementById('teacherGpsInfo');
-        if (data.teacher_lat && data.teacher_lng) {{
-            teacherInfo.innerText = '📍 Your GPS: ' + data.teacher_lat.toFixed(5) + ', ' + data.teacher_lng.toFixed(5);
-        }} else {{
-            teacherInfo.innerText = '📍 Teacher GPS: not captured (WiFi/code check active)';
+        if (teacherInfo) {{
+            if (data.teacher_lat && data.teacher_lng) {{
+                teacherInfo.innerText = '📍 Your GPS: ' + data.teacher_lat.toFixed(5) + ', ' + data.teacher_lng.toFixed(5);
+            }} else {{
+                teacherInfo.innerText = '📍 Teacher GPS: not captured (WiFi/code check active)';
+            }}
         }}
+        if (!tbody) return;
         if (!data.students || data.students.length === 0) {{
             tbody.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-slate-400 text-xs">No check-ins yet today.</td></tr>';
         }} else {{
@@ -5064,7 +5082,8 @@ async function refreshLocations() {{
                 </tr>`;
             }}).join('');
         }}
-        document.getElementById('lastRefreshed').innerText = 'Updated: ' + new Date().toLocaleTimeString();
+        const lastRefreshedEl = document.getElementById('lastRefreshed');
+        if (lastRefreshedEl) lastRefreshedEl.innerText = 'Updated: ' + new Date().toLocaleTimeString();
     }} catch(err) {{ console.log('loc refresh error', err); }}
 }}
 
@@ -5078,14 +5097,38 @@ function startCountdown(expiresDate) {{
             clearInterval(countdownInterval);
             if (rotateInterval) clearInterval(rotateInterval);
             if (locRefreshInterval) clearInterval(locRefreshInterval);
-            document.getElementById('countdown').innerText = '00:00';
-            document.getElementById('progressBar').style.width = '0%';
-            document.getElementById('activeSession').innerHTML = '<div class="text-red-500 font-bold text-lg py-6">⏰ Time is up! Attendance window closed.</div>';
-            document.getElementById('startForm').classList.remove('hidden');
-            document.getElementById('sessionPanel').classList.remove('border-emerald-400');
-            document.getElementById('sessionPanel').classList.add('border-slate-200');
-            if (document.getElementById('fullscreenOverlay').style.display !== 'none') {{
-                document.getElementById('fsCountdown').innerText = '⏰ Closed';
+            const cd = document.getElementById('countdown');
+            if (cd) cd.innerText = '00:00';
+            const pb = document.getElementById('progressBar');
+            if (pb) pb.style.width = '0%';
+            // Hide the active-session UI and show a "time's up" message,
+            // WITHOUT destroying #codeDisplay / #countdown / #progressBar via innerHTML —
+            // those elements must still exist next time startSession() runs.
+            const activeSessionEl = document.getElementById('activeSession');
+            if (activeSessionEl) activeSessionEl.classList.add('hidden');
+            let expiredMsg = document.getElementById('sessionExpiredMsg');
+            if (!expiredMsg) {{
+                expiredMsg = document.createElement('div');
+                expiredMsg.id = 'sessionExpiredMsg';
+                expiredMsg.className = 'text-red-500 font-bold text-lg py-6 text-center';
+                expiredMsg.innerText = '⏰ Time is up! Attendance window closed.';
+                const panel = document.getElementById('sessionPanel');
+                if (panel) panel.appendChild(expiredMsg);
+            }}
+            expiredMsg.classList.remove('hidden');
+            const locPanel = document.getElementById('locationsPanel');
+            if (locPanel) locPanel.classList.add('hidden');
+            const startFormEl = document.getElementById('startForm');
+            if (startFormEl) startFormEl.classList.remove('hidden');
+            const sessionPanelEl = document.getElementById('sessionPanel');
+            if (sessionPanelEl) {{
+                sessionPanelEl.classList.remove('border-emerald-400');
+                sessionPanelEl.classList.add('border-slate-200');
+            }}
+            const overlay = document.getElementById('fullscreenOverlay');
+            if (overlay && overlay.style.display !== 'none') {{
+                const fsCd = document.getElementById('fsCountdown');
+                if (fsCd) fsCd.innerText = '⏰ Closed';
             }}
             fetch('/teacher/stop-session/' + CLASS_ID, {{ method: 'POST', headers: {{ 'X-Requested-With': 'XMLHttpRequest' }} }});
             return;
@@ -5093,9 +5136,11 @@ function startCountdown(expiresDate) {{
         const mins = Math.floor(remaining / 60).toString().padStart(2, '0');
         const secs = (remaining % 60).toString().padStart(2, '0');
         const timeStr = mins + ':' + secs;
-        document.getElementById('countdown').innerText = timeStr;
+        const cdEl = document.getElementById('countdown');
+        if (cdEl) cdEl.innerText = timeStr;
         const pct = Math.max(0, (remaining / totalSeconds) * 100);
-        document.getElementById('progressBar').style.width = pct + '%';
+        const pbEl = document.getElementById('progressBar');
+        if (pbEl) pbEl.style.width = pct + '%';
 
         if (document.getElementById('fsCountdown')) {{
             document.getElementById('fsCountdown').innerText = timeStr;
