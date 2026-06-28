@@ -3759,6 +3759,54 @@ def teacher_scan_frame_matrix_lookup(class_id):
 
 
 # =========================================================
+# PUBLIC QR CHECK-IN LANDING PAGE
+# =========================================================
+@app.route("/checkin/<code>")
+def qr_checkin_landing(code):
+    """
+    Students land here after scanning the QR code.
+    - If logged in: auto-fills session code and redirects to their check-in page.
+    - If not logged in: redirects to student login with code saved in session.
+    """
+    code = code.upper().strip()
+    # Find the class this code belongs to
+    school_id = session.get("school_id", 1)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT class_id FROM class_sessions
+        WHERE code=%s AND active=TRUE AND expires_at > NOW()
+        ORDER BY id DESC LIMIT 1
+    """, (code,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        # Code expired or invalid
+        msg = "This QR code has expired or is invalid. Ask your teacher to generate a new one."
+        return page_wrapper("QR Check-In", f"""
+        <div class="max-w-md mx-auto text-center py-16 space-y-4">
+            <div class="text-6xl">⏰</div>
+            <h1 class="text-2xl font-bold text-red-600">Code Expired</h1>
+            <p class="text-slate-500">{msg}</p>
+            <a href="/student" class="inline-block mt-4 bg-slate-800 text-white font-bold px-6 py-2.5 rounded-xl">Go to My Dashboard</a>
+        </div>
+        """)
+
+    class_id = row["class_id"]
+
+    # Save code in session so it survives a login redirect
+    session["qr_session_code"] = code
+    session["qr_class_id"] = class_id
+
+    if not is_student_logged_in():
+        return redirect(f"/student-login?next=/checkin/{code}")
+
+    # Student is logged in — redirect straight to their check-in page with code pre-filled
+    return redirect(f"/student/checkin/manual/{class_id}?code={code}")
+
+
+# =========================================================
 # ADDITIONS: STUDENT SELF ATTENDANCE (MANUAL & FACE CHECK-IN)
 # =========================================================
 @app.route("/student/checkin/manual/<int:class_id>", methods=["GET", "POST"])
@@ -3781,6 +3829,8 @@ def student_manual_checkin(class_id):
 
     # GET — show the check-in form (collect GPS + session code)
     if request.method == "GET":
+        # Pre-fill code from QR scan (URL param or saved in session)
+        prefill_code = request.args.get("code", "") or session.pop("qr_session_code", "")
         body = f"""
         <div class="max-w-md mx-auto space-y-5">
             <h1 class="text-2xl font-bold text-slate-800">📍 Mark Attendance</h1>
@@ -3793,9 +3843,10 @@ def student_manual_checkin(class_id):
                 <input type="hidden" name="longitude" id="lng">
 
                 <div>
-                    <label class="block text-sm font-semibold text-slate-700 mb-1">📟 Session Code <span class="font-normal text-slate-400">(from your teacher)</span></label>
-                    <input type="text" name="session_code" placeholder="e.g. A4X9" maxlength="10"
-                        class="w-full px-3 py-2 border rounded-lg uppercase tracking-widest font-mono text-lg text-center focus:ring-2 focus:ring-blue-400">
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">📟 Session Code <span class="font-normal text-slate-400">(from your teacher or QR scan)</span></label>
+                    <input type="text" name="session_code" id="sessionCodeField" value="{prefill_code}" placeholder="e.g. A4X9" maxlength="10"
+                        class="w-full px-3 py-2 border rounded-lg uppercase tracking-widest font-mono text-lg text-center focus:ring-2 focus:ring-blue-400 {'border-emerald-400 bg-emerald-50' if prefill_code else ''}">
+                    {'<p class="text-xs text-emerald-600 font-semibold text-center mt-1">✅ Code filled from QR scan</p>' if prefill_code else ''}
                 </div>
 
                 <div id="gpsStatus" class="text-xs text-slate-400 text-center">📡 Detecting your location...</div>
@@ -4456,55 +4507,74 @@ def teacher_session_panel(class_id):
             <a href="/teacher/class/{class_id}" class="text-blue-600 hover:underline text-sm font-semibold">← Back to Class</a>
         </div>
         <h1 class="text-2xl font-extrabold text-slate-800">⏱️ Attendance Timer — {class_row['class_name']}</h1>
-        <p class="text-sm text-slate-500">Start a timed attendance window. Students can only check in while the timer is running. When it expires, attendance is automatically closed.</p>
+        <p class="text-sm text-slate-500">Start a timed attendance window. Students scan the QR code or enter the code manually to check in. Attendance closes automatically when the timer expires.</p>
 
         <!-- Active session display -->
-        <div id="sessionPanel" class="bg-white border-2 rounded-2xl shadow-sm p-6 space-y-4 {'border-emerald-400' if active_code else 'border-slate-200'}">
-            <div id="noSession" class="{'hidden' if active_code else ''} text-center py-4">
+        <div id="sessionPanel" class="bg-white border-2 rounded-2xl shadow-sm p-6 space-y-5 {'border-emerald-400' if active_code else 'border-slate-200'}">
+            <div id="noSession" class="{'hidden' if active_code else ''} text-center py-6">
                 <div class="text-5xl mb-3">🔒</div>
                 <p class="text-slate-500 font-medium">No active attendance window.</p>
                 <p class="text-xs text-slate-400 mt-1">Start a session below to allow students to check in.</p>
             </div>
 
-            <div id="activeSession" class="{'hidden' if not active_code else ''} text-center space-y-4">
-                <div class="text-xs font-bold text-emerald-600 uppercase tracking-widest">✅ Attendance Open</div>
-                <div class="text-7xl font-black font-mono tracking-widest text-slate-800" id="codeDisplay">{active_code or '----'}</div>
-                <p class="text-xs text-slate-400">Share this code with students — they enter it during check-in</p>
+            <div id="activeSession" class="{'hidden' if not active_code else ''} space-y-5">
+                <div class="text-center">
+                    <div class="text-xs font-bold text-emerald-600 uppercase tracking-widest mb-2">✅ Attendance Open</div>
+                    <div class="text-6xl font-black font-mono tracking-widest text-slate-800 mb-1" id="codeDisplay">{active_code or '----'}</div>
+                    <p class="text-xs text-slate-400">Students can scan the QR code below or type this code manually</p>
+                </div>
 
-                <!-- Countdown timer -->
-                <div class="bg-slate-50 rounded-xl p-4 border">
-                    <div class="text-xs text-slate-500 mb-1 font-semibold">TIME REMAINING</div>
-                    <div id="countdown" class="text-4xl font-black font-mono text-indigo-600">--:--</div>
-                    <div class="mt-2 h-2 bg-slate-200 rounded-full overflow-hidden">
-                        <div id="progressBar" class="h-2 bg-indigo-500 rounded-full transition-all duration-1000" style="width:100%"></div>
+                <!-- QR Code + Countdown side by side -->
+                <div class="flex flex-col sm:flex-row gap-4 items-center justify-center">
+
+                    <!-- QR Code box -->
+                    <div class="flex flex-col items-center gap-2">
+                        <div id="qrBox" class="bg-white border-2 border-slate-200 rounded-2xl p-3 shadow-sm flex items-center justify-center" style="width:200px;height:200px;">
+                            <canvas id="qrCanvas"></canvas>
+                        </div>
+                        <button onclick="openFullscreen()" class="text-xs bg-slate-800 hover:bg-slate-900 text-white font-bold px-4 py-2 rounded-xl transition">
+                            🖥️ Fullscreen for Class
+                        </button>
+                    </div>
+
+                    <!-- Countdown -->
+                    <div class="flex-1 bg-slate-50 rounded-2xl p-5 border text-center space-y-2">
+                        <div class="text-xs text-slate-500 font-semibold uppercase tracking-widest">Time Remaining</div>
+                        <div id="countdown" class="text-5xl font-black font-mono text-indigo-600">--:--</div>
+                        <div class="h-2 bg-slate-200 rounded-full overflow-hidden mt-2">
+                            <div id="progressBar" class="h-2 bg-indigo-500 rounded-full transition-all duration-1000" style="width:100%"></div>
+                        </div>
+                        <div class="text-xs text-slate-400 mt-1" id="expiryLabel"></div>
                     </div>
                 </div>
 
-                <form method="POST" action="/teacher/stop-session/{class_id}" data-ajax class="pt-1">
-                    <button type="submit" class="bg-red-500 hover:bg-red-600 text-white font-bold px-6 py-2.5 rounded-xl transition">
-                        ⏹ Stop Attendance Now
-                    </button>
-                </form>
+                <div class="flex justify-center pt-1">
+                    <form method="POST" action="/teacher/stop-session/{class_id}" data-ajax>
+                        <button type="submit" class="bg-red-500 hover:bg-red-600 text-white font-bold px-8 py-2.5 rounded-xl transition">
+                            ⏹ Stop Attendance Now
+                        </button>
+                    </form>
+                </div>
             </div>
         </div>
 
         <!-- Start new session form -->
         <div id="startForm" class="bg-white border rounded-2xl shadow-sm p-6 space-y-4 {'hidden' if active_code else ''}">
             <h2 class="font-bold text-slate-700">🕐 Set Attendance Window</h2>
-            <p class="text-xs text-slate-400">Choose how long students have to mark attendance. The session code expires automatically when time is up.</p>
+            <p class="text-xs text-slate-400">Choose how long students have to mark attendance. The QR code and session code expire automatically when time is up.</p>
 
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3" id="presetBtns">
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <button type="button" onclick="setDuration(5)" class="preset-btn border rounded-xl py-3 font-bold text-slate-700 hover:bg-indigo-50 hover:border-indigo-400 text-sm transition">5 min</button>
                 <button type="button" onclick="setDuration(10)" class="preset-btn border rounded-xl py-3 font-bold text-slate-700 hover:bg-indigo-50 hover:border-indigo-400 text-sm transition">10 min</button>
                 <button type="button" onclick="setDuration(15)" class="preset-btn border rounded-xl py-3 font-bold text-slate-700 hover:bg-indigo-50 hover:border-indigo-400 text-sm transition">15 min</button>
-                <button type="button" onclick="setDuration(30)" class="preset-btn border rounded-xl py-3 font-bold text-slate-700 hover:bg-indigo-50 hover:border-indigo-400 text-sm transition active-preset">30 min</button>
+                <button type="button" onclick="setDuration(30)" class="preset-btn border rounded-xl py-3 font-bold text-slate-700 hover:bg-indigo-50 hover:border-indigo-400 text-sm transition bg-indigo-100 border-indigo-400 text-indigo-700">30 min</button>
             </div>
 
             <div class="flex items-center gap-3">
                 <span class="text-sm text-slate-500 font-medium">Or custom:</span>
                 <input type="number" id="customDuration" min="1" max="180" value="30"
                     class="w-24 px-3 py-2 border rounded-lg text-center font-bold text-slate-800 focus:ring-2 focus:ring-indigo-400"
-                    oninput="syncCustom(this.value)">
+                    oninput="syncCustom()">
                 <span class="text-sm text-slate-500">minutes</span>
             </div>
 
@@ -4514,56 +4584,99 @@ def teacher_session_panel(class_id):
         </div>
     </div>
 
+    <!-- FULLSCREEN OVERLAY -->
+    <div id="fullscreenOverlay" class="fixed inset-0 bg-white z-50 hidden flex-col items-center justify-center p-8 text-center">
+        <button onclick="closeFullscreen()" class="absolute top-5 right-6 text-slate-400 hover:text-slate-700 text-sm font-bold">✕ Close</button>
+        <div class="text-slate-400 text-sm font-semibold uppercase tracking-widest mb-2">{class_row['class_name']} — Scan to Mark Attendance</div>
+        <div id="fsCode" class="text-8xl font-black font-mono tracking-[0.2em] text-slate-800 mb-4"></div>
+        <canvas id="fsQrCanvas" class="rounded-2xl shadow-lg border-4 border-slate-100" style="width:300px;height:300px;"></canvas>
+        <div class="mt-4 text-slate-400 text-sm">Scan with your phone camera · Or type the code above</div>
+        <div id="fsCountdown" class="mt-3 text-4xl font-black font-mono text-indigo-600"></div>
+        <div class="mt-2 w-64 h-2 bg-slate-200 rounded-full overflow-hidden">
+            <div id="fsProgressBar" class="h-2 bg-indigo-500 rounded-full transition-all duration-1000" style="width:100%"></div>
+        </div>
+    </div>
+
+<!-- qrcode.js from CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
+const CLASS_ID = {class_id};
 let countdownInterval = null;
 let totalSeconds = 0;
-let startSeconds = 0;
-const expiresAt = {f'new Date("{expires_iso}")' if expires_iso else 'null'};
+let currentCode = '{active_code or ""}';
+let currentExpiresAt = {f'new Date("{expires_iso}")' if expires_iso else 'null'};
+let qrInstance = null;
+let fsQrInstance = null;
+
+// Build the check-in URL that the QR encodes
+function checkinUrl(code) {{
+    return window.location.origin + '/checkin/' + code;
+}}
+
+function renderQR(code) {{
+    const canvas = document.getElementById('qrCanvas');
+    canvas.width = 174; canvas.height = 174;
+    QRCode.toCanvas(canvas, checkinUrl(code), {{
+        width: 174, margin: 1,
+        color: {{ dark: '#1e293b', light: '#ffffff' }}
+    }}, function(err) {{ if(err) console.error(err); }});
+}}
+
+function renderFsQR(code) {{
+    const canvas = document.getElementById('fsQrCanvas');
+    canvas.width = 300; canvas.height = 300;
+    QRCode.toCanvas(canvas, checkinUrl(code), {{
+        width: 300, margin: 1,
+        color: {{ dark: '#1e293b', light: '#ffffff' }}
+    }}, function(err) {{ if(err) console.error(err); }});
+}}
 
 function setDuration(min) {{
     document.getElementById('customDuration').value = min;
-    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active-preset', 'bg-indigo-100', 'border-indigo-400', 'text-indigo-700'));
-    event.target.classList.add('active-preset', 'bg-indigo-100', 'border-indigo-400', 'text-indigo-700');
+    document.querySelectorAll('.preset-btn').forEach(b => {{
+        b.classList.remove('bg-indigo-100','border-indigo-400','text-indigo-700');
+    }});
+    event.target.classList.add('bg-indigo-100','border-indigo-400','text-indigo-700');
 }}
 
-function syncCustom(val) {{
-    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active-preset', 'bg-indigo-100', 'border-indigo-400', 'text-indigo-700'));
+function syncCustom() {{
+    document.querySelectorAll('.preset-btn').forEach(b => {{
+        b.classList.remove('bg-indigo-100','border-indigo-400','text-indigo-700');
+    }});
 }}
 
 async function startSession() {{
     const duration = parseInt(document.getElementById('customDuration').value) || 30;
     const btn = event.target;
-    btn.disabled = true;
-    btn.innerText = 'Starting...';
+    btn.disabled = true; btn.innerText = 'Starting...';
     try {{
         const fd = new FormData();
         fd.append('duration_minutes', duration);
-        const res = await fetch('/teacher/start-session/{class_id}', {{ method: 'POST', body: fd }});
+        const res = await fetch('/teacher/start-session/' + CLASS_ID, {{ method: 'POST', body: fd }});
         const data = await res.json();
         if (data.ok) {{
+            currentCode = data.code;
+            currentExpiresAt = new Date(data.expires_at);
             document.getElementById('codeDisplay').innerText = data.code;
             document.getElementById('noSession').classList.add('hidden');
             document.getElementById('activeSession').classList.remove('hidden');
             document.getElementById('startForm').classList.add('hidden');
             document.getElementById('sessionPanel').classList.remove('border-slate-200');
             document.getElementById('sessionPanel').classList.add('border-emerald-400');
-            startCountdown(new Date(data.expires_at));
+            renderQR(data.code);
+            startCountdown(currentExpiresAt);
         }} else {{
             alert('Error starting session.');
-            btn.disabled = false;
-            btn.innerText = '▶ Start Attendance Timer';
+            btn.disabled = false; btn.innerText = '▶ Start Attendance Timer';
         }}
     }} catch(e) {{
-        alert('Network error.');
-        btn.disabled = false;
-        btn.innerText = '▶ Start Attendance Timer';
+        alert('Network error.'); btn.disabled = false; btn.innerText = '▶ Start Attendance Timer';
     }}
 }}
 
 function startCountdown(expiresDate) {{
     if (countdownInterval) clearInterval(countdownInterval);
-    startSeconds = Math.floor((expiresDate - new Date()) / 1000);
-    totalSeconds = startSeconds;
+    totalSeconds = Math.max(1, Math.floor((expiresDate - new Date()) / 1000));
 
     function tick() {{
         const remaining = Math.floor((expiresDate - new Date()) / 1000);
@@ -4571,27 +4684,36 @@ function startCountdown(expiresDate) {{
             clearInterval(countdownInterval);
             document.getElementById('countdown').innerText = '00:00';
             document.getElementById('progressBar').style.width = '0%';
-            document.getElementById('countdown').className = 'text-4xl font-black font-mono text-red-500';
-            // Auto-close
-            document.getElementById('activeSession').innerHTML = '<div class="text-red-500 font-bold text-lg py-4">⏰ Time is up! Attendance window closed.</div>';
+            document.getElementById('activeSession').innerHTML = '<div class="text-red-500 font-bold text-lg py-6">⏰ Time is up! Attendance window closed.</div>';
             document.getElementById('startForm').classList.remove('hidden');
             document.getElementById('sessionPanel').classList.remove('border-emerald-400');
             document.getElementById('sessionPanel').classList.add('border-slate-200');
-            // Auto stop on server
-            fetch('/teacher/stop-session/{class_id}', {{ method: 'POST' }});
+            if (document.getElementById('fullscreenOverlay').style.display !== 'none') {{
+                document.getElementById('fsCountdown').innerText = '⏰ Closed';
+            }}
+            fetch('/teacher/stop-session/' + CLASS_ID, {{ method: 'POST' }});
             return;
         }}
         const mins = Math.floor(remaining / 60).toString().padStart(2, '0');
         const secs = (remaining % 60).toString().padStart(2, '0');
-        document.getElementById('countdown').innerText = mins + ':' + secs;
+        const timeStr = mins + ':' + secs;
+        document.getElementById('countdown').innerText = timeStr;
         const pct = Math.max(0, (remaining / totalSeconds) * 100);
         document.getElementById('progressBar').style.width = pct + '%';
-        // Color warning
+
+        // Also update fullscreen
+        if (document.getElementById('fsCountdown')) {{
+            document.getElementById('fsCountdown').innerText = timeStr;
+            document.getElementById('fsProgressBar').style.width = pct + '%';
+        }}
+
         if (remaining <= 60) {{
-            document.getElementById('countdown').className = 'text-4xl font-black font-mono text-red-500';
+            document.getElementById('countdown').className = 'text-5xl font-black font-mono text-red-500';
             document.getElementById('progressBar').className = 'h-2 bg-red-500 rounded-full transition-all duration-1000';
+            if(document.getElementById('fsCountdown')) document.getElementById('fsCountdown').className = 'mt-3 text-4xl font-black font-mono text-red-500';
+            if(document.getElementById('fsProgressBar')) document.getElementById('fsProgressBar').className = 'h-2 bg-red-500 rounded-full transition-all duration-1000';
         }} else if (remaining <= 180) {{
-            document.getElementById('countdown').className = 'text-4xl font-black font-mono text-amber-500';
+            document.getElementById('countdown').className = 'text-5xl font-black font-mono text-amber-500';
             document.getElementById('progressBar').className = 'h-2 bg-amber-400 rounded-full transition-all duration-1000';
         }}
     }}
@@ -4599,18 +4721,26 @@ function startCountdown(expiresDate) {{
     countdownInterval = setInterval(tick, 1000);
 }}
 
-// If session already active on page load, start countdown immediately
-if (expiresAt) {{
-    startCountdown(expiresAt);
+function openFullscreen() {{
+    if (!currentCode) return;
+    document.getElementById('fsCode').innerText = currentCode;
+    renderFsQR(currentCode);
+    const overlay = document.getElementById('fullscreenOverlay');
+    overlay.classList.remove('hidden');
+    overlay.style.display = 'flex';
 }}
 
-// Style for active preset
-document.querySelectorAll('.preset-btn').forEach(b => {{
-    b.addEventListener('click', function() {{
-        document.querySelectorAll('.preset-btn').forEach(x => x.classList.remove('bg-indigo-100','border-indigo-400','text-indigo-700'));
-        this.classList.add('bg-indigo-100','border-indigo-400','text-indigo-700');
-    }});
-}});
+function closeFullscreen() {{
+    const overlay = document.getElementById('fullscreenOverlay');
+    overlay.classList.add('hidden');
+    overlay.style.display = 'none';
+}}
+
+// On load: if session active, render QR and start countdown
+if (currentCode && currentExpiresAt) {{
+    renderQR(currentCode);
+    startCountdown(currentExpiresAt);
+}}
 </script>
     """
     return page_wrapper(f"Attendance Timer — {class_row['class_name']}", body, is_teacher=True, teacher_name=session.get("teacher_name"))
