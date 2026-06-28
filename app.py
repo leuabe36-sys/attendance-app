@@ -669,58 +669,87 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
     
     if is_admin:
         sidebar_html = f"""
-        <div class="sidebar-header">🛡️ Admin Dashboard</div>
-        <nav class="sidebar-nav">
-            <a href="/admin">📊 Dashboard Home</a>
-            <a href="/student-register">🧑‍🎓 Register Student</a>
-            <a href="/admin/reports">📋 Attendance Reports</a>
-            <a href="/settings">⚙️ Account Settings</a>
-            <hr style="border:0; border-top: 1px solid #374151; margin:15px 0;">
-            <a href="/" style="background:#1f2937;">🏠 Back Main Site</a>
-            <form method="POST" action="/admin-logout" style="margin:0 12px;"><button type="submit" style="width:100%;background:#991b1b;color:white;border:none;padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;text-align:left;">🚪 Secure Logout</button></form>
+        <div class="sb-brand">
+            <div class="sb-brand-icon">🛡️</div>
+            <div>
+                <div class="sb-brand-title">Admin Console</div>
+                <div class="sb-brand-sub">System Administrator</div>
+            </div>
+        </div>
+        <nav class="sb-nav">
+            <div class="sb-nav-label">MAIN</div>
+            <a href="/admin" class="sb-link"><span class="sb-icon">⬛</span> Dashboard</a>
+            <a href="/student-register" class="sb-link"><span class="sb-icon">➕</span> Register Student</a>
+            <a href="/admin/reports" class="sb-link"><span class="sb-icon">📋</span> Attendance Reports</a>
+            <div class="sb-nav-label" style="margin-top:16px;">ACCOUNT</div>
+            <a href="/settings" class="sb-link"><span class="sb-icon">⚙️</span> Settings</a>
+            <a href="/" class="sb-link sb-link-muted"><span class="sb-icon">🏠</span> Main Site</a>
+            <form method="POST" action="/admin-logout" style="margin-top:8px;">
+                <button type="submit" class="sb-logout-btn">🚪 Sign Out</button>
+            </form>
         </nav>
         """
     elif is_teacher:
         sidebar_html = f"""
-        <div class="sidebar-header">
-            <div style="font-size:18px; font-weight:700; color:#38bdf8;">👨‍🏫 Instructor Panel</div>
-            <div style="font-size:13px; color:#9ca3af; margin-top:4px;">{teacher_name}</div>
+        <div class="sb-brand">
+            <div class="sb-brand-icon" style="background:linear-gradient(135deg,#7c3aed,#4f46e5);">👨‍🏫</div>
+            <div>
+                <div class="sb-brand-title">Instructor Panel</div>
+                <div class="sb-brand-sub">{teacher_name}</div>
+            </div>
         </div>
-        <nav class="sidebar-nav">
-            <a href="/teacher">📋 My Classes Home</a>
-            <a href="/settings">⚙️ Update Password</a>
-            <hr style="border:0; border-top: 1px solid #374151; margin:15px 0;">
-            <a href="/" style="background:#1f2937;">🏠 Back Main Site</a>
-            <form method="POST" action="/teacher-logout" style="margin:0 12px;"><button type="submit" style="width:100%;background:#991b1b;color:white;border:none;padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;text-align:left;">🚪 Secure Logout</button></form>
+        <nav class="sb-nav">
+            <div class="sb-nav-label">MAIN</div>
+            <a href="/teacher" class="sb-link"><span class="sb-icon">📋</span> My Classes</a>
+            <div class="sb-nav-label" style="margin-top:16px;">ACCOUNT</div>
+            <a href="/settings" class="sb-link"><span class="sb-icon">⚙️</span> Update Password</a>
+            <a href="/" class="sb-link sb-link-muted"><span class="sb-icon">🏠</span> Main Site</a>
+            <form method="POST" action="/teacher-logout" style="margin-top:8px;">
+                <button type="submit" class="sb-logout-btn">🚪 Sign Out</button>
+            </form>
         </nav>
         """
     elif is_student and student_context:
         sidebar_html = f"""
-        <div class="sidebar-header center">
-            <img class="student-photo" style="width:70px; height:70px; border-radius:50%; margin-bottom:10px; border:2px solid #2563eb;" src="{supabase_public_url(student_context['image_file'])}">
-            <div style="font-size: 16px; font-weight:600;">{student_context['full_name']}</div>
-            <div style="font-size: 12px; color:#9ca3af; margin-top:2px;">ID: {student_context['student_id']}</div>
+        <div class="sb-student-profile">
+            <img src="{supabase_public_url(student_context['image_file'])}" class="sb-avatar">
+            <div class="sb-brand-title" style="margin-top:10px;">{student_context['full_name']}</div>
+            <div class="sb-brand-sub" style="font-family:monospace;">ID: {student_context['student_id']}</div>
         </div>
-        <nav class="sidebar-nav">
-            <a href="/student" class="active">📚 My Profile Home</a>
-            <a href="/student/scan" style="background:#059669; color:white;">📸 Face Check-In</a>
-            <a href="/student/edit-profile">✏️ Edit Profile</a>
-            <hr style="border:0; border-top: 1px solid #374151; margin:15px 0;">
-            <a href="/" style="background:#1f2937;">🏠 Back Main Site</a>
-            <form method="POST" action="/student-logout" style="margin:0 12px;"><button type="submit" style="width:100%;background:#991b1b;color:white;border:none;padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;text-align:left;">🚪 Secure Logout</button></form>
-            <form method="POST" action="/student/delete-account" style="margin:4px 12px 0 12px;" onsubmit="return confirm('Are you sure you want to permanently delete your account? This cannot be undone.')"><button type="submit" style="width:100%;background:#7f1d1d;color:white;border:none;padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;text-align:left;">🗑️ Delete My Account</button></form>
+        <nav class="sb-nav">
+            <div class="sb-nav-label">STUDENT</div>
+            <a href="/student" class="sb-link"><span class="sb-icon">📚</span> My Profile</a>
+            <a href="/student/scan" class="sb-link sb-link-checkin"><span class="sb-icon">📸</span> Face Check-In</a>
+            <a href="/student/edit-profile" class="sb-link"><span class="sb-icon">✏️</span> Edit Profile</a>
+            <div class="sb-nav-label" style="margin-top:16px;">ACCOUNT</div>
+            <a href="/" class="sb-link sb-link-muted"><span class="sb-icon">🏠</span> Main Site</a>
+            <form method="POST" action="/student-logout" style="margin-top:8px;">
+                <button type="submit" class="sb-logout-btn">🚪 Sign Out</button>
+            </form>
+            <form method="POST" action="/student/delete-account" style="margin-top:6px;" onsubmit="return confirm('Permanently delete your account? This cannot be undone.')">
+                <button type="submit" class="sb-delete-btn">🗑️ Delete Account</button>
+            </form>
         </nav>
         """
 
     if is_admin or is_student or is_teacher:
         content_html = f"""
-        <div class="dashboard-wrapper">
-            <div class="sidebar-panel" id="sidebarMenu">
-                {sidebar_html}
+        <div class="dw">
+            <div class="sb" id="sidebarMenu">
+                <div class="sb-inner">
+                    {sidebar_html}
+                </div>
             </div>
-            <button class="mobile-menu-trigger" onclick="toggleSidebar(event)">☰ Menu</button>
-            <div class="workspace-panel" onclick="closeSidebar()">
-                <div class="box">
+            <div class="sb-overlay" id="sbOverlay" onclick="closeSidebar()"></div>
+            <div class="main-content">
+                <div class="topbar">
+                    <button class="topbar-menu-btn" onclick="toggleSidebar(event)" aria-label="Open menu">
+                        <span></span><span></span><span></span>
+                    </button>
+                    <div class="topbar-title">{title}</div>
+                    <div class="topbar-right"></div>
+                </div>
+                <div class="content-area">
                     {body}
                 </div>
             </div>
@@ -728,163 +757,427 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
         """
     else:
         content_html = f"""
-        <div class="box" style="margin:40px auto; max-width:1100px;">
+        <div class="public-wrap">
             {body}
         </div>
         """
 
     return f"""
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+        <title>{title} — EduTrack</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
         <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
         <style>
-        body{{
-            font-family: 'Segoe UI', Arial, sans-serif;
-            background: linear-gradient(135deg,#eef2ff,#f8fafc);
-            margin:0;
-            padding:0;
+        *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        :root {{
+            --c-bg: #f0f4ff;
+            --c-surface: #ffffff;
+            --c-border: #e2e8f0;
+            --c-text: #0f172a;
+            --c-muted: #64748b;
+            --c-accent: #2563eb;
+            --c-accent-dark: #1d4ed8;
+            --c-accent-light: #eff6ff;
+            --c-success: #059669;
+            --c-warning: #d97706;
+            --c-danger: #dc2626;
+            --c-purple: #7c3aed;
+            --sb-w: 272px;
+            --topbar-h: 60px;
+            --radius: 12px;
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+            --shadow-md: 0 4px 16px rgba(0,0,0,0.08), 0 2px 6px rgba(0,0,0,0.04);
+            --shadow-lg: 0 12px 32px rgba(0,0,0,0.12);
         }}
-        .box {{
-            background:white;
-            padding:24px;
-            border-radius:16px;
-            box-shadow:0 4px 20px rgba(0,0,0,0.05);
+        html, body {{ height: 100%; }}
+        body {{
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--c-bg);
+            color: var(--c-text);
+            font-size: 15px;
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
         }}
-        .dashboard-wrapper {{
-            display: flex;
-            min-height: 100vh;
-            position: relative;
-        }}
-        .sidebar-panel {{
-            width: 260px;
-            background: #111827;
-            color: #f3f4f6;
+
+        /* ── DASHBOARD LAYOUT ── */
+        .dw {{ display: flex; min-height: 100vh; }}
+
+        /* ── SIDEBAR ── */
+        .sb {{
+            width: var(--sb-w);
+            background: #0f172a;
+            color: #f1f5f9;
+            position: fixed;
+            inset: 0 auto 0 0;
+            z-index: 200;
             display: flex;
             flex-direction: column;
+            transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+            box-shadow: 4px 0 24px rgba(0,0,0,0.18);
+            overflow-y: auto;
+            overflow-x: hidden;
+        }}
+        .sb-inner {{ padding: 0 0 32px; min-height: 100%; display: flex; flex-direction: column; }}
+
+        .sb-brand {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 22px 20px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.07);
+        }}
+        .sb-brand-icon {{
+            width: 42px; height: 42px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 20px;
+            flex-shrink: 0;
+            box-shadow: 0 4px 12px rgba(37,99,235,0.35);
+        }}
+        .sb-brand-title {{ font-weight: 700; font-size: 15px; color: #f8fafc; letter-spacing: -0.01em; }}
+        .sb-brand-sub {{ font-size: 12px; color: #94a3b8; margin-top: 1px; }}
+
+        .sb-student-profile {{
+            padding: 24px 20px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.07);
+            text-align: center;
+        }}
+        .sb-avatar {{
+            width: 76px; height: 76px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 3px solid #2563eb;
+            box-shadow: 0 0 0 3px rgba(37,99,235,0.25);
+            margin: 0 auto 10px;
+            display: block;
+        }}
+
+        .sb-nav {{ padding: 16px 12px; flex: 1; }}
+        .sb-nav-label {{
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            color: #475569;
+            padding: 0 12px;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+        }}
+        .sb-link {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 9px;
+            text-decoration: none;
+            color: #94a3b8;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.18s ease;
+            margin-bottom: 2px;
+        }}
+        .sb-link:hover {{ background: rgba(255,255,255,0.07); color: #f1f5f9; }}
+        .sb-link.active, .sb-link:focus {{ background: #2563eb; color: white; box-shadow: 0 2px 8px rgba(37,99,235,0.4); }}
+        .sb-link-muted {{ color: #475569 !important; }}
+        .sb-link-muted:hover {{ color: #94a3b8 !important; }}
+        .sb-link-checkin {{ background: rgba(5,150,105,0.15) !important; color: #34d399 !important; border: 1px solid rgba(5,150,105,0.25); }}
+        .sb-link-checkin:hover {{ background: #059669 !important; color: white !important; }}
+        .sb-icon {{ font-size: 16px; width: 22px; text-align: center; flex-shrink: 0; }}
+        .sb-logout-btn {{
+            width: 100%;
+            background: rgba(220,38,38,0.12);
+            color: #fca5a5;
+            border: 1px solid rgba(220,38,38,0.2);
+            padding: 10px 12px;
+            border-radius: 9px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            text-align: left;
+            transition: all 0.18s;
+        }}
+        .sb-logout-btn:hover {{ background: #dc2626; color: white; border-color: #dc2626; }}
+        .sb-delete-btn {{
+            width: 100%;
+            background: rgba(127,29,29,0.15);
+            color: #f87171;
+            border: 1px solid rgba(127,29,29,0.25);
+            padding: 10px 12px;
+            border-radius: 9px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            text-align: left;
+            transition: all 0.18s;
+        }}
+        .sb-delete-btn:hover {{ background: #7f1d1d; color: white; }}
+
+        /* ── OVERLAY ── */
+        .sb-overlay {{
+            display: none;
             position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.45);
+            z-index: 150;
+            backdrop-filter: blur(2px);
+        }}
+
+        /* ── MAIN CONTENT ── */
+        .main-content {{
+            flex: 1;
+            margin-left: var(--sb-w);
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }}
+
+        /* ── TOPBAR ── */
+        .topbar {{
+            height: var(--topbar-h);
+            background: var(--c-surface);
+            border-bottom: 1px solid var(--c-border);
+            display: flex;
+            align-items: center;
+            padding: 0 24px;
+            gap: 16px;
+            position: sticky;
             top: 0;
-            left: 0;
-            bottom: 0;
-            z-index: 999;
-            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            box-shadow: 4px 0 15px rgba(0,0,0,0.15);
-            padding: 20px 0;
+            z-index: 100;
+            box-shadow: var(--shadow-sm);
+        }}
+        .topbar-menu-btn {{
+            display: none;
+            flex-direction: column;
+            gap: 5px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 6px;
+            border-radius: 8px;
+            flex-shrink: 0;
+        }}
+        .topbar-menu-btn:hover {{ background: #f1f5f9; }}
+        .topbar-menu-btn span {{
+            display: block;
+            width: 20px;
+            height: 2px;
+            background: #475569;
+            border-radius: 2px;
+            transition: all 0.2s;
+        }}
+        .topbar-title {{ font-weight: 600; font-size: 16px; color: var(--c-text); flex: 1; }}
+        .topbar-right {{ display: flex; align-items: center; gap: 10px; }}
+
+        /* ── CONTENT AREA ── */
+        .content-area {{ padding: 28px 28px; flex: 1; }}
+
+        /* ── PUBLIC PAGES ── */
+        .public-wrap {{ max-width: 1100px; margin: 40px auto; padding: 0 20px; }}
+
+        /* ── CARDS / BOX ── */
+        .card {{
+            background: var(--c-surface);
+            border-radius: var(--radius);
+            border: 1px solid var(--c-border);
+            box-shadow: var(--shadow-sm);
+        }}
+        .card-header {{
+            padding: 18px 22px;
+            border-bottom: 1px solid var(--c-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+        .card-header-title {{ font-weight: 700; font-size: 15px; color: var(--c-text); }}
+        .card-body {{ padding: 22px; }}
+
+        /* ── TABLES ── */
+        .tbl-wrap {{ overflow-x: auto; -webkit-overflow-scrolling: touch; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
+        thead th {{
+            background: #f8fafc;
+            color: #475569;
+            padding: 12px 14px;
+            text-align: left;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            white-space: nowrap;
+            border-bottom: 2px solid var(--c-border);
+        }}
+        tbody td {{
+            padding: 12px 14px;
+            border-bottom: 1px solid #f1f5f9;
+            color: var(--c-text);
+            vertical-align: middle;
+        }}
+        tbody tr:last-child td {{ border-bottom: none; }}
+        tbody tr:hover td {{ background: #fafbff; }}
+
+        /* ── FORMS ── */
+        .form-group {{ margin-bottom: 16px; }}
+        .form-label {{ display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; }}
+        .form-input {{
+            width: 100%;
+            padding: 10px 14px;
+            border: 1.5px solid var(--c-border);
+            border-radius: 9px;
+            font-size: 14px;
+            font-family: inherit;
+            color: var(--c-text);
+            background: var(--c-surface);
+            transition: border-color 0.18s, box-shadow 0.18s;
+            outline: none;
+            max-width: 100%;
+        }}
+        .form-input:focus {{ border-color: var(--c-accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.12); }}
+        select.form-input {{ cursor: pointer; }}
+        input:not([class]), select:not([class]), textarea:not([class]) {{
+            width: 100%;
+            padding: 10px 14px;
+            border: 1.5px solid var(--c-border);
+            border-radius: 9px;
+            font-size: 14px;
+            font-family: inherit;
+            color: var(--c-text);
+            background: var(--c-surface);
+            transition: border-color 0.18s, box-shadow 0.18s;
+            outline: none;
+            max-width: 100%;
+            margin: 4px 0;
             box-sizing: border-box;
         }}
-        .sidebar-header {{
-            font-size: 18px;
-            font-weight: 700;
-            padding: 0 20px 20px 20px;
-            border-bottom: 1px solid #1f2937;
-            color: white;
+        input:not([class]):focus, select:not([class]):focus, textarea:not([class]):focus {{
+            border-color: var(--c-accent);
+            box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
         }}
-        .sidebar-nav {{
+
+        /* ── BUTTONS ── */
+        .btn, button:not(.topbar-menu-btn):not(.sb-logout-btn):not(.sb-delete-btn):not([style*="none"]) {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 10px 18px;
+            border-radius: 9px;
+            font-size: 14px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            border: none;
+            transition: all 0.18s ease;
+            text-decoration: none;
+            white-space: nowrap;
+        }}
+        .btn-primary, button[type="submit"]:not(.sb-logout-btn):not(.sb-delete-btn) {{
+            background: var(--c-accent);
+            color: white;
+            box-shadow: 0 2px 6px rgba(37,99,235,0.3);
+        }}
+        .btn-primary:hover, button[type="submit"]:not(.sb-logout-btn):not(.sb-delete-btn):hover {{
+            background: var(--c-accent-dark);
+            box-shadow: 0 4px 12px rgba(37,99,235,0.4);
+            transform: translateY(-1px);
+        }}
+        .btn.green {{ background: var(--c-success); color: white; box-shadow: 0 2px 6px rgba(5,150,105,0.3); }}
+        .btn.green:hover {{ background: #047857; transform: translateY(-1px); }}
+        .btn.orange {{ background: #f97316; color: white; }}
+        .btn.red {{ background: var(--c-danger); color: white; }}
+        .btn.dark {{ background: #1e293b; color: white; }}
+
+        /* ── STAT CARDS ── */
+        .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }}
+        .stat-card {{
+            background: var(--c-surface);
+            border-radius: var(--radius);
+            border: 1px solid var(--c-border);
+            padding: 20px;
             display: flex;
             flex-direction: column;
             gap: 6px;
-            padding: 20px 12px;
+            box-shadow: var(--shadow-sm);
+            transition: box-shadow 0.2s, transform 0.2s;
         }}
-        .sidebar-nav a {{
-            color: #d1d5db;
-            text-decoration: none;
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            transition: all 0.2s ease;
+        .stat-card:hover {{ box-shadow: var(--shadow-md); transform: translateY(-2px); }}
+        .stat-icon {{ font-size: 26px; }}
+        .stat-value {{ font-size: 32px; font-weight: 800; letter-spacing: -0.03em; color: var(--c-text); }}
+        .stat-label {{ font-size: 13px; color: var(--c-muted); font-weight: 500; }}
+        .stat-card.blue .stat-value {{ color: #2563eb; }}
+        .stat-card.green .stat-value {{ color: #059669; }}
+        .stat-card.purple .stat-value {{ color: #7c3aed; }}
+        .stat-card.orange .stat-value {{ color: #d97706; }}
+
+        /* ── BADGES ── */
+        .badge {{
+            display: inline-flex;
+            align-items: center;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
         }}
-        .sidebar-nav a:hover, .sidebar-nav a.active {{
-            background: #2563eb;
-            color: white;
+        .badge-green {{ background: #d1fae5; color: #065f46; }}
+        .badge-red {{ background: #fee2e2; color: #991b1b; }}
+        .badge-blue {{ background: #dbeafe; color: #1e40af; }}
+        .badge-gray {{ background: #f1f5f9; color: #475569; }}
+
+        /* ── PAGE HEADER ── */
+        .page-header {{ margin-bottom: 24px; }}
+        .page-title {{ font-size: 26px; font-weight: 800; letter-spacing: -0.02em; color: var(--c-text); }}
+        .page-sub {{ font-size: 14px; color: var(--c-muted); margin-top: 4px; }}
+
+        /* ── SECTION SPACING ── */
+        .section-stack {{ display: flex; flex-direction: column; gap: 24px; }}
+
+        /* ── ALERT / FEEDBACK ── */
+        .alert {{ padding: 12px 16px; border-radius: 9px; font-size: 14px; font-weight: 500; margin-bottom: 16px; }}
+        .alert-error {{ background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }}
+        .alert-success {{ background: #f0fdf4; border: 1px solid #bbf7d0; color: #14532d; }}
+
+        /* ── MOBILE RESPONSIVE ── */
+        @media (max-width: 1023px) {{
+            .sb {{ transform: translateX(-100%); }}
+            .sb.open {{ transform: translateX(0); }}
+            .sb-overlay.open {{ display: block; }}
+            .main-content {{ margin-left: 0; }}
+            .topbar-menu-btn {{ display: flex; }}
+            .content-area {{ padding: 20px 16px; }}
+            .stat-grid {{ grid-template-columns: repeat(2, 1fr); }}
+            .topbar {{ padding: 0 16px; }}
         }}
-        .workspace-panel {{
-            flex: 1;
-            margin-left: 260px;
-            padding: 30px 24px;
-            transition: margin-left 0.3s ease;
-            width: calc(100% - 260px);
-            box-sizing: border-box;
-        }}
-        .mobile-menu-trigger {{
-            display: none;
-            position: fixed;
-            top: 15px;
-            left: 15px;
-            z-index: 1000;
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 10px 16px;
-            border-radius: 8px;
-            font-weight: bold;
-            cursor: pointer;
-        }}
-        table{{
-            width:100%;
-            border-collapse:collapse;
-            background:white;
-            border-radius:12px;
-            overflow:hidden;
-            margin-top:12px;
-        }}
-        th{{
-            background:#1e3a8a;
-            color:white;
-            padding:14px;
-            text-align:left;
-            font-size:14px;
-        }}
-        td{{
-            padding:12px;
-            border-bottom:1px solid #e2e8f0;
-            font-size:14px;
-        }}
-        input,select,textarea{{
-            width:100%;
-            max-width:400px;
-            padding:10px 14px;
-            border:1px solid #cbd5e1;
-            border-radius:8px;
-            margin:6px 0;
-            box-sizing:border-box;
-        }}
-        button,.btn{{
-            display:inline-block;
-            padding:10px 20px;
-            margin:4px 2px;
-            border:none;
-            border-radius:8px;
-            text-decoration:none;
-            font-weight:600;
-            cursor:pointer;
-            background:#2563eb;
-            color:white;
-        }}
-        .btn.green{{background:#10b981;}}
-        .btn.orange{{background:#f97316;}}
-        .btn.red{{background:#ef4444;}}
-        .btn.dark{{background:#1e293b;}}
-        @media (max-width: 1024px) {{
-            .sidebar-panel {{ transform: translateX(-100%); }}
-            .sidebar-panel.visible {{ transform: translateX(0); }}
-            .workspace-panel {{ margin-left: 0; width: 100%; padding-top: 75px; }}
-            .mobile-menu-trigger {{ display: block; }}
+        @media (max-width: 480px) {{
+            .stat-grid {{ grid-template-columns: repeat(2, 1fr); gap: 12px; }}
+            .stat-value {{ font-size: 26px; }}
+            .content-area {{ padding: 16px 12px; }}
         }}
         </style>
         <script>
             function toggleSidebar(e) {{
-                e.stopPropagation();
-                document.getElementById('sidebarMenu').classList.toggle('visible');
+                if(e) e.stopPropagation();
+                document.getElementById('sidebarMenu').classList.toggle('open');
+                document.getElementById('sbOverlay').classList.toggle('open');
             }}
             function closeSidebar() {{
-                const menu = document.getElementById('sidebarMenu');
-                if(menu) menu.classList.remove('visible');
+                document.getElementById('sidebarMenu').classList.remove('open');
+                document.getElementById('sbOverlay').classList.remove('open');
             }}
+            // Mark active sidebar link
+            document.addEventListener('DOMContentLoaded', function() {{
+                const path = window.location.pathname;
+                document.querySelectorAll('.sb-link').forEach(a => {{
+                    if(a.getAttribute('href') === path) a.classList.add('active');
+                }});
+            }});
         </script>
-        <title>{title}</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="theme-color" content="#0f172a">
     </head>
     <body>
         {content_html}
@@ -998,19 +1291,61 @@ def user_settings():
 # =========================================================
 @app.route("/")
 def home():
-    return page_wrapper("School Attendance V4", """
-    <div class="text-center py-12 max-w-4xl mx-auto">
-        <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight mb-3">🎓 Smart Attendance Portal</h1>
-        <p class="text-lg text-slate-600 mb-8">Integrated AI face recognition mapping alongside professional manual proctor sheets.</p>
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 justify-center items-center">
-            <a class="p-4 bg-orange-500 text-white rounded-xl font-bold hover:bg-orange-600 shadow-md transition" href="/student-register">🧑‍🎓 Register Face</a>
-            <a class="p-4 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-900 shadow-md transition" href="/admin-login">🔐 Admin Login</a>
-            <a class="p-4 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700 shadow-md transition" href="/teacher-login">👨‍🏫 Teacher Log-In</a>
-            <a class="p-4 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 shadow-md transition" href="/student-login">📚 Student Log-In</a>
+    return page_wrapper("EduTrack", """
+    <style>
+    .home-hero { text-align:center; padding:56px 20px 40px; max-width:680px; margin:0 auto; }
+    .home-badge { display:inline-flex; align-items:center; gap:6px; background:#eff6ff; border:1px solid #bfdbfe; color:#1d4ed8; font-size:13px; font-weight:600; padding:6px 14px; border-radius:20px; margin-bottom:22px; }
+    .home-title { font-size:clamp(32px,6vw,52px); font-weight:800; letter-spacing:-0.03em; color:#0f172a; line-height:1.15; margin-bottom:16px; }
+    .home-title span { color:#2563eb; }
+    .home-sub { font-size:17px; color:#475569; line-height:1.7; margin-bottom:40px; max-width:520px; margin-left:auto; margin-right:auto; }
+    .portal-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; max-width:560px; margin:0 auto 52px; }
+    @media(max-width:480px){.portal-grid{grid-template-columns:1fr;}}
+    .portal-card { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:22px 20px; border-radius:14px; text-decoration:none; transition:all 0.2s ease; border:none; }
+    .portal-card:hover { transform:translateY(-3px); box-shadow:0 12px 28px rgba(0,0,0,0.15); }
+    .portal-card-icon { font-size:28px; }
+    .portal-card-label { font-size:16px; font-weight:700; color:white; }
+    .portal-card-desc { font-size:12px; opacity:0.82; color:white; }
+    .pc-orange { background:linear-gradient(135deg,#f97316,#ea580c); }
+    .pc-dark { background:linear-gradient(135deg,#1e293b,#0f172a); }
+    .pc-purple { background:linear-gradient(135deg,#7c3aed,#6d28d9); }
+    .pc-green { background:linear-gradient(135deg,#059669,#047857); }
+    .features-row { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; max-width:720px; margin:0 auto; }
+    @media(max-width:600px){.features-row{grid-template-columns:1fr;}}
+    .feat-item { background:white; border:1px solid #e2e8f0; border-radius:12px; padding:18px; text-align:left; }
+    .feat-icon { font-size:22px; margin-bottom:8px; }
+    .feat-title { font-size:14px; font-weight:700; color:#0f172a; margin-bottom:4px; }
+    .feat-text { font-size:13px; color:#64748b; line-height:1.5; }
+    </style>
+    <div class="home-hero">
+        <div class="home-badge">✨ AI-Powered Attendance System</div>
+        <h1 class="home-title">Smart Attendance<br><span>Made Simple</span></h1>
+        <p class="home-sub">Face recognition check-in, real-time reporting, and multi-role management — all in one place.</p>
+        <div class="portal-grid">
+            <a href="/student-register" class="portal-card pc-orange">
+                <div class="portal-card-icon">🧑‍🎓</div>
+                <div class="portal-card-label">Register Face</div>
+                <div class="portal-card-desc">New student enrollment</div>
+            </a>
+            <a href="/admin-login" class="portal-card pc-dark">
+                <div class="portal-card-icon">🔐</div>
+                <div class="portal-card-label">Admin Login</div>
+                <div class="portal-card-desc">System administration</div>
+            </a>
+            <a href="/teacher-login" class="portal-card pc-purple">
+                <div class="portal-card-icon">👨‍🏫</div>
+                <div class="portal-card-label">Teacher Login</div>
+                <div class="portal-card-desc">Manage your classes</div>
+            </a>
+            <a href="/student-login" class="portal-card pc-green">
+                <div class="portal-card-icon">📚</div>
+                <div class="portal-card-label">Student Login</div>
+                <div class="portal-card-desc">View your attendance</div>
+            </a>
         </div>
-        <div class="mt-12 p-6 bg-slate-50 rounded-2xl border border-slate-200 text-left">
-            <h3 class="text-lg font-bold text-slate-800 mb-2">Core Features Matrix</h3>
-            <p class="text-slate-600 text-sm">Automated live canvas face encodings lookup matching via OpenCV, deep dashboard reporting matrix tables, secure multi-tenant role session isolation guards, and complete batch roster manual ticking sheet submissions.</p>
+        <div class="features-row">
+            <div class="feat-item"><div class="feat-icon">📸</div><div class="feat-title">Face Recognition</div><div class="feat-text">AI-powered check-in via live camera using MediaPipe</div></div>
+            <div class="feat-item"><div class="feat-icon">📊</div><div class="feat-title">Live Reports</div><div class="feat-text">Real-time dashboards with CSV export</div></div>
+            <div class="feat-item"><div class="feat-icon">🔒</div><div class="feat-title">Secure Roles</div><div class="feat-text">Isolated admin, teacher, and student sessions</div></div>
         </div>
     </div>
     """)
@@ -1376,75 +1711,101 @@ def admin_dashboard():
     attendance = get_all_attendance()
 
     body = f"""
-    <div class="space-y-6">
-        <div>
-            <h1 class="text-3xl font-extrabold text-slate-800">🛡️ System Administration Console</h1>
-            <p class="text-sm text-slate-500">Configure global classes, assign instructor roles, and view records metrics logs.</p>
+    <div class="section-stack">
+        <div class="page-header">
+            <div class="page-title">Admin Dashboard</div>
+            <div class="page-sub">Manage classes, instructors, students, and review attendance records.</div>
+        </div>
+
+        <div class="stat-grid">
+            <div class="stat-card blue">
+                <div class="stat-icon">👨‍🏫</div>
+                <div class="stat-value">{len(teachers)}</div>
+                <div class="stat-label">Teachers</div>
+            </div>
+            <div class="stat-card purple">
+                <div class="stat-icon">📚</div>
+                <div class="stat-value">{len(classes)}</div>
+                <div class="stat-label">Classes</div>
+            </div>
+            <div class="stat-card green">
+                <div class="stat-icon">🧑‍🎓</div>
+                <div class="stat-value">{len(students)}</div>
+                <div class="stat-label">Students</div>
+            </div>
+            <div class="stat-card orange">
+                <div class="stat-icon">📋</div>
+                <div class="stat-value">{len(attendance)}</div>
+                <div class="stat-label">Records</div>
+            </div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div class="p-6 bg-slate-50 border border-slate-200 rounded-xl">
-                <h2 class="text-xl font-bold text-slate-800 mb-3">Register New Instructor Profile</h2>
+            <div class="card card-body">
+                <h2 class="text-xl font-bold text-slate-800 mb-4">Add New Instructor</h2>
                 <form method="POST" action="/admin/create-teacher" class="space-y-3">
-                    <input type="text" name="teacher_name" placeholder="Instructor Display Full Name" class="w-full px-3 py-2 border rounded-lg" required>
-                    <input type="text" name="username" placeholder="Login Account Username" class="w-full px-3 py-2 border rounded-lg" required>
-                    <input type="text" name="password" placeholder="System Access Password" class="w-full px-3 py-2 border rounded-lg" required>
-                    <button class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700" type="submit">Create Profile</button>
+                    <input type="text" name="teacher_name" placeholder="Full Name" class="form-input" required>
+                    <input type="text" name="username" placeholder="Username" class="form-input" required>
+                    <input type="text" name="password" placeholder="Password" class="form-input" required>
+                    <button class="btn green" type="submit">Create Instructor</button>
                 </form>
             </div>
 
-            <div class="p-6 bg-slate-50 border border-slate-200 rounded-xl">
-                <h2 class="text-xl font-bold text-slate-800 mb-3">Create Dynamic Course Classroom</h2>
+            <div class="card card-body">
+                <h2 class="text-xl font-bold text-slate-800 mb-4">Create New Class</h2>
                 <form method="POST" action="/admin/create-class" class="space-y-2">
-                    <input type="text" name="class_name" placeholder="Class Target Label" class="w-full px-3 py-2 border rounded-lg" required>
-                    <input type="text" name="department" placeholder="Department Stream Name" class="w-full px-3 py-2 border rounded-lg">
-                    <input type="text" name="course" placeholder="Course ID Reference" class="w-full px-3 py-2 border rounded-lg">
-                    <input type="text" name="section_name" placeholder="Section Identity Identifier" class="w-full px-3 py-2 border rounded-lg">
-                    <input type="text" name="subject_name" placeholder="Subject Topic Code Name" class="w-full px-3 py-2 border rounded-lg">
-                    <select name="teacher_id" class="w-full px-3 py-2 border rounded-lg" required>
-                        <option value="">Assign Proctor Profile</option>
+                    <input type="text" name="class_name" placeholder="Class Name" class="form-input" required>
+                    <input type="text" name="department" placeholder="Department" class="form-input">
+                    <input type="text" name="course" placeholder="Course ID" class="form-input">
+                    <input type="text" name="section_name" placeholder="Section" class="form-input">
+                    <input type="text" name="subject_name" placeholder="Subject" class="form-input">
+                    <select name="teacher_id" class="form-input" required>
+                        <option value="">Assign Teacher</option>
     """
     for t in teachers:
         body += f'<option value="{t["id"]}">{t["teacher_name"]} ({t["username"]})</option>'
     body += """
                     </select>
-                    <button class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 mt-2" type="submit">Create Classroom Matrix</button>
+                    <button class="btn green mt-2" type="submit">Create Class</button>
                 </form>
             </div>
         </div>
 
-        <div class="p-6 bg-slate-50 border border-slate-200 rounded-xl">
-            <h2 class="text-xl font-bold text-slate-800 mb-3">Assign Registered Student to Course Class</h2>
-            <form method="POST" action="/admin/assign-student-class" class="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-                <select name="student_db_id" class="w-full px-3 py-2 border rounded-lg" required>
-                    <option value="">Select Student Profile</option>
+        <div class="card card-body">
+            <h2 class="text-xl font-bold text-slate-800 mb-4">Enroll Student in Class</h2>
+            <form method="POST" action="/admin/assign-student-class" class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+                <select name="student_db_id" class="form-input" required>
+                    <option value="">Select Student</option>
     """
     for s in students:
         body += f'<option value="{s["id"]}">{s["student_id"]} - {s["full_name"]}</option>'
     body += """
                 </select>
-                <select name="class_id" class="w-full px-3 py-2 border rounded-lg" required>
-                    <option value="">Select Target Class</option>
+                <select name="class_id" class="form-input" required>
+                    <option value="">Select Class</option>
     """
     for c in classes:
         teacher_name = c["teacher_display_name"] or c["teacher_name"] or ""
         body += f'<option value="{c["id"]}">{c["class_name"]} | {c["subject_name"] or ""} | {teacher_name}</option>'
     body += """
                 </select>
-                <button class="bg-emerald-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-emerald-700 w-full md:w-auto" type="submit">Enroll Map Student</button>
+                <button class="btn green w-full md:w-auto" type="submit">Enroll Student</button>
             </form>
         </div>
 
-        <div class="overflow-x-auto bg-white rounded-xl shadow-sm border">
-            <div class="p-4 border-b bg-slate-50 font-bold text-slate-800 text-lg">Active Instructors Registry</div>
-            <table class="w-full text-left">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-header-title">Teachers</span>
+            </div>
+            <div class="tbl-wrap">
+            <table>
                 <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">ID</th>
-                        <th class="p-3">Teacher Name</th>
-                        <th class="p-3">Username</th>
-                        <th class="p-3">Password</th>
-                        <th class="p-3">Action Controls</th>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Username</th>
+                        <th>Password</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1452,34 +1813,38 @@ def admin_dashboard():
     if teachers:
         for t in teachers:
             body += f"""
-                <tr class="border-b">
-                    <td class="p-3">{t["id"]}</td>
-                    <td class="p-3 font-medium">{t["teacher_name"]}</td>
-                    <td class="p-3">{t["username"]}</td>
-                    <td class="p-3 font-mono">{t["password"]}</td>
-                    <td class="p-3">
-                        <a class="text-blue-600 hover:underline mr-2" href="/admin/edit-teacher/{t['id']}">Edit</a>
-                        <a class="text-red-600 hover:underline" href="/admin/delete-teacher/{t['id']}" onclick="return confirm('Purge data profile matrix?')">Delete</a>
+                <tr>
+                    <td class="text-slate-400 text-xs font-mono">#{t["id"]}</td>
+                    <td class="font-semibold">{t["teacher_name"]}</td>
+                    <td class="text-slate-600">{t["username"]}</td>
+                    <td class="font-mono text-xs text-slate-500">{t["password"]}</td>
+                    <td>
+                        <a class="text-blue-600 hover:underline font-medium mr-3" href="/admin/edit-teacher/{t['id']}">Edit</a>
+                        <a class="text-red-500 hover:underline font-medium" href="/admin/delete-teacher/{t['id']}" onclick="return confirm('Delete this teacher?')">Delete</a>
                     </td>
                 </tr>
             """
     else:
-        body += "<tr><td colspan='5' class='p-4 text-center text-slate-400'>No instructor records present inside system state.</td></tr>"
+        body += "<tr><td colspan='5' style='padding:24px; text-align:center; color:#94a3b8;'>No teachers yet.</td></tr>"
     body += """
                 </tbody>
             </table>
+            </div>
         </div>
 
-        <div class="overflow-x-auto bg-white rounded-xl shadow-sm border">
-            <div class="p-4 border-b bg-slate-50 font-bold text-slate-800 text-lg">Course Classes Registry</div>
-            <table class="w-full text-left">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-header-title">Classes</span>
+            </div>
+            <div class="tbl-wrap">
+            <table>
                 <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">ID</th>
-                        <th class="p-3">Class Target Label</th>
-                        <th class="p-3">Subject Code Title</th>
-                        <th class="p-3">Assigned Teacher</th>
-                        <th class="p-3">Action Control Triggers</th>
+                    <tr>
+                        <th>ID</th>
+                        <th>Class Name</th>
+                        <th>Subject</th>
+                        <th>Teacher</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1488,35 +1853,39 @@ def admin_dashboard():
         for c in classes:
             t_name = c["teacher_display_name"] or c["teacher_name"] or "Unassigned"
             body += f"""
-                <tr class="border-b">
-                    <td class="p-3">{c["id"]}</td>
-                    <td class="p-3 font-semibold"><a class="text-blue-600 hover:underline" href="/admin/class/{c["id"]}">{c["class_name"]}</a></td>
-                    <td class="p-3">{c["subject_name"] or "None"}</td>
-                    <td class="p-3 text-slate-600">{t_name}</td>
-                    <td class="p-3">
-                        <a class="text-blue-500 hover:underline mr-2" href="/admin/edit-class/{c['id']}">Edit</a>
-                        <a class="text-red-500 hover:underline" href="/admin/delete-class/{c['id']}" onclick="return confirm('Delete classroom mapping?')">Delete</a>
+                <tr>
+                    <td class="text-slate-400 text-xs font-mono">#{c["id"]}</td>
+                    <td class="font-semibold"><a class="text-blue-600 hover:underline" href="/admin/class/{c["id"]}">{c["class_name"]}</a></td>
+                    <td class="text-slate-600">{c["subject_name"] or "—"}</td>
+                    <td class="text-slate-600">{t_name}</td>
+                    <td>
+                        <a class="text-blue-600 hover:underline font-medium mr-3" href="/admin/edit-class/{c['id']}">Edit</a>
+                        <a class="text-red-500 hover:underline font-medium" href="/admin/delete-class/{c['id']}" onclick="return confirm('Delete this class?')">Delete</a>
                     </td>
                 </tr>
             """
     else:
-        body += "<tr><td colspan='5' class='p-4 text-center text-slate-400'>No classroom instances instantiated inside system database state.</td></tr>"
+        body += "<tr><td colspan='5' style='padding:24px; text-align:center; color:#94a3b8;'>No classes yet.</td></tr>"
     body += """
                 </tbody>
             </table>
+            </div>
         </div>
 
-        <div class="overflow-x-auto bg-white rounded-xl shadow-sm border">
-            <div class="p-4 border-b bg-slate-50 font-bold text-slate-800 text-lg">Global Student Enrolled Registry Matrix</div>
-            <table class="w-full text-left">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-header-title">Students</span>
+            </div>
+            <div class="tbl-wrap">
+            <table>
                 <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">Face Capture Link</th>
-                        <th class="p-3">Student Identifier ID</th>
-                        <th class="p-3">Full Registered Name</th>
-                        <th class="p-3">Portal Pass Key</th>
-                        <th class="p-3">Registered At</th>
-                        <th class="p-3">Action Overrides</th>
+                    <tr>
+                        <th>Photo</th>
+                        <th>Student ID</th>
+                        <th>Name</th>
+                        <th>Password</th>
+                        <th>Registered</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1524,72 +1893,77 @@ def admin_dashboard():
     if students:
         for s in students:
             body += f"""
-                <tr class="border-b">
-                    <td class="p-3"><img class="w-10 h-10 object-cover rounded-full border shadow-sm" src="{supabase_public_url(s["image_file"])}"></td>
-                    <td class="p-3 font-mono text-xs">{s["student_id"]}</td>
-                    <td class="p-3 font-medium">{s["full_name"]}</td>
-                    <td class="p-3 font-mono text-xs">{s["password"]}</td>
-                    <td class="p-3 text-xs text-slate-500">{s["registered_at"]}</td>
-                    <td class="p-3">
-                        <a class="text-blue-500 hover:underline mr-2" href="/admin/edit-student/{s['id']}">Edit</a>
-                        <form method="POST" action="/admin/delete-student/{s['id']}" style="display:inline;" onsubmit="return confirm('Delete student entirely?')">
-                            <button type="submit" style="background:none;border:none;padding:0;color:#ef4444;font-weight:600;cursor:pointer;text-decoration:underline;">Delete</button>
+                <tr>
+                    <td><img class="w-10 h-10 object-cover rounded-full border-2 border-slate-200" src="{supabase_public_url(s["image_file"])}"></td>
+                    <td class="font-mono text-xs text-slate-500">{s["student_id"]}</td>
+                    <td class="font-semibold">{s["full_name"]}</td>
+                    <td class="font-mono text-xs text-slate-400">{s["password"]}</td>
+                    <td class="text-xs text-slate-400">{s["registered_at"]}</td>
+                    <td>
+                        <a class="text-blue-600 hover:underline font-medium mr-3" href="/admin/edit-student/{s['id']}">Edit</a>
+                        <form method="POST" action="/admin/delete-student/{s['id']}" style="display:inline;" onsubmit="return confirm('Delete this student?')">
+                            <button type="submit" style="background:none;border:none;padding:0;color:#ef4444;font-weight:600;cursor:pointer;font-size:14px;">Delete</button>
                         </form>
                     </td>
                 </tr>
             """
     else:
-        body += "<tr><td colspan='6' class='p-4 text-center text-slate-400'>No profiles detected.</td></tr>"
+        body += "<tr><td colspan='6' style='padding:24px; text-align:center; color:#94a3b8;'>No students registered yet.</td></tr>"
     body += """
                 </tbody>
             </table>
+            </div>
         </div>
 
-        <div class="overflow-x-auto bg-white rounded-xl shadow-sm border">
-            <div class="p-4 border-b bg-slate-50 flex justify-between items-center flex-wrap gap-2">
-                <span class="font-bold text-slate-800 text-lg">Historical Records Logs</span>
-                <a class="bg-emerald-600 text-white font-semibold text-xs px-3 py-1.5 rounded-lg hover:bg-emerald-700 transition" href="/export-attendance">📥 Export Sheet (.CSV)</a>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-header-title">Attendance Log</span>
+                <a class="btn green" style="font-size:13px;padding:7px 14px;" href="/export-attendance">📥 Export CSV</a>
             </div>
-            <table class="w-full text-left">
+            <div class="tbl-wrap">
+            <table>
                 <thead>
-                    <tr class="bg-slate-100 text-slate-700">
-                        <th class="p-3">Date</th>
-                        <th class="p-3">Timestamp</th>
-                        <th class="p-3">ID</th>
-                        <th class="p-3">Student Name</th>
-                        <th class="p-3">Classroom Target</th>
-                        <th class="p-3">Section</th>
-                        <th class="p-3">Subject Topic</th>
-                        <th class="p-3">Status Log</th>
-                        <th class="p-3">Authorized Proctor</th>
+                    <tr>
+                        <th>Date</th>
+                        <th>Time</th>
+                        <th>Student ID</th>
+                        <th>Name</th>
+                        <th>Class</th>
+                        <th>Section</th>
+                        <th>Subject</th>
+                        <th>Status</th>
+                        <th>Teacher</th>
                     </tr>
                 </thead>
                 <tbody>
     """
     if attendance:
         for a in attendance:
+            badge_class = "badge badge-green" if a['status'] == 'Present' else "badge badge-red"
             body += f"""
-                <tr class="border-b text-xs">
-                    <td class="p-3 whitespace-nowrap">{a["date"]}</td>
-                    <td class="p-3 text-slate-500">{format_time_12hr(a["time"])}</td>
-                    <td class="p-3 font-mono">{a["student_id"]}</td>
-                    <td class="p-3 font-medium text-slate-800">{a["full_name"]}</td>
-                    <td class="p-3 font-semibold">{a["class_name"]}</td>
-                    <td class="p-3">{a["section_name"] or ""}</td>
-                    <td class="p-3">{a["subject_name"] or ""}</td>
-                    <td class="p-3"><span class="px-2 py-0.5 rounded-full text-xs font-bold {'bg-emerald-100 text-emerald-800' if a['status']=='Present' else 'bg-rose-100 text-rose-800'}">{a["status"]}</span></td>
-                    <td class="p-3 text-slate-500">{a["teacher_name"] or ""}</td>
+                <tr>
+                    <td class="text-xs font-mono whitespace-nowrap">{a["date"]}</td>
+                    <td class="text-xs text-slate-400">{format_time_12hr(a["time"])}</td>
+                    <td class="text-xs font-mono text-slate-500">{a["student_id"]}</td>
+                    <td class="font-medium">{a["full_name"]}</td>
+                    <td class="font-semibold">{a["class_name"]}</td>
+                    <td class="text-slate-500 text-sm">{a["section_name"] or "—"}</td>
+                    <td class="text-slate-500 text-sm">{a["subject_name"] or "—"}</td>
+                    <td><span class="{badge_class}">{a["status"]}</span></td>
+                    <td class="text-slate-400 text-sm">{a["teacher_name"] or "—"}</td>
                 </tr>
             """
     else:
-        body += "<tr><td colspan='9' class='p-4 text-center text-slate-400'>No historical logs have been populated.</td></tr>"
+        body += "<tr><td colspan='9' style='padding:24px; text-align:center; color:#94a3b8;'>No attendance records yet.</td></tr>"
     body += """
                 </tbody>
             </table>
+            </div>
         </div>
     </div>
     """
     return page_wrapper("Admin Dashboard", body, is_admin=True)
+
 
 
 # =========================================================
