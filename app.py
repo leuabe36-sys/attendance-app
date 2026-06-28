@@ -3887,10 +3887,59 @@ def export_attendance():
 
 
 # SUPER-ADMIN — SCHOOL MANAGEMENT
-# Set SUPER_ADMIN_PASSWORD env var to secure this panel.
-# Default: "superadmin123" — change this in production!
+# Password is stored in the database (super_admin_settings table).
+# Default on first run: "superadmin123"
 # =========================================================
-SUPER_ADMIN_PASSWORD = os.environ.get("SUPER_ADMIN_PASSWORD", "superadmin123")
+
+def get_super_admin_setting(key, default=""):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM super_admin_settings WHERE key=%s", (key,))
+        row = cur.fetchone()
+        conn.close()
+        return row["value"] if row else default
+    except:
+        return default
+
+def set_super_admin_setting(key, value):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO super_admin_settings (key, value) VALUES (%s, %s)
+        ON CONFLICT (key) DO UPDATE SET value=%s
+    """, (key, value, value))
+    conn.commit()
+    conn.close()
+
+def get_super_admin_password():
+    return get_super_admin_setting("password", "superadmin123")
+
+def get_super_admin_name():
+    return get_super_admin_setting("name", "Super Admin")
+
+def set_super_admin_password(new_pw):
+    set_super_admin_setting("password", new_pw)
+
+def init_super_admin_table():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS super_admin_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        INSERT INTO super_admin_settings (key, value) VALUES ('password', 'superadmin123')
+        ON CONFLICT (key) DO NOTHING
+    """)
+    cur.execute("""
+        INSERT INTO super_admin_settings (key, value) VALUES ('name', 'Super Admin')
+        ON CONFLICT (key) DO NOTHING
+    """)
+    conn.commit()
+    conn.close()
 
 def is_super_admin():
     return session.get("super_admin_logged_in") is True
@@ -3900,8 +3949,9 @@ def super_admin_login():
     err = ""
     if request.method == "POST":
         pw = request.form.get("password", "").strip()
-        if pw == SUPER_ADMIN_PASSWORD:
+        if pw == get_super_admin_password():
             session["super_admin_logged_in"] = True
+            session["super_admin_name"] = get_super_admin_name()
             return redirect("/super-admin")
         err = "Incorrect password."
     return page_wrapper("Super Admin Login", f"""
@@ -3917,11 +3967,31 @@ def super_admin_login():
             <div class="mt-4 text-center"><a class="text-sm text-blue-600 hover:underline" href="/">← Back to Home</a></div>
         </div>""")
 
+@app.route("/super-admin/change-credentials", methods=["POST"])
+def super_admin_change_credentials():
+    if not is_super_admin():
+        return redirect("/super-admin-login")
+    new_name = request.form.get("new_name", "").strip()
+    current = request.form.get("current_password", "").strip()
+    new_pw = request.form.get("new_password", "").strip()
+    confirm = request.form.get("confirm_password", "").strip()
+    if current != get_super_admin_password():
+        return "<script>alert('Incorrect current password.');window.location.href='/super-admin';</script>"
+    if new_name:
+        set_super_admin_setting("name", new_name)
+        session["super_admin_name"] = new_name
+    if new_pw:
+        if new_pw != confirm:
+            return "<script>alert('New passwords do not match.');window.location.href='/super-admin';</script>"
+        set_super_admin_password(new_pw)
+    return "<script>alert('Credentials updated successfully!');window.location.href='/super-admin';</script>"
+
 @app.route("/super-admin")
 def super_admin_dashboard():
     if not is_super_admin():
         return redirect("/super-admin-login")
     schools = get_all_schools()
+    super_name = session.get("super_admin_name", get_super_admin_name())
     rows_html = ""
     for s in schools:
         rows_html += f"""
@@ -3943,12 +4013,39 @@ def super_admin_dashboard():
         <div class="flex items-center justify-between flex-wrap gap-3">
             <div>
                 <h1 class="text-3xl font-bold text-slate-800">🏫 School Manager</h1>
-                <p class="text-sm text-slate-500 mt-1">{len(schools)} school(s) on this platform</p>
+                <p class="text-sm text-slate-500 mt-1">Logged in as <b>{super_name}</b> · {len(schools)} school(s) on this platform</p>
             </div>
             <form method="POST" action="/super-admin-logout">
                 <button class="bg-slate-700 hover:bg-slate-900 text-white font-bold py-2 px-4 rounded-lg text-sm">Sign Out</button>
             </form>
         </div>
+
+        <div class="card card-body">
+            <h2 class="text-xl font-bold text-slate-800 mb-1">🔐 Update Credentials</h2>
+            <p class="text-sm text-slate-500 mb-4">Change your display name and/or password. Leave new password blank to keep current.</p>
+            <form method="POST" action="/super-admin/change-credentials" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Display Name</label>
+                    <input type="text" name="new_name" value="{super_name}" class="form-input">
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Current Password <span class="text-red-500">*</span></label>
+                    <input type="password" name="current_password" class="form-input" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">New Password <span class="text-slate-400">(leave blank to keep)</span></label>
+                    <input type="password" name="new_password" class="form-input">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Confirm New Password</label>
+                    <input type="password" name="confirm_password" class="form-input">
+                </div>
+                <div class="md:col-span-2 pt-1">
+                    <button class="btn green" type="submit">Save Changes</button>
+                </div>
+            </form>
+        </div>
+
         <div class="card card-body">
             <h2 class="text-xl font-bold text-slate-800 mb-4">➕ Register New School</h2>
             <p class="text-sm text-slate-500 mb-4">Each school gets a unique <b>School Code</b>. Staff and students enter this code when logging in to access their school's data.</p>
@@ -4052,5 +4149,6 @@ def super_admin_logout():
 
 if __name__ == '__main__':
     init_db()
+    init_super_admin_table()
     load_known_faces()
     app.run(host='0.0.0.0', port=5000, debug=True)
