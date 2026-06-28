@@ -15,6 +15,40 @@ import psycopg2
 import psycopg2.extras
 from datetime import datetime, timedelta
 import requests as http_requests
+import smtplib
+import secrets
+from email.mime.text import MIMEText
+
+# =========================================================
+# EMAIL (SMTP) CONFIG — for school registration verification
+# =========================================================
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "")  # e.g. https://attendance-app-1kwc.onrender.com
+
+def email_is_configured():
+    return bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD)
+
+def send_email(to_email, subject, body):
+    if not email_is_configured():
+        print(f"[email_disabled] Would send to {to_email}: {subject}\n{body}")
+        return False
+    try:
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = SMTP_FROM
+        msg["To"] = to_email
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_FROM, [to_email], msg.as_string())
+        return True
+    except Exception as e:
+        print("Email send failed:", e)
+        return False
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres.qsiedryjuusemdwkvcyf:Attendance%40School2026!@aws-0-eu-west-1.pooler.supabase.com:6543/postgres")
 
@@ -153,6 +187,21 @@ def init_db():
         VALUES ('Default School', 'DEFAULT', 'admin', 'admin123', %s)
         ON CONFLICT (code) DO NOTHING
     """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+
+    # ── PENDING SCHOOL REGISTRATIONS (email verification) ──
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_school_registrations (
+            id SERIAL PRIMARY KEY,
+            token TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            code TEXT NOT NULL,
+            admin_username TEXT NOT NULL,
+            admin_password TEXT NOT NULL,
+            email TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            expires_at TIMESTAMP NOT NULL
+        )
+    """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS teachers (
@@ -1515,6 +1564,7 @@ def home():
     .pc-dark { background:linear-gradient(135deg,#1e293b,#0f172a); }
     .pc-purple { background:linear-gradient(135deg,#7c3aed,#6d28d9); }
     .pc-green { background:linear-gradient(135deg,#059669,#047857); }
+    .pc-blue { background:linear-gradient(135deg,#2563eb,#1d4ed8); }
     .features-row { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; max-width:720px; margin:0 auto; }
     @media(max-width:600px){.features-row{grid-template-columns:1fr;}}
     .feat-item { background:white; border:1px solid #e2e8f0; border-radius:12px; padding:18px; text-align:left; }
@@ -1546,6 +1596,11 @@ def home():
                 <div class="portal-card-icon">📚</div>
                 <div class="portal-card-label">Student Login</div>
                 <div class="portal-card-desc">View your attendance</div>
+            </a>
+            <a href="/register-school" class="portal-card pc-blue" style="grid-column:1 / -1;">
+                <div class="portal-card-icon">🏫</div>
+                <div class="portal-card-label">Register Your School</div>
+                <div class="portal-card-desc">Get started in minutes</div>
             </a>
         </div>
         <div class="features-row">
@@ -1757,6 +1812,157 @@ def student_delete_account():
     response = redirect("/student-login")
     response.delete_cookie("session")
     return response
+
+# =========================================================
+# PUBLIC SCHOOL SELF-REGISTRATION
+# =========================================================
+@app.route("/register-school", methods=["GET", "POST"])
+def register_school():
+    if request.method == "GET":
+        return page_wrapper("Register Your School", """
+        <div class="max-w-lg mx-auto my-8 p-6 bg-white border border-slate-200 rounded-xl shadow-sm">
+            <h2 class="text-2xl font-bold text-slate-800 mb-2">🏫 Register Your School</h2>
+            <p class="text-sm text-slate-500 mb-6">Create your school's account. We'll email you a confirmation link — once verified, you'll get a unique <b>School Code</b> that your staff and students use to log in.</p>
+            <form method="POST" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">School Full Name</label>
+                    <input type="text" name="name" placeholder="e.g. Green Hills Secondary School" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Your Email</label>
+                    <input type="email" name="email" placeholder="e.g. principal@greenhills.edu" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">School Code <span class="text-slate-400">(short, unique, no spaces)</span></label>
+                    <input type="text" name="code" placeholder="e.g. GREENHS" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Admin Username</label>
+                    <input type="text" name="admin_username" placeholder="e.g. principal" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Admin Password</label>
+                    <input type="password" name="admin_password" placeholder="Strong password" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
+                </div>
+                <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition" type="submit">Send Verification Email</button>
+            </form>
+            <div class="mt-4 border-t pt-4 text-center">
+                <a class="text-sm text-blue-600 hover:underline" href="/">← Back to Home</a>
+            </div>
+        </div>
+        """)
+
+    name = request.form.get("name", "").strip()
+    email = request.form.get("email", "").strip().lower()
+    code = request.form.get("code", "").strip().upper().replace(" ", "")
+    admin_username = request.form.get("admin_username", "").strip()
+    admin_password = request.form.get("admin_password", "").strip()
+    if not name or not email or not code or not admin_username or not admin_password:
+        return "<script>alert('All fields are required');window.location.href='/register-school';</script>"
+    if "@" not in email or "." not in email.split("@")[-1]:
+        return "<script>alert('Please enter a valid email address');window.location.href='/register-school';</script>"
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        # Check existing schools for code/username collisions
+        cur.execute("SELECT 1 FROM schools WHERE code=%s", (code,))
+        if cur.fetchone():
+            conn.close()
+            return "<script>alert('That School Code is already taken. Please choose another.');window.location.href='/register-school';</script>"
+        cur.execute("SELECT 1 FROM schools WHERE admin_username=%s", (admin_username,))
+        if cur.fetchone():
+            conn.close()
+            return "<script>alert('That Admin Username is already taken. Please choose another.');window.location.href='/register-school';</script>"
+        # Check pending (unexpired) registrations for the same collisions
+        cur.execute("DELETE FROM pending_school_registrations WHERE expires_at < NOW()")
+        cur.execute("SELECT 1 FROM pending_school_registrations WHERE code=%s", (code,))
+        if cur.fetchone():
+            conn.commit()
+            conn.close()
+            return "<script>alert('That School Code is already pending verification by someone else. Please choose another.');window.location.href='/register-school';</script>"
+        cur.execute("SELECT 1 FROM pending_school_registrations WHERE admin_username=%s", (admin_username,))
+        if cur.fetchone():
+            conn.commit()
+            conn.close()
+            return "<script>alert('That Admin Username is already pending verification by someone else. Please choose another.');window.location.href='/register-school';</script>"
+
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now() + timedelta(hours=24)
+        cur.execute("""
+            INSERT INTO pending_school_registrations (token, name, code, admin_username, admin_password, email, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (token, name, code, admin_username, admin_password, email, expires_at))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        msg = str(e).split('\n')[0].replace("'", "")
+        return f"<script>alert('Error: {msg}');window.location.href='/register-school';</script>"
+    conn.close()
+
+    base_url = APP_BASE_URL or request.host_url.rstrip("/")
+    verify_link = f"{base_url}/verify-school/{token}"
+    sent = send_email(
+        email,
+        "Confirm your school registration",
+        f"Hi,\n\nClick the link below to confirm and activate your school '{name}' (Code: {code}):\n\n{verify_link}\n\nThis link expires in 24 hours. If you didn't request this, you can ignore this email.",
+    )
+    if sent:
+        return ("<script>alert('Almost done! We sent a confirmation link to " + email +
+                ". Click it to activate your school.');window.location.href='/';</script>")
+    else:
+        # Email not configured/failed — surface the link directly so the flow isn't blocked
+        return (f"<script>alert('Could not send email (email is not configured on this server). "
+                f"Use this link to verify manually: {verify_link}');window.location.href='/';</script>")
+
+
+@app.route("/verify-school/<token>")
+def verify_school(token):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM pending_school_registrations WHERE token=%s", (token,))
+    pending = cur.fetchone()
+    if not pending:
+        conn.close()
+        return "<script>alert('Invalid or already-used verification link.');window.location.href='/register-school';</script>"
+    if pending["expires_at"] < datetime.now():
+        cur.execute("DELETE FROM pending_school_registrations WHERE token=%s", (token,))
+        conn.commit()
+        conn.close()
+        return "<script>alert('This verification link has expired. Please register again.');window.location.href='/register-school';</script>"
+
+    try:
+        cur.execute("""
+            INSERT INTO schools (name, code, admin_username, admin_password, created_at)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (pending["name"], pending["code"], pending["admin_username"], pending["admin_password"],
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        cur.execute("SELECT id FROM schools WHERE code=%s", (pending["code"],))
+        new_school = cur.fetchone()
+        if new_school:
+            cur.execute("""
+                INSERT INTO admin_settings (school_id, key, value) VALUES (%s, 'admin_password', %s)
+                ON CONFLICT (school_id, key) DO UPDATE SET value=%s
+            """, (new_school["id"], pending["admin_password"], pending["admin_password"]))
+        cur.execute("DELETE FROM pending_school_registrations WHERE token=%s", (token,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        msg = str(e).split('\n')[0].replace("'", "")
+        if "schools_code_key" in msg:
+            msg = "That School Code was just taken by someone else. Please register again with a different code."
+        elif "schools_admin_username_key" in msg:
+            msg = "That Admin Username was just taken by someone else. Please register again with a different username."
+        return f"<script>alert('Error: {msg}');window.location.href='/register-school';</script>"
+    conn.close()
+    name = pending["name"]
+    code = pending["code"]
+    return (f"<script>alert('Your school \\'{name}\\' is now active! Your School Code is: {code}. "
+            f"Save this code \u2014 you and your staff will need it to log in.');window.location.href='/admin-login';</script>")
+
+
 
 # =========================================================
 # STUDENT REGISTRATION PAGE
