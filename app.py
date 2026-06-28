@@ -316,7 +316,10 @@ def set_admin_password(new_password):
 
 # ── SCHOOL HELPERS ──
 def get_current_school_id():
-    return session.get("school_id", 1)
+    try:
+        return session.get("school_id", 1)
+    except RuntimeError:
+        return 1  # No request context (startup)
 
 def get_all_schools():
     conn = get_db()
@@ -603,7 +606,10 @@ def load_known_faces(school_id=None):
     known_students = []
 
     if school_id is None:
-        school_id = session.get("school_id", 1)
+        try:
+            school_id = session.get("school_id", 1)
+        except RuntimeError:
+            school_id = 1  # No request context (startup)
 
     conn = get_db()
     cur = conn.cursor()
