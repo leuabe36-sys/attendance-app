@@ -14,8 +14,48 @@ import base64
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timedelta
+import requests as http_requests
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres.qsiedryjuusemdwkvcyf:Attendance%40School2026!@aws-0-eu-west-1.pooler.supabase.com:6543/postgres")
+
+# =========================================================
+# SUPABASE STORAGE CONFIG
+# =========================================================
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://qsiedryjuusemdwkvcyf.supabase.co")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+SUPABASE_BUCKET = "student-images"
+
+def supabase_upload(filename, image_bytes, content_type="image/jpeg"):
+    try:
+        url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{filename}"
+        headers = {
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "Content-Type": content_type,
+            "x-upsert": "true"
+        }
+        resp = http_requests.put(url, headers=headers, data=image_bytes, timeout=15)
+        if resp.status_code in (200, 201):
+            return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{filename}"
+        print("Supabase upload error:", resp.status_code, resp.text)
+        return None
+    except Exception as e:
+        print("Supabase upload exception:", e)
+        return None
+
+def supabase_delete(filename):
+    try:
+        url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{filename}"
+        headers = {"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"}
+        http_requests.delete(url, headers=headers, timeout=10)
+    except Exception as e:
+        print("Supabase delete exception:", e)
+
+def supabase_public_url(filename):
+    if not filename:
+        return ""
+    if filename.startswith("http"):
+        return filename
+    return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{filename}" 
 
 # MediaPipe face mesh for embeddings
 from mediapipe.tasks import python as mp_python
@@ -157,6 +197,18 @@ def init_db():
             FOREIGN KEY (class_id) REFERENCES classes(id)
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    # Seed default admin password if not already set
+    cur.execute("""
+        INSERT INTO admin_settings (key, value)
+        VALUES ('admin_password', 'admin123')
+        ON CONFLICT (key) DO NOTHING
+    """)
     conn.commit()
     conn.close()
 
@@ -168,6 +220,24 @@ def sanitize_filename(text):
     text = "".join(c for c in text if c.isalnum() or c in (" ", "_", "-")).strip()
     return text.replace(" ", "_")
 
+
+def get_admin_password():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM admin_settings WHERE key='admin_password'")
+        row = cur.fetchone()
+        conn.close()
+        return row["value"] if row else "admin123"
+    except:
+        return "admin123"
+
+def set_admin_password(new_password):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO admin_settings (key, value) VALUES ('admin_password', %s) ON CONFLICT (key) DO UPDATE SET value=%s", (new_password, new_password))
+    conn.commit()
+    conn.close()
 
 def is_admin_logged_in():
     return session.get("admin_logged_in") is True
@@ -419,13 +489,28 @@ def load_known_faces():
     conn.close()
 
     for row in rows:
-        image_path = os.path.join(IMAGE_DIR, row["image_file"])
-        if not os.path.exists(image_path):
-            continue
-        try:
+        image_file = row["image_file"]
+        # Support both Supabase URLs and local paths
+        if image_file.startswith("http"):
+            try:
+                resp = http_requests.get(image_file, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                nparr = np.frombuffer(resp.content, np.uint8)
+                bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if bgr is None:
+                    continue
+            except Exception as e:
+                print("Face load from URL error:", e)
+                continue
+        else:
+            image_path = os.path.join(IMAGE_DIR, image_file)
+            if not os.path.exists(image_path):
+                continue
             bgr = cv2.imread(image_path)
             if bgr is None:
                 continue
+        try:
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             embedding = _get_face_embedding(rgb)
             if embedding is not None:
@@ -588,7 +673,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
     elif is_student and student_context:
         sidebar_html = f"""
         <div class="sidebar-header center">
-            <img class="student-photo" style="width:70px; height:70px; border-radius:50%; margin-bottom:10px; border:2px solid #2563eb;" src="/student-image/{student_context['image_file']}">
+            <img class="student-photo" style="width:70px; height:70px; border-radius:50%; margin-bottom:10px; border:2px solid #2563eb;" src="{supabase_public_url(student_context['image_file'])}">
             <div style="font-size: 16px; font-weight:600;">{student_context['full_name']}</div>
             <div style="font-size: 12px; color:#9ca3af; margin-top:2px;">ID: {student_context['student_id']}</div>
         </div>
@@ -826,11 +911,10 @@ def user_settings():
         cur = conn.cursor()
 
         if role == "admin":
-            global ADMIN_PASSWORD
-            if old_password != ADMIN_PASSWORD:
+            if old_password != get_admin_password():
                 conn.close()
                 return page_wrapper("Settings", "<p class='text-red-500 font-bold'>Incorrect existing password.</p>")
-            ADMIN_PASSWORD = new_password
+            set_admin_password(new_password)
             conn.close()
             return "<script>alert('Admin password updated successfully!'); window.location.href='/admin';</script>"
 
@@ -941,7 +1025,7 @@ def admin_login():
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "").strip()
 
-    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+    if username == ADMIN_USERNAME and password == get_admin_password():
         session.clear()
         session["admin_logged_in"] = True
         return redirect("/admin")
@@ -1041,9 +1125,12 @@ def student_delete_account():
         cur.execute("DELETE FROM students WHERE id=%s", (student_db_id,))
         conn.commit()
         try:
-            path = os.path.join(IMAGE_DIR, img)
-            if os.path.exists(path):
-                os.remove(path)
+            if img and img.startswith("http"):
+                supabase_delete(img.split("/")[-1])
+            else:
+                path = os.path.join(IMAGE_DIR, img)
+                if os.path.exists(path):
+                    os.remove(path)
         except:
             pass
     conn.close()
@@ -1224,6 +1311,15 @@ def register_face():
         if embedding is None:
             return jsonify({"success": False, "message": "No human faces found in frame context. Please try again."})
 
+        # Encode frame to bytes and upload to Supabase Storage
+        _, img_encoded = cv2.imencode('.jpg', frame)
+        img_bytes = img_encoded.tobytes()
+        public_url = supabase_upload(filename, img_bytes)
+        if not public_url:
+            return jsonify({"success": False, "message": "Failed to upload image to storage. Please try again."})
+
+        # Also save locally as fallback for face recognition loading
+        os.makedirs(IMAGE_DIR, exist_ok=True)
         cv2.imwrite(file_path, frame)
 
         conn = get_db()
@@ -1231,7 +1327,7 @@ def register_face():
         cur.execute("""
             INSERT INTO students (student_id, full_name, password, image_file, registered_at)
             VALUES (%s, %s, %s, %s, %s)
-        """, (student_id, full_name, password, filename, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        """, (student_id, full_name, password, public_url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         conn.close()
 
@@ -1405,7 +1501,7 @@ def admin_dashboard():
         for s in students:
             body += f"""
                 <tr class="border-b">
-                    <td class="p-3"><img class="w-10 h-10 object-cover rounded-full border shadow-sm" src="/student-image/{s["image_file"]}"></td>
+                    <td class="p-3"><img class="w-10 h-10 object-cover rounded-full border shadow-sm" src="{supabase_public_url(s["image_file"])}"></td>
                     <td class="p-3 font-mono text-xs">{s["student_id"]}</td>
                     <td class="p-3 font-medium">{s["full_name"]}</td>
                     <td class="p-3 font-mono text-xs">{s["password"]}</td>
@@ -1710,16 +1806,17 @@ def admin_edit_student(student_db_id):
             safe_name = sanitize_filename(full_name)
             ext = photo.filename.rsplit(".", 1)[-1].lower() if "." in photo.filename else "jpg"
             new_filename = f"{safe_id}_{safe_name}.{ext}"
-            photo.save(os.path.join(IMAGE_DIR, new_filename))
-            # Remove old image if different
-            if old_image != new_filename:
-                try:
-                    old_path = os.path.join(IMAGE_DIR, old_image)
-                    if os.path.exists(old_path):
-                        os.remove(old_path)
-                except:
-                    pass
-            new_image = new_filename
+            img_bytes = photo.read()
+            public_url = supabase_upload(new_filename, img_bytes)
+            if public_url:
+                if old_image and old_image.startswith("http"):
+                    supabase_delete(old_image.split("/")[-1])
+                elif old_image:
+                    try:
+                        old_path = os.path.join(IMAGE_DIR, old_image)
+                        if os.path.exists(old_path): os.remove(old_path)
+                    except: pass
+                new_image = public_url
 
         # Update student_id in attendance too if changed
         if new_student_id and new_student_id != old_student_id:
@@ -1740,7 +1837,7 @@ def admin_edit_student(student_db_id):
         <p class="text-sm text-slate-500 mb-5">Admin can update all fields including Student ID and photo.</p>
 
         <div class="flex items-center gap-4 mb-6 p-4 bg-slate-50 rounded-xl border">
-            <img id="photoPreview" src="/student-image/{student["image_file"]}" class="w-20 h-20 rounded-full object-cover border-2 border-blue-400 shadow">
+            <img id="photoPreview" src="{supabase_public_url(student["image_file"])}" class="w-20 h-20 rounded-full object-cover border-2 border-blue-400 shadow">
             <div>
                 <p class="font-semibold text-slate-700">{student["full_name"]}</p>
                 <p class="text-xs text-slate-400 font-mono">ID: {student["student_id"]}</p>
@@ -1793,9 +1890,12 @@ def admin_delete_student(db_id):
         cur.execute("DELETE FROM students WHERE id=%s", (db_id,))
         conn.commit()
         try:
-            path = os.path.join(IMAGE_DIR, img)
-            if os.path.exists(path):
-                os.remove(path)
+            if img and img.startswith('http'):
+                supabase_delete(img.split('/')[-1])
+            else:
+                path = os.path.join(IMAGE_DIR, img)
+                if os.path.exists(path):
+                    os.remove(path)
         except:
             pass
     conn.close()
@@ -1841,7 +1941,7 @@ def admin_view_class(class_id):
         for s in students:
             body += f"""
                 <tr class="border-b">
-                    <td class="p-3"><img class="w-8 h-8 object-cover rounded-full border" src="/student-image/{s["image_file"]}"></td>
+                    <td class="p-3"><img class="w-8 h-8 object-cover rounded-full border" src="{supabase_public_url(s["image_file"])}"></td>
                     <td class="p-3 font-mono">{s["student_id"]}</td>
                     <td class="p-3 font-medium">{s["full_name"]}</td>
                     <td class="p-3"><a class="text-red-500 hover:underline" href="/admin/remove-student-from-class/{class_id}/{s['id']}" onclick="return confirm('Unmap from current class framework matrix?')">Drop Enrollment</a></td>
@@ -2123,7 +2223,7 @@ def teacher_view_class(class_id):
                     <div class="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50 transition-colors">
                         <div class="flex items-center gap-4">
                             <span class="text-xs font-mono font-bold text-slate-300 w-5 text-center">{idx:02d}</span>
-                            <img class="w-10 h-10 object-cover rounded-xl border bg-slate-50" src="/student-image/{s["image_file"]}">
+                            <img class="w-10 h-10 object-cover rounded-xl border bg-slate-50" src="{supabase_public_url(s["image_file"])}">
                             <div>
                                 <h4 class="font-bold text-slate-800 text-sm">{s["full_name"]}</h4>
                                 <p class="text-[11px] font-mono text-slate-400">ID: #{s["student_id"]} | Agg. Ratio Score: <span class="text-blue-600 font-bold">{pct}%</span></p>
@@ -2645,7 +2745,7 @@ def student_dashboard_portal():
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-1 space-y-6">
             <div class="bg-white border rounded-xl p-6 text-center shadow-sm">
-                <img class="w-24 h-24 object-cover rounded-full mx-auto border-2 border-blue-500 mb-3 shadow-inner" src="/student-image/{student_ctx["image_file"]}">
+                <img class="w-24 h-24 object-cover rounded-full mx-auto border-2 border-blue-500 mb-3 shadow-inner" src="{supabase_public_url(student_ctx["image_file"])}">
                 <h2 class="text-xl font-bold text-slate-800">{student_ctx["full_name"]}</h2>
                 <p class="text-xs font-mono text-slate-400 mt-1">ID: {student_ctx["student_id"]}</p>
                 <div class="mt-3 inline-block bg-emerald-50 text-emerald-700 text-xs font-bold px-3 py-1 rounded-full border border-emerald-200">✓ Active Enrolled Student</div>
@@ -2779,15 +2879,13 @@ def student_edit_profile():
                 safe_name = sanitize_filename(full_name)
                 ext = photo_file.filename.rsplit(".", 1)[-1].lower() if "." in photo_file.filename else "jpg"
                 new_filename = f"{safe_id}_{safe_name}.{ext}"
-                photo_file.save(os.path.join(IMAGE_DIR, new_filename))
-                if student["image_file"] != new_filename:
-                    try:
-                        old_path = os.path.join(IMAGE_DIR, student["image_file"])
-                        if os.path.exists(old_path):
-                            os.remove(old_path)
-                    except:
-                        pass
-                new_image = new_filename
+                img_bytes = photo_file.read()
+                public_url = supabase_upload(new_filename, img_bytes)
+                if public_url:
+                    old_img = student["image_file"]
+                    if old_img and old_img.startswith("http"):
+                        supabase_delete(old_img.split("/")[-1])
+                    new_image = public_url
             elif photo_b64:
                 img_data = photo_b64
                 if "," in img_data:
@@ -2803,15 +2901,13 @@ def student_edit_profile():
                     safe_id = sanitize_filename(student["student_id"])
                     safe_name = sanitize_filename(full_name)
                     new_filename = f"{safe_id}_{safe_name}.jpg"
-                    cv2.imwrite(os.path.join(IMAGE_DIR, new_filename), frame)
-                    if student["image_file"] != new_filename:
-                        try:
-                            old_path = os.path.join(IMAGE_DIR, student["image_file"])
-                            if os.path.exists(old_path):
-                                os.remove(old_path)
-                        except:
-                            pass
-                    new_image = new_filename
+                    _, enc = cv2.imencode('.jpg', frame)
+                    public_url = supabase_upload(new_filename, enc.tobytes())
+                    if public_url:
+                        old_img = student["image_file"]
+                        if old_img and old_img.startswith("http"):
+                            supabase_delete(old_img.split("/")[-1])
+                        new_image = public_url
 
             final_password = new_password if new_password else student["password"]
             cur.execute(
@@ -2831,7 +2927,7 @@ def student_edit_profile():
         {'<div class="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm font-semibold">' + error + '</div>' if error else ''}
 
         <div class="flex items-center gap-4 mb-6 p-4 bg-slate-50 rounded-xl border">
-            <img id="photoPreview" src="/student-image/{student["image_file"]}" class="w-20 h-20 rounded-full object-cover border-2 border-blue-400 shadow">
+            <img id="photoPreview" src="{supabase_public_url(student["image_file"])}" class="w-20 h-20 rounded-full object-cover border-2 border-blue-400 shadow">
             <div>
                 <p class="font-semibold text-slate-700">{student["full_name"]}</p>
                 <p class="text-xs text-slate-400 font-mono">ID: {student["student_id"]}</p>
@@ -2931,11 +3027,14 @@ function closeCamera() {{
 # =========================================================
 # IMAGES ASSET LOADING HANDLER DISPATCH CONTROLLERS
 # =========================================================
-@app.route("/student-image/<filename>")
+@app.route("/student-image/<path:filename>")
 def student_image(filename):
+    # If it's a full URL (Supabase), redirect directly
+    if filename.startswith("http"):
+        return redirect(filename)
     file_path = os.path.join(IMAGE_DIR, filename)
     if not os.path.exists(file_path):
-        return "Image asset not detected inside file system storage context block", 404
+        return "Image not found", 404
     ext = filename.lower().split(".")[-1]
     mime = "image/png" if ext == "png" else "image/jpeg"
     with open(file_path, "rb") as f:
