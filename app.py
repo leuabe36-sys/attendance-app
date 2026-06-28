@@ -365,6 +365,23 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ust_user ON user_session_tokens(user_type, user_id, school_id)")
 
+    # ── CLASS SOCIAL FEED: comments per class ──
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS class_comments (
+            id SERIAL PRIMARY KEY,
+            school_id INTEGER NOT NULL DEFAULT 1,
+            class_id INTEGER NOT NULL,
+            student_db_id INTEGER NOT NULL,
+            student_name TEXT NOT NULL,
+            student_image TEXT,
+            comment TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            FOREIGN KEY (class_id) REFERENCES classes(id),
+            FOREIGN KEY (student_db_id) REFERENCES students(id)
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_cc_class ON class_comments(class_id)")
+
     conn.commit()
     conn.close()
 
@@ -1197,6 +1214,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
         <nav class="sb-nav">
             <div class="sb-nav-label">STUDENT</div>
             <a href="/student" class="sb-link"><span class="sb-icon">📚</span> My Profile</a>
+            <a href="/student/classes" class="sb-link"><span class="sb-icon">👥</span> My Classes</a>
             <a href="/student/qr-scan" class="sb-link sb-link-checkin"><span class="sb-icon">📷</span> Scan QR to Check In</a>
             <a href="/student/scan" class="sb-link"><span class="sb-icon">📸</span> Face Check-In</a>
             <a href="/student/edit-profile" class="sb-link"><span class="sb-icon">✏️</span> Edit Profile</a>
@@ -5509,6 +5527,347 @@ function closeCamera() {{
 
 
 
+
+
+# =========================================================
+# STUDENT — MY CLASSES HUB (browse classes, classmates, feed)
+# =========================================================
+@app.route("/student/classes")
+def student_classes_hub():
+    protect = student_required()
+    if protect:
+        return protect
+
+    student_db_id = get_logged_student_db_id()
+    student_ctx = get_student_row_by_db_id(student_db_id)
+    classes = get_classes_for_student(student_db_id)
+
+    cards_html = ""
+    for c in classes:
+        classmates = get_students_in_class(c["id"])
+        count = len(classmates)
+        cards_html += f"""
+        <a href="/student/class/{c['id']}/feed" class="block bg-white border rounded-2xl p-5 shadow-sm hover:shadow-md hover:border-indigo-300 transition group">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <div class="font-bold text-slate-800 text-base group-hover:text-indigo-700 transition">{c['class_name']}</div>
+                    <div class="text-xs text-slate-400 mt-0.5">{c.get('subject_name') or ''} {'· ' + c['section_name'] if c.get('section_name') else ''}</div>
+                    <div class="text-xs text-slate-500 mt-1">👨‍🏫 {c.get('teacher_display_name') or c.get('teacher_name') or ''}</div>
+                </div>
+                <span class="bg-indigo-50 text-indigo-700 font-bold text-xs px-3 py-1.5 rounded-full border border-indigo-100 whitespace-nowrap">{count} classmates</span>
+            </div>
+            <div class="mt-3 flex gap-2 flex-wrap">
+                {''.join(f'<img src="{supabase_public_url(s["image_file"])}" title="{s["full_name"]}" class="w-7 h-7 rounded-full object-cover border border-white shadow-sm -ml-1 first:ml-0">' for s in classmates[:8])}
+                {f'<span class="text-xs text-slate-400 self-center ml-1">+{count-8} more</span>' if count > 8 else ''}
+            </div>
+            <div class="mt-3 text-xs text-indigo-600 font-semibold group-hover:underline">View class feed & classmates →</div>
+        </a>
+        """
+
+    if not cards_html:
+        cards_html = """
+        <div class="col-span-2 text-center py-16 text-slate-400">
+            <div class="text-4xl mb-3">📭</div>
+            <p class="font-semibold">You are not enrolled in any classes yet.</p>
+            <p class="text-sm mt-1">Ask your admin or teacher to add you to a class.</p>
+        </div>
+        """
+
+    body = f"""
+    <div class="section-stack">
+        <div class="page-header">
+            <div class="page-title">👥 My Classes</div>
+            <div class="page-sub">Browse your enrolled classes, see classmates' profiles, and chat in the class feed.</div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {cards_html}
+        </div>
+    </div>
+    """
+    return page_wrapper("My Classes", body, is_student=True, student_context=student_ctx)
+
+
+@app.route("/student/class/<int:class_id>/feed")
+def student_class_feed(class_id):
+    protect = student_required()
+    if protect:
+        return protect
+
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    student_ctx = get_student_row_by_db_id(student_db_id)
+
+    # Ensure the logged-in student is actually in this class
+    if not student_belongs_to_class(student_db_id, class_id):
+        return "<script>alert('You are not enrolled in this class.');window.location.href='/student/classes';</script>"
+
+    class_row = get_class_by_id(class_id)
+    if not class_row or class_row.get("school_id", school_id) != school_id:
+        return "Class not found", 404
+
+    classmates = get_students_in_class(class_id)
+
+    # Fetch comments newest first
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM class_comments
+        WHERE class_id=%s AND school_id=%s
+        ORDER BY created_at DESC
+        LIMIT 60
+    """, (class_id, school_id))
+    comments = cur.fetchall()
+    conn.close()
+
+    # Build classmates grid
+    classmates_html = ""
+    for s in classmates:
+        is_me = s["id"] == student_db_id
+        badge = '<span class="text-[10px] bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full ml-1">You</span>' if is_me else ''
+        classmates_html += f"""
+        <a href="/student/classmate/{s['id']}" class="flex flex-col items-center gap-1.5 p-3 bg-white border rounded-xl hover:border-indigo-300 hover:shadow-sm transition text-center group">
+            <img src="{supabase_public_url(s['image_file'])}" class="w-14 h-14 rounded-full object-cover border-2 border-slate-200 group-hover:border-indigo-400 transition">
+            <div class="text-xs font-semibold text-slate-700 leading-tight">{s['full_name']}{badge}</div>
+            <div class="text-[10px] text-slate-400 font-mono">ID: {s['student_id']}</div>
+        </a>
+        """
+
+    # Build comments list
+    comments_html = ""
+    for cm in comments:
+        from_me = cm["student_db_id"] == student_db_id
+        align = "justify-end" if from_me else "justify-start"
+        bubble_bg = "bg-indigo-600 text-white" if from_me else "bg-white border text-slate-800"
+        name_align = "text-right" if from_me else "text-left"
+        avatar_order = "order-last ml-2" if from_me else "order-first mr-2"
+        ts = cm["created_at"].strftime("%b %d, %I:%M %p") if hasattr(cm["created_at"], "strftime") else str(cm["created_at"])[:16]
+        comments_html += f"""
+        <div class="flex items-end gap-0 {align}">
+            <img src="{supabase_public_url(cm['student_image'] or '')}" class="w-8 h-8 rounded-full object-cover flex-shrink-0 {avatar_order}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22%3E%3Ccircle cx=%2212%22 cy=%2212%22 r=%2212%22 fill=%22%23e2e8f0%22/%3E%3C/svg%3E'">
+            <div class="max-w-xs">
+                <div class="text-[10px] text-slate-400 mb-0.5 {name_align}">{'' if from_me else cm['student_name']} <span class="opacity-60">{ts}</span></div>
+                <div class="px-3 py-2 rounded-2xl text-sm {bubble_bg} shadow-sm">{cm['comment']}</div>
+            </div>
+        </div>
+        """
+
+    if not comments_html:
+        comments_html = '<div class="text-center text-slate-400 py-8 text-sm">No messages yet. Be the first to say something! 👋</div>'
+
+    body = f"""
+    <div class="max-w-5xl mx-auto space-y-6">
+        <div class="flex items-center gap-3">
+            <a href="/student/classes" class="text-slate-400 hover:text-slate-700 text-sm font-medium">← My Classes</a>
+            <span class="text-slate-300">/</span>
+            <span class="font-bold text-slate-700">{class_row['class_name']}</span>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Classmates panel -->
+            <div class="lg:col-span-1 space-y-4">
+                <div class="bg-white border rounded-2xl overflow-hidden shadow-sm">
+                    <div class="px-4 py-3 bg-slate-50 border-b font-bold text-slate-700 text-sm">
+                        👥 Classmates ({len(classmates)})
+                    </div>
+                    <div class="p-3 grid grid-cols-2 gap-2 max-h-[520px] overflow-y-auto">
+                        {classmates_html if classmates_html else '<p class="text-xs text-slate-400 col-span-2 text-center py-4">No classmates found.</p>'}
+                    </div>
+                </div>
+                <div class="bg-white border rounded-2xl p-4 shadow-sm text-sm text-slate-600 space-y-1">
+                    <div class="font-semibold text-slate-700">Class Info</div>
+                    <div>📖 <span class="text-slate-500">{class_row.get('subject_name') or '—'}</span></div>
+                    <div>🏛️ <span class="text-slate-500">{class_row.get('department') or '—'}</span></div>
+                    <div>👨‍🏫 <span class="text-slate-500">{class_row.get('teacher_display_name') or class_row.get('teacher_name') or '—'}</span></div>
+                </div>
+            </div>
+
+            <!-- Feed panel -->
+            <div class="lg:col-span-2 flex flex-col bg-white border rounded-2xl shadow-sm overflow-hidden" style="min-height:480px;">
+                <div class="px-4 py-3 bg-slate-50 border-b font-bold text-slate-700 text-sm">
+                    💬 Class Feed
+                </div>
+
+                <!-- Messages -->
+                <div id="feedMessages" class="flex-1 overflow-y-auto p-4 space-y-3" style="max-height:420px;">
+                    {comments_html}
+                </div>
+
+                <!-- Composer -->
+                <div class="border-t p-3 bg-slate-50">
+                    <div class="flex gap-2">
+                        <input id="commentInput" type="text" maxlength="500"
+                            placeholder="Write a message to your class…"
+                            class="flex-1 px-3 py-2 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                            onkeydown="if(event.key==='Enter')postComment()">
+                        <button onclick="postComment()" id="postBtn"
+                            class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-xl text-sm transition">
+                            Send
+                        </button>
+                    </div>
+                    <div id="postStatus" class="text-xs text-slate-400 mt-1 hidden"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    function postComment() {{
+        const input = document.getElementById('commentInput');
+        const btn = document.getElementById('postBtn');
+        const status = document.getElementById('postStatus');
+        const text = input.value.trim();
+        if (!text) return;
+        btn.disabled = true;
+        btn.textContent = '…';
+        fetch('/student/class/{class_id}/comment', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}},
+            body: JSON.stringify({{comment: text}})
+        }})
+        .then(r => r.json())
+        .then(data => {{
+            btn.disabled = false;
+            btn.textContent = 'Send';
+            if (data.ok) {{
+                input.value = '';
+                status.classList.add('hidden');
+                // Append new message bubble to top (newest first) or reload
+                window.location.reload();
+            }} else {{
+                status.textContent = data.error || 'Could not post.';
+                status.classList.remove('hidden');
+            }}
+        }})
+        .catch(() => {{
+            btn.disabled = false;
+            btn.textContent = 'Send';
+            status.textContent = 'Network error.';
+            status.classList.remove('hidden');
+        }});
+    }}
+    // Auto-scroll feed to bottom on load (oldest messages at top, newest at bottom)
+    const feed = document.getElementById('feedMessages');
+    feed.scrollTop = feed.scrollHeight;
+    </script>
+    """
+    return page_wrapper(f"{class_row['class_name']} — Class Feed", body, is_student=True, student_context=student_ctx)
+
+
+@app.route("/student/class/<int:class_id>/comment", methods=["POST"])
+def student_post_comment(class_id):
+    protect = student_required()
+    if protect:
+        return ajax_err("Not logged in.")
+
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+
+    if not student_belongs_to_class(student_db_id, class_id):
+        return ajax_err("You are not enrolled in this class.")
+
+    data = request.get_json(silent=True) or {}
+    comment = (data.get("comment") or "").strip()
+    if not comment:
+        return ajax_err("Comment cannot be empty.")
+    if len(comment) > 500:
+        return ajax_err("Comment too long (max 500 characters).")
+
+    student_row = get_student_row_by_db_id(student_db_id)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (school_id, class_id, student_db_id, student_row["full_name"], student_row["image_file"], comment))
+    conn.commit()
+    conn.close()
+    return ajax_ok("Comment posted!")
+
+
+@app.route("/student/classmate/<int:classmate_db_id>")
+def student_view_classmate(classmate_db_id):
+    protect = student_required()
+    if protect:
+        return protect
+
+    viewer_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    student_ctx = get_student_row_by_db_id(viewer_db_id)
+
+    # Verify they share at least one class
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT sc1.class_id_fk FROM student_classes sc1
+        INNER JOIN student_classes sc2 ON sc1.class_id_fk = sc2.class_id_fk
+        WHERE sc1.student_id_fk=%s AND sc2.student_id_fk=%s
+        LIMIT 1
+    """, (viewer_db_id, classmate_db_id))
+    shared = cur.fetchone()
+    conn.close()
+
+    if not shared and viewer_db_id != classmate_db_id:
+        return "<script>alert('You can only view profiles of students in your classes.');window.location.href='/student/classes';</script>"
+
+    classmate = get_student_row_by_db_id(classmate_db_id)
+    if not classmate or classmate.get("school_id", school_id) != school_id:
+        return "Student not found", 404
+
+    # Get shared classes
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.* FROM classes c
+        INNER JOIN student_classes sc1 ON sc1.class_id_fk = c.id AND sc1.student_id_fk=%s
+        INNER JOIN student_classes sc2 ON sc2.class_id_fk = c.id AND sc2.student_id_fk=%s
+        ORDER BY c.class_name
+    """, (viewer_db_id, classmate_db_id))
+    shared_classes = cur.fetchall()
+    conn.close()
+
+    is_me = viewer_db_id == classmate_db_id
+
+    shared_classes_html = ""
+    for sc in shared_classes:
+        shared_classes_html += f"""
+        <a href="/student/class/{sc['id']}/feed"
+            class="flex items-center gap-2 px-3 py-2 bg-slate-50 hover:bg-indigo-50 border rounded-xl text-sm text-slate-700 hover:text-indigo-700 font-medium transition">
+            <span class="text-base">📚</span> {sc['class_name']}
+            {('<span class="ml-auto text-xs text-slate-400">' + (sc.get('subject_name') or '') + '</span>') if sc.get('subject_name') else ''}
+        </a>
+        """
+
+    body = f"""
+    <div class="max-w-lg mx-auto space-y-6">
+        <a href="javascript:history.back()" class="text-slate-400 hover:text-slate-700 text-sm font-medium">← Back</a>
+
+        <!-- Profile card -->
+        <div class="bg-white border rounded-2xl p-6 shadow-sm text-center space-y-3">
+            <img src="{supabase_public_url(classmate['image_file'])}"
+                class="w-24 h-24 rounded-full object-cover mx-auto border-4 border-indigo-200 shadow">
+            <div>
+                <h2 class="text-xl font-bold text-slate-800">{classmate['full_name']}</h2>
+                {('<span class="text-xs bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">You</span>' if is_me else '')}
+                <p class="text-xs font-mono text-slate-400 mt-1">Student ID: {classmate['student_id']}</p>
+                <p class="text-xs text-slate-400 mt-0.5">Enrolled since {str(classmate.get('registered_at',''))[:10]}</p>
+            </div>
+            <div class="inline-block bg-emerald-50 text-emerald-700 text-xs font-bold px-3 py-1 rounded-full border border-emerald-200">
+                ✓ Active Student
+            </div>
+        </div>
+
+        <!-- Shared classes -->
+        <div class="bg-white border rounded-2xl shadow-sm overflow-hidden">
+            <div class="px-4 py-3 bg-slate-50 border-b font-bold text-slate-700 text-sm">
+                📚 Shared Classes ({len(shared_classes)})
+            </div>
+            <div class="p-3 space-y-2">
+                {shared_classes_html if shared_classes_html else '<p class="text-sm text-slate-400 text-center py-4">No shared classes found.</p>'}
+            </div>
+        </div>
+    </div>
+    """
+    return page_wrapper(f"{classmate['full_name']} — Profile", body, is_student=True, student_context=student_ctx)
 
 
 # =========================================================
