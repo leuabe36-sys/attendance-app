@@ -4929,7 +4929,11 @@ async function startSession(e) {{
         fd.append('rotate_seconds', currentRotateSecs);
         if (teacherLat !== null) fd.append('teacher_lat', teacherLat);
         if (teacherLng !== null) fd.append('teacher_lng', teacherLng);
-        const res = await fetch('/teacher/start-session/' + CLASS_ID, {{ method: 'POST', body: fd }});
+        const res = await fetch('/teacher/start-session/' + CLASS_ID, {{
+            method: 'POST',
+            headers: {{ 'X-Requested-With': 'XMLHttpRequest' }},
+            body: fd
+        }});
         const data = await res.json();
         if (data.ok) {{
             currentCode = data.code;
@@ -5052,7 +5056,7 @@ function startCountdown(expiresDate) {{
             if (document.getElementById('fullscreenOverlay').style.display !== 'none') {{
                 document.getElementById('fsCountdown').innerText = '⏰ Closed';
             }}
-            fetch('/teacher/stop-session/' + CLASS_ID, {{ method: 'POST' }});
+            fetch('/teacher/stop-session/' + CLASS_ID, {{ method: 'POST', headers: {{ 'X-Requested-With': 'XMLHttpRequest' }} }});
             return;
         }}
         const mins = Math.floor(remaining / 60).toString().padStart(2, '0');
