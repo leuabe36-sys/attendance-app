@@ -34,8 +34,8 @@ def email_is_configured():
 
 def send_email(to_email, subject, body):
     if not email_is_configured():
-        print(f"[email_disabled] Would send to {to_email}: {subject}\n{body}")
-        return False
+        print(f"[email_disabled] Would send to {to_email}: {subject}\n{body}", flush=True)
+        return False, "Email is not configured on this server (missing SMTP_HOST/SMTP_USER/SMTP_PASSWORD)."
     try:
         msg = MIMEText(body)
         msg["Subject"] = subject
@@ -45,10 +45,11 @@ def send_email(to_email, subject, body):
             server.starttls()
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.sendmail(SMTP_FROM, [to_email], msg.as_string())
-        return True
+        print(f"[email_sent] To {to_email}: {subject}", flush=True)
+        return True, ""
     except Exception as e:
-        print("Email send failed:", e)
-        return False
+        print("Email send failed:", repr(e), flush=True)
+        return False, str(e)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres.qsiedryjuusemdwkvcyf:Attendance%40School2026!@aws-0-eu-west-1.pooler.supabase.com:6543/postgres")
 
@@ -1903,7 +1904,7 @@ def register_school():
 
     base_url = APP_BASE_URL or request.host_url.rstrip("/")
     verify_link = f"{base_url}/verify-school/{token}"
-    sent = send_email(
+    sent, err = send_email(
         email,
         "Confirm your school registration",
         f"Hi,\n\nClick the link below to confirm and activate your school '{name}' (Code: {code}):\n\n{verify_link}\n\nThis link expires in 24 hours. If you didn't request this, you can ignore this email.",
@@ -1912,8 +1913,9 @@ def register_school():
         return ("<script>alert('Almost done! We sent a confirmation link to " + email +
                 ". Click it to activate your school.');window.location.href='/';</script>")
     else:
-        # Email not configured/failed — surface the link directly so the flow isn't blocked
-        return (f"<script>alert('Could not send email (email is not configured on this server). "
+        # Email failed — surface the real reason plus the link so the flow isn't blocked
+        safe_err = err.replace("'", "").replace("\n", " ")[:200]
+        return (f"<script>alert('Could not send email: {safe_err}. "
                 f"Use this link to verify manually: {verify_link}');window.location.href='/';</script>")
 
 
