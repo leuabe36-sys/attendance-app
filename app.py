@@ -311,6 +311,21 @@ def init_db():
         VALUES (1, 'admin_password', 'admin123')
         ON CONFLICT (school_id, key) DO NOTHING
     """)
+
+    # ── CLASS SESSIONS TABLE (QR/Session code check-in) ──
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS class_sessions (
+            id SERIAL PRIMARY KEY,
+            school_id INTEGER NOT NULL DEFAULT 1,
+            class_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            expires_at TIMESTAMP NOT NULL,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            FOREIGN KEY (class_id) REFERENCES classes(id)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -318,6 +333,110 @@ def init_db():
 # =========================================================
 # HELPERS
 # =========================================================
+import math
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """Returns distance in meters between two GPS coordinates."""
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def check_gps_valid(student_lat, student_lng, school_id):
+    """Returns (passed, distance_meters). Passes if no classroom GPS set."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM admin_settings WHERE school_id=%s AND key='classroom_lat'", (school_id,))
+        lat_row = cur.fetchone()
+        cur.execute("SELECT value FROM admin_settings WHERE school_id=%s AND key='classroom_lng'", (school_id,))
+        lng_row = cur.fetchone()
+        cur.execute("SELECT value FROM admin_settings WHERE school_id=%s AND key='classroom_radius'", (school_id,))
+        radius_row = cur.fetchone()
+        conn.close()
+        if not lat_row or not lng_row:
+            return True, 0  # GPS not configured — skip check
+        class_lat = float(lat_row["value"])
+        class_lng = float(lng_row["value"])
+        radius = float(radius_row["value"]) if radius_row else 100.0
+        if student_lat is None or student_lng is None:
+            return False, None
+        dist = haversine_distance(float(student_lat), float(student_lng), class_lat, class_lng)
+        return dist <= radius, dist
+    except Exception as e:
+        print("GPS check error:", e)
+        return True, 0  # On error, don't block
+
+
+def check_session_code_valid(code, class_id, school_id):
+    """Returns True if the session code is valid and not expired for this class."""
+    if not code:
+        return False
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id FROM class_sessions
+            WHERE school_id=%s AND class_id=%s AND code=upper(%s)
+            AND active=TRUE AND expires_at > NOW()
+        """, (school_id, class_id, code.strip()))
+        row = cur.fetchone()
+        conn.close()
+        return row is not None
+    except Exception as e:
+        print("Session code check error:", e)
+        return False
+
+
+def check_wifi_valid(request_obj, school_id):
+    """Returns True if student's IP matches the school's allowed IP prefix."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM admin_settings WHERE school_id=%s AND key='allowed_ip_prefix'", (school_id,))
+        row = cur.fetchone()
+        conn.close()
+        if not row or not row["value"].strip():
+            return True  # WiFi not configured — skip check
+        allowed_prefix = row["value"].strip()
+        student_ip = request_obj.headers.get("X-Forwarded-For", request_obj.remote_addr or "").split(",")[0].strip()
+        return student_ip.startswith(allowed_prefix)
+    except Exception as e:
+        print("WiFi check error:", e)
+        return True  # On error, don't block
+
+
+def run_location_checks(student_lat, student_lng, session_code, class_id, school_id, request_obj):
+    """
+    Flexible check: passes if ANY ONE of GPS / Session Code / WiFi passes.
+    Returns (passed: bool, reason: str)
+    """
+    reasons = []
+
+    gps_ok, dist = check_gps_valid(student_lat, student_lng, school_id)
+    if gps_ok:
+        return True, "GPS location verified"
+    else:
+        reasons.append(f"GPS failed ({int(dist)}m away)" if dist is not None else "GPS location unavailable")
+
+    code_ok = check_session_code_valid(session_code, class_id, school_id)
+    if code_ok:
+        return True, "Session code verified"
+    else:
+        reasons.append("Session code invalid or expired")
+
+    wifi_ok = check_wifi_valid(request_obj, school_id)
+    if wifi_ok:
+        return True, "Network (WiFi) verified"
+    else:
+        reasons.append("Not on school network")
+
+    return False, " | ".join(reasons)
+
+
 def is_ajax():
     return request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
@@ -851,6 +970,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             <a href="/student-register" class="sb-link"><span class="sb-icon">➕</span> Register Student</a>
             <a href="/admin/reports" class="sb-link"><span class="sb-icon">📋</span> Attendance Reports</a>
             <div class="sb-nav-label" style="margin-top:16px;">ACCOUNT</div>
+            <a href="/admin/location-settings" class="sb-link"><span class="sb-icon">📍</span> Location Settings</a>
             <a href="/settings" class="sb-link"><span class="sb-icon">⚙️</span> Settings</a>
             <a href="/" class="sb-link sb-link-muted"><span class="sb-icon">🏠</span> Main Site</a>
             <form method="POST" action="/admin-logout" style="margin-top:8px;">
@@ -3324,6 +3444,9 @@ def teacher_view_class(class_id):
                 <p class="text-xs text-slate-400 font-medium mt-0.5">Subject code: {class_row["subject_name"] or "N/A"} | Active Proctor Date: {today_str}</p>
             </div>
             <div class="flex gap-2">
+                <a class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl flex items-center gap-1.5 transition shadow-sm" href="/teacher/session-panel/{class_id}">
+                    ⏱️ Attendance Timer
+                </a>
                 <a class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl flex items-center gap-1.5 transition shadow-sm shadow-emerald-100" href="/teacher/class/{class_id}/scan">
                     <i class="fas fa-camera"></i> Launch AI Scanner
                 </a>
@@ -3638,24 +3761,82 @@ def teacher_scan_frame_matrix_lookup(class_id):
 # =========================================================
 # ADDITIONS: STUDENT SELF ATTENDANCE (MANUAL & FACE CHECK-IN)
 # =========================================================
-@app.route("/student/checkin/manual/<int:class_id>")
+@app.route("/student/checkin/manual/<int:class_id>", methods=["GET", "POST"])
 def student_manual_checkin(class_id):
     protect = student_required()
     if protect:
         return protect
-    
+
     student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+
     if not student_belongs_to_class(student_db_id, class_id):
-        return "<script>alert('Error: You are not enrolled in this class framework matrix.'); window.location.href='/student';</script>"
+        return "<script>alert('Error: You are not enrolled in this class.'); window.location.href='/student';</script>"
 
     student_row = get_student_row_by_db_id(student_db_id)
     class_row = get_class_by_id(class_id)
-    
-    if student_row and class_row:
+
+    if not student_row or not class_row:
+        return "<script>alert('Error: Student or class not found.'); window.location.href='/student';</script>"
+
+    # GET — show the check-in form (collect GPS + session code)
+    if request.method == "GET":
+        body = f"""
+        <div class="max-w-md mx-auto space-y-5">
+            <h1 class="text-2xl font-bold text-slate-800">📍 Mark Attendance</h1>
+            <p class="text-sm text-slate-500">Class: <strong>{class_row['class_name']}</strong></p>
+            <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+                ⚠️ At least one verification must pass: <strong>GPS location</strong>, <strong>session code</strong>, or <strong>school WiFi</strong>.
+            </div>
+            <form method="POST" class="space-y-4 bg-white border rounded-xl p-5 shadow-sm">
+                <input type="hidden" name="latitude" id="lat">
+                <input type="hidden" name="longitude" id="lng">
+
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">📟 Session Code <span class="font-normal text-slate-400">(from your teacher)</span></label>
+                    <input type="text" name="session_code" placeholder="e.g. A4X9" maxlength="10"
+                        class="w-full px-3 py-2 border rounded-lg uppercase tracking-widest font-mono text-lg text-center focus:ring-2 focus:ring-blue-400">
+                </div>
+
+                <div id="gpsStatus" class="text-xs text-slate-400 text-center">📡 Detecting your location...</div>
+
+                <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl text-base transition">
+                    ✅ Submit Attendance
+                </button>
+                <a href="/student" class="block text-center text-sm text-slate-400 hover:underline mt-1">Cancel</a>
+            </form>
+        </div>
+        <script>
+        if (navigator.geolocation) {{
+            navigator.geolocation.getCurrentPosition(function(pos) {{
+                document.getElementById('lat').value = pos.coords.latitude;
+                document.getElementById('lng').value = pos.coords.longitude;
+                document.getElementById('gpsStatus').innerText = '✅ GPS location captured (' + pos.coords.latitude.toFixed(4) + ', ' + pos.coords.longitude.toFixed(4) + ')';
+                document.getElementById('gpsStatus').className = 'text-xs text-emerald-600 text-center font-semibold';
+            }}, function(err) {{
+                document.getElementById('gpsStatus').innerText = '⚠️ GPS unavailable — use session code or school WiFi.';
+                document.getElementById('gpsStatus').className = 'text-xs text-amber-600 text-center font-semibold';
+            }}, {{ enableHighAccuracy: true, timeout: 8000 }});
+        }} else {{
+            document.getElementById('gpsStatus').innerText = '⚠️ GPS not supported on this device.';
+        }}
+        </script>
+        """
+        return page_wrapper(f"Mark Attendance — {class_row['class_name']}", body, is_student=True, student_context=student_row)
+
+    # POST — validate and mark
+    lat = request.form.get("latitude") or None
+    lng = request.form.get("longitude") or None
+    session_code = request.form.get("session_code", "").strip()
+
+    passed, reason = run_location_checks(lat, lng, session_code, class_id, school_id, request)
+
+    if passed:
         mark_attendance(student_row, class_row, "Present")
-        return "<script>alert('Success: Your manual check-in has been successfully logged!'); window.location.href='/student';</script>"
-    
-    return "<script>alert('Error updating configuration parameters.'); window.location.href='/student';</script>"
+        return f"<script>alert('✅ Attendance marked Present!\\n({reason})'); window.location.href='/student';</script>"
+    else:
+        mark_attendance(student_row, class_row, "Absent")
+        return f"<script>alert('❌ Marked Absent — none of the verification checks passed.\\nReasons: {reason}'); window.location.href='/student';</script>"
 
 
 @app.route("/student/scan")
@@ -3671,17 +3852,27 @@ def student_scan_portal():
     <div class="max-w-3xl mx-auto text-center space-y-4">
         <div>
             <h1 class="text-3xl font-extrabold text-slate-800">📸 Student Face Check-In</h1>
-            <p class="text-sm text-slate-500 mt-1">Look into your camera device stream to verify your identity profile</p>
+            <p class="text-sm text-slate-500 mt-1">Look into your camera to verify your identity</p>
+        </div>
+
+        <div class="max-w-md mx-auto bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800 text-left">
+            ⚠️ Attendance requires at least one: <strong>GPS location</strong>, <strong>session code</strong>, or <strong>school WiFi</strong>.
+        </div>
+
+        <div class="max-w-md mx-auto">
+            <input type="text" id="sessionCodeInput" placeholder="Enter session code (optional)" maxlength="10"
+                class="w-full px-3 py-2 border rounded-lg uppercase tracking-widest font-mono text-base text-center focus:ring-2 focus:ring-blue-400">
+            <div id="gpsStatus" class="text-xs text-slate-400 mt-1">📡 Detecting GPS location...</div>
         </div>
 
         <video id="video" autoplay playsinline muted class="w-full max-w-lg mx-auto bg-black border border-slate-300 rounded-2xl shadow-lg"></video>
         
-        <div id="result" class="text-2xl font-bold text-emerald-600 mt-4 tracking-tight animate-pulse">Initializing face capture feed layer...</div>
-        <div id="status" class="text-xs font-semibold text-slate-400">Please provide camera hardware authorization access</div>
+        <div id="result" class="text-2xl font-bold text-emerald-600 mt-4 tracking-tight animate-pulse">Initializing face capture...</div>
+        <div id="status" class="text-xs font-semibold text-slate-400">Please allow camera access</div>
         
         <div class="flex justify-center gap-2 flex-wrap pt-2">
-            <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl" onclick="switchCamera()">Switch Orientation</button>
-            <button class="bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 px-4 rounded-xl" onclick="startCamera()">Reset Feed Pipeline</button>
+            <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl" onclick="switchCamera()">Switch Camera</button>
+            <button class="bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 px-4 rounded-xl" onclick="startCamera()">Reset Feed</button>
             <a class="bg-slate-800 hover:bg-slate-900 text-white font-bold py-2 px-4 rounded-xl" href="/student">Back to Profile</a>
         </div>
     </div>
@@ -3693,6 +3884,21 @@ const statusDiv = document.getElementById('status');
 let currentFacingMode = "user";
 let stream = null;
 let intervalId = null;
+let studentLat = null;
+let studentLng = null;
+
+// GPS detection
+if (navigator.geolocation) {{
+    navigator.geolocation.getCurrentPosition(function(pos) {{
+        studentLat = pos.coords.latitude;
+        studentLng = pos.coords.longitude;
+        document.getElementById('gpsStatus').innerText = '✅ GPS captured (' + studentLat.toFixed(4) + ', ' + studentLng.toFixed(4) + ')';
+        document.getElementById('gpsStatus').className = 'text-xs text-emerald-600 mt-1 font-semibold';
+    }}, function() {{
+        document.getElementById('gpsStatus').innerText = '⚠️ GPS unavailable — use session code or school WiFi.';
+        document.getElementById('gpsStatus').className = 'text-xs text-amber-600 mt-1 font-semibold';
+    }}, {{ enableHighAccuracy: true, timeout: 8000 }});
+}}
 
 async function startCamera() {{
     try {{
@@ -3749,24 +3955,30 @@ function startScanningLoops() {{
             const ctx = canvas.getContext('2d');
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             const image = canvas.toDataURL('image/jpeg');
+            const sessionCode = document.getElementById('sessionCodeInput').value.trim();
 
             const res = await fetch('/student/scan-frame', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{ image: image }})
+                body: JSON.stringify({{
+                    image: image,
+                    latitude: studentLat,
+                    longitude: studentLng,
+                    session_code: sessionCode
+                }})
             }});
             const data = await res.json();
             if (data.success) {{
-                resultDiv.innerText = "✓ Verification Locked!";
+                resultDiv.innerText = "✓ Verified!";
                 statusDiv.innerText = data.message;
                 clearInterval(intervalId);
                 setTimeout(() => {{ window.location.href = '/student'; }}, 2500);
             }} else {{
-                resultDiv.innerText = "Analyzing face match matrix frame loops...";
+                resultDiv.innerText = "Scanning...";
                 if(data.message) statusDiv.innerText = data.message;
             }}
         }} catch(err) {{
-            console.log("Scan routine cycle exception error code:", err);
+            console.log("Scan error:", err);
         }}
     }}, 2000);
 }}
@@ -3779,7 +3991,7 @@ window.addEventListener('beforeunload', () => {{
 startCamera();
 </script>
     """
-    return page_wrapper("Student Self Face-Recognition Portal", body, is_student=True, student_context=student_ctx)
+    return page_wrapper("Student Face Check-In", body, is_student=True, student_context=student_ctx)
 
 
 @app.route("/student/scan-frame", methods=["POST"])
@@ -3838,15 +4050,39 @@ def student_scan_frame_matrix_lookup():
             matched_student = known_students[best_match_index]
 
             if matched_student["db_id"] != student_db_id:
-                return jsonify({"success": False, "message": "Face profile mapping match mismatch against logged portal session token identifier"})
+                return jsonify({"success": False, "message": "Face profile does not match logged-in student."})
+
+            # ── LOCATION CHECKS ──
+            school_id = get_current_school_id()
+            lat = data.get("latitude")
+            lng = data.get("longitude")
+            session_code = data.get("session_code", "")
 
             for c in classes:
-                mark_attendance(student_row, c, "Present")
+                passed, reason = run_location_checks(lat, lng, session_code, c["id"], school_id, request)
+                if passed:
+                    mark_attendance(student_row, c, "Present")
+                else:
+                    mark_attendance(student_row, c, "Absent")
 
-            return jsonify({
-                "success": True,
-                "message": f"Identity verified successfully for {student_row['full_name']}. All active course rosters checked!"
-            })
+            all_passed = all(
+                run_location_checks(lat, lng, session_code, c["id"], school_id, request)[0]
+                for c in classes
+            )
+
+            if all_passed or any(
+                run_location_checks(lat, lng, session_code, c["id"], school_id, request)[0]
+                for c in classes
+            ):
+                return jsonify({
+                    "success": True,
+                    "message": f"Identity verified for {student_row['full_name']}. Attendance recorded!"
+                })
+            else:
+                return jsonify({
+                    "success": True,
+                    "message": f"Face verified but location check failed — marked Absent."
+                })
 
         return jsonify({"success": False, "message": "Face trace vector lookup match mismatch code error"})
     except Exception as e:
@@ -4153,6 +4389,382 @@ function closeCamera() {{
     """
     return page_wrapper("Edit My Profile", body, is_student=True, student_context=student)
 
+
+
+
+
+# =========================================================
+# TEACHER — CLASS SESSION CODE MANAGEMENT
+# =========================================================
+@app.route("/teacher/start-session/<int:class_id>", methods=["POST"])
+def teacher_start_session(class_id):
+    protect = teacher_required()
+    if protect:
+        return protect
+    school_id = get_current_school_id()
+    # Teacher can choose duration in minutes (default 30, max 180)
+    try:
+        duration_minutes = max(1, min(180, int(request.form.get("duration_minutes", 30))))
+    except:
+        duration_minutes = 30
+    code = secrets.token_hex(2).upper()  # e.g. "A4F9"
+    expires_at = datetime.now() + timedelta(minutes=duration_minutes)
+    conn = get_db()
+    cur = conn.cursor()
+    # Expire any existing active sessions for this class
+    cur.execute("UPDATE class_sessions SET active=FALSE WHERE class_id=%s AND school_id=%s", (class_id, school_id))
+    cur.execute("""
+        INSERT INTO class_sessions (school_id, class_id, code, expires_at, active)
+        VALUES (%s, %s, %s, %s, TRUE)
+    """, (school_id, class_id, code, expires_at))
+    conn.commit()
+    conn.close()
+    if is_ajax():
+        return jsonify({"ok": True, "code": code, "duration_minutes": duration_minutes,
+                        "expires_at": expires_at.isoformat(), "message": f"Session started!"})
+    return f"<script>alert('Session code: {code}  (valid {duration_minutes} minutes)');window.location.href='/teacher/class/{class_id}';</script>"
+
+
+@app.route("/teacher/session-panel/<int:class_id>")
+def teacher_session_panel(class_id):
+    """Dedicated attendance timer & session code panel for teachers."""
+    protect = teacher_required()
+    if protect:
+        return protect
+    class_row = get_class_by_id(class_id)
+    if not class_row or class_row["teacher_id"] != get_logged_teacher_id():
+        return redirect("/teacher")
+    school_id = get_current_school_id()
+
+    # Get active session if any
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT code, expires_at, created_at FROM class_sessions
+        WHERE class_id=%s AND school_id=%s AND active=TRUE AND expires_at > NOW()
+        ORDER BY id DESC LIMIT 1
+    """, (class_id, school_id))
+    active = cur.fetchone()
+    conn.close()
+
+    active_code = active["code"] if active else None
+    expires_iso = active["expires_at"].isoformat() if active else None
+
+    body = f"""
+    <div class="max-w-2xl mx-auto space-y-6">
+        <div class="flex items-center gap-3">
+            <a href="/teacher/class/{class_id}" class="text-blue-600 hover:underline text-sm font-semibold">← Back to Class</a>
+        </div>
+        <h1 class="text-2xl font-extrabold text-slate-800">⏱️ Attendance Timer — {class_row['class_name']}</h1>
+        <p class="text-sm text-slate-500">Start a timed attendance window. Students can only check in while the timer is running. When it expires, attendance is automatically closed.</p>
+
+        <!-- Active session display -->
+        <div id="sessionPanel" class="bg-white border-2 rounded-2xl shadow-sm p-6 space-y-4 {'border-emerald-400' if active_code else 'border-slate-200'}">
+            <div id="noSession" class="{'hidden' if active_code else ''} text-center py-4">
+                <div class="text-5xl mb-3">🔒</div>
+                <p class="text-slate-500 font-medium">No active attendance window.</p>
+                <p class="text-xs text-slate-400 mt-1">Start a session below to allow students to check in.</p>
+            </div>
+
+            <div id="activeSession" class="{'hidden' if not active_code else ''} text-center space-y-4">
+                <div class="text-xs font-bold text-emerald-600 uppercase tracking-widest">✅ Attendance Open</div>
+                <div class="text-7xl font-black font-mono tracking-widest text-slate-800" id="codeDisplay">{active_code or '----'}</div>
+                <p class="text-xs text-slate-400">Share this code with students — they enter it during check-in</p>
+
+                <!-- Countdown timer -->
+                <div class="bg-slate-50 rounded-xl p-4 border">
+                    <div class="text-xs text-slate-500 mb-1 font-semibold">TIME REMAINING</div>
+                    <div id="countdown" class="text-4xl font-black font-mono text-indigo-600">--:--</div>
+                    <div class="mt-2 h-2 bg-slate-200 rounded-full overflow-hidden">
+                        <div id="progressBar" class="h-2 bg-indigo-500 rounded-full transition-all duration-1000" style="width:100%"></div>
+                    </div>
+                </div>
+
+                <form method="POST" action="/teacher/stop-session/{class_id}" data-ajax class="pt-1">
+                    <button type="submit" class="bg-red-500 hover:bg-red-600 text-white font-bold px-6 py-2.5 rounded-xl transition">
+                        ⏹ Stop Attendance Now
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Start new session form -->
+        <div id="startForm" class="bg-white border rounded-2xl shadow-sm p-6 space-y-4 {'hidden' if active_code else ''}">
+            <h2 class="font-bold text-slate-700">🕐 Set Attendance Window</h2>
+            <p class="text-xs text-slate-400">Choose how long students have to mark attendance. The session code expires automatically when time is up.</p>
+
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3" id="presetBtns">
+                <button type="button" onclick="setDuration(5)" class="preset-btn border rounded-xl py-3 font-bold text-slate-700 hover:bg-indigo-50 hover:border-indigo-400 text-sm transition">5 min</button>
+                <button type="button" onclick="setDuration(10)" class="preset-btn border rounded-xl py-3 font-bold text-slate-700 hover:bg-indigo-50 hover:border-indigo-400 text-sm transition">10 min</button>
+                <button type="button" onclick="setDuration(15)" class="preset-btn border rounded-xl py-3 font-bold text-slate-700 hover:bg-indigo-50 hover:border-indigo-400 text-sm transition">15 min</button>
+                <button type="button" onclick="setDuration(30)" class="preset-btn border rounded-xl py-3 font-bold text-slate-700 hover:bg-indigo-50 hover:border-indigo-400 text-sm transition active-preset">30 min</button>
+            </div>
+
+            <div class="flex items-center gap-3">
+                <span class="text-sm text-slate-500 font-medium">Or custom:</span>
+                <input type="number" id="customDuration" min="1" max="180" value="30"
+                    class="w-24 px-3 py-2 border rounded-lg text-center font-bold text-slate-800 focus:ring-2 focus:ring-indigo-400"
+                    oninput="syncCustom(this.value)">
+                <span class="text-sm text-slate-500">minutes</span>
+            </div>
+
+            <button onclick="startSession()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl text-base transition shadow-md shadow-indigo-100">
+                ▶ Start Attendance Timer
+            </button>
+        </div>
+    </div>
+
+<script>
+let countdownInterval = null;
+let totalSeconds = 0;
+let startSeconds = 0;
+const expiresAt = {f'new Date("{expires_iso}")' if expires_iso else 'null'};
+
+function setDuration(min) {{
+    document.getElementById('customDuration').value = min;
+    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active-preset', 'bg-indigo-100', 'border-indigo-400', 'text-indigo-700'));
+    event.target.classList.add('active-preset', 'bg-indigo-100', 'border-indigo-400', 'text-indigo-700');
+}}
+
+function syncCustom(val) {{
+    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active-preset', 'bg-indigo-100', 'border-indigo-400', 'text-indigo-700'));
+}}
+
+async function startSession() {{
+    const duration = parseInt(document.getElementById('customDuration').value) || 30;
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerText = 'Starting...';
+    try {{
+        const fd = new FormData();
+        fd.append('duration_minutes', duration);
+        const res = await fetch('/teacher/start-session/{class_id}', {{ method: 'POST', body: fd }});
+        const data = await res.json();
+        if (data.ok) {{
+            document.getElementById('codeDisplay').innerText = data.code;
+            document.getElementById('noSession').classList.add('hidden');
+            document.getElementById('activeSession').classList.remove('hidden');
+            document.getElementById('startForm').classList.add('hidden');
+            document.getElementById('sessionPanel').classList.remove('border-slate-200');
+            document.getElementById('sessionPanel').classList.add('border-emerald-400');
+            startCountdown(new Date(data.expires_at));
+        }} else {{
+            alert('Error starting session.');
+            btn.disabled = false;
+            btn.innerText = '▶ Start Attendance Timer';
+        }}
+    }} catch(e) {{
+        alert('Network error.');
+        btn.disabled = false;
+        btn.innerText = '▶ Start Attendance Timer';
+    }}
+}}
+
+function startCountdown(expiresDate) {{
+    if (countdownInterval) clearInterval(countdownInterval);
+    startSeconds = Math.floor((expiresDate - new Date()) / 1000);
+    totalSeconds = startSeconds;
+
+    function tick() {{
+        const remaining = Math.floor((expiresDate - new Date()) / 1000);
+        if (remaining <= 0) {{
+            clearInterval(countdownInterval);
+            document.getElementById('countdown').innerText = '00:00';
+            document.getElementById('progressBar').style.width = '0%';
+            document.getElementById('countdown').className = 'text-4xl font-black font-mono text-red-500';
+            // Auto-close
+            document.getElementById('activeSession').innerHTML = '<div class="text-red-500 font-bold text-lg py-4">⏰ Time is up! Attendance window closed.</div>';
+            document.getElementById('startForm').classList.remove('hidden');
+            document.getElementById('sessionPanel').classList.remove('border-emerald-400');
+            document.getElementById('sessionPanel').classList.add('border-slate-200');
+            // Auto stop on server
+            fetch('/teacher/stop-session/{class_id}', {{ method: 'POST' }});
+            return;
+        }}
+        const mins = Math.floor(remaining / 60).toString().padStart(2, '0');
+        const secs = (remaining % 60).toString().padStart(2, '0');
+        document.getElementById('countdown').innerText = mins + ':' + secs;
+        const pct = Math.max(0, (remaining / totalSeconds) * 100);
+        document.getElementById('progressBar').style.width = pct + '%';
+        // Color warning
+        if (remaining <= 60) {{
+            document.getElementById('countdown').className = 'text-4xl font-black font-mono text-red-500';
+            document.getElementById('progressBar').className = 'h-2 bg-red-500 rounded-full transition-all duration-1000';
+        }} else if (remaining <= 180) {{
+            document.getElementById('countdown').className = 'text-4xl font-black font-mono text-amber-500';
+            document.getElementById('progressBar').className = 'h-2 bg-amber-400 rounded-full transition-all duration-1000';
+        }}
+    }}
+    tick();
+    countdownInterval = setInterval(tick, 1000);
+}}
+
+// If session already active on page load, start countdown immediately
+if (expiresAt) {{
+    startCountdown(expiresAt);
+}}
+
+// Style for active preset
+document.querySelectorAll('.preset-btn').forEach(b => {{
+    b.addEventListener('click', function() {{
+        document.querySelectorAll('.preset-btn').forEach(x => x.classList.remove('bg-indigo-100','border-indigo-400','text-indigo-700'));
+        this.classList.add('bg-indigo-100','border-indigo-400','text-indigo-700');
+    }});
+}});
+</script>
+    """
+    return page_wrapper(f"Attendance Timer — {class_row['class_name']}", body, is_teacher=True, teacher_name=session.get("teacher_name"))
+
+
+@app.route("/teacher/stop-session/<int:class_id>", methods=["POST"])
+def teacher_stop_session(class_id):
+    protect = teacher_required()
+    if protect:
+        return protect
+    school_id = get_current_school_id()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE class_sessions SET active=FALSE WHERE class_id=%s AND school_id=%s", (class_id, school_id))
+    conn.commit()
+    conn.close()
+    if is_ajax():
+        return ajax_ok("Session ended. Code is no longer valid.")
+    return "<script>alert('Session ended.');window.location.href='/teacher';</script>"
+
+
+@app.route("/teacher/active-session/<int:class_id>")
+def teacher_active_session(class_id):
+    """Returns current active session code for a class (AJAX)."""
+    protect = teacher_required()
+    if protect:
+        return jsonify({"code": None})
+    school_id = get_current_school_id()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT code, expires_at FROM class_sessions
+        WHERE class_id=%s AND school_id=%s AND active=TRUE AND expires_at > NOW()
+        ORDER BY id DESC LIMIT 1
+    """, (class_id, school_id))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return jsonify({"code": row["code"], "expires_at": str(row["expires_at"])})
+    return jsonify({"code": None})
+
+
+# =========================================================
+# ADMIN — LOCATION SETTINGS (GPS + WiFi)
+# =========================================================
+@app.route("/admin/location-settings", methods=["GET", "POST"])
+def admin_location_settings():
+    protect = admin_required()
+    if protect:
+        return protect
+    school_id = get_current_school_id()
+
+    if request.method == "POST":
+        lat = request.form.get("classroom_lat", "").strip()
+        lng = request.form.get("classroom_lng", "").strip()
+        radius = request.form.get("classroom_radius", "100").strip()
+        ip_prefix = request.form.get("allowed_ip_prefix", "").strip()
+        conn = get_db()
+        cur = conn.cursor()
+        for key, val in [("classroom_lat", lat), ("classroom_lng", lng),
+                         ("classroom_radius", radius), ("allowed_ip_prefix", ip_prefix)]:
+            if val:
+                cur.execute("""
+                    INSERT INTO admin_settings (school_id, key, value) VALUES (%s, %s, %s)
+                    ON CONFLICT (school_id, key) DO UPDATE SET value=%s
+                """, (school_id, key, val, val))
+            else:
+                cur.execute("DELETE FROM admin_settings WHERE school_id=%s AND key=%s", (school_id, key))
+        conn.commit()
+        conn.close()
+        if is_ajax():
+            return ajax_ok("Location settings saved!", redirect_url="/admin/location-settings")
+        return "<script>alert('Location settings saved!');window.location.href='/admin/location-settings';</script>"
+
+    # Load current settings
+    conn = get_db()
+    cur = conn.cursor()
+    def get_setting(key):
+        cur.execute("SELECT value FROM admin_settings WHERE school_id=%s AND key=%s", (school_id, key))
+        r = cur.fetchone()
+        return r["value"] if r else ""
+    lat = get_setting("classroom_lat")
+    lng = get_setting("classroom_lng")
+    radius = get_setting("classroom_radius") or "100"
+    ip_prefix = get_setting("allowed_ip_prefix")
+    conn.close()
+
+    body = f"""
+    <div class="max-w-xl space-y-6">
+        <div>
+            <h1 class="text-2xl font-bold text-slate-800">📍 Attendance Location Settings</h1>
+            <p class="text-sm text-slate-500 mt-1">Configure GPS, WiFi, and session code restrictions. Students need to pass <strong>at least one</strong> check to be marked Present.</p>
+        </div>
+
+        <form method="POST" class="space-y-6 bg-white border rounded-xl p-6 shadow-sm" data-ajax>
+
+            <div class="space-y-3">
+                <h2 class="font-bold text-slate-700">🛰️ GPS Location</h2>
+                <p class="text-xs text-slate-400">Set your classroom's GPS coordinates. Leave blank to disable GPS check.</p>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">Latitude</label>
+                        <input type="text" name="classroom_lat" value="{lat}" placeholder="e.g. 9.0247" class="form-input w-full">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">Longitude</label>
+                        <input type="text" name="classroom_lng" value="{lng}" placeholder="e.g. 38.7469" class="form-input w-full">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Allowed Radius (meters)</label>
+                    <input type="number" name="classroom_radius" value="{radius}" min="10" max="500" class="form-input w-full">
+                </div>
+                <button type="button" onclick="detectLocation()" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold px-3 py-1.5 rounded-lg">
+                    📡 Use My Current Location
+                </button>
+                <div id="detectStatus" class="text-xs text-slate-400"></div>
+            </div>
+
+            <hr>
+
+            <div class="space-y-3">
+                <h2 class="font-bold text-slate-700">📶 WiFi / Network Check</h2>
+                <p class="text-xs text-slate-400">Enter the IP prefix of your school's WiFi network. Leave blank to disable. Example: <code class="bg-slate-100 px-1 rounded">192.168.1.</code></p>
+                <input type="text" name="allowed_ip_prefix" value="{ip_prefix}" placeholder="e.g. 192.168.1." class="form-input w-full font-mono">
+            </div>
+
+            <hr>
+
+            <div class="space-y-2">
+                <h2 class="font-bold text-slate-700">📟 Session Codes (QR)</h2>
+                <p class="text-xs text-slate-400">Teachers generate session codes from their class panel. No configuration needed here — codes expire after 30 minutes.</p>
+            </div>
+
+            <button type="submit" class="btn green w-full">💾 Save Settings</button>
+        </form>
+    </div>
+    <script>
+    function detectLocation() {{
+        const status = document.getElementById('detectStatus');
+        status.innerText = 'Detecting...';
+        navigator.geolocation.getCurrentPosition(function(pos) {{
+            document.querySelector('[name=classroom_lat]').value = pos.coords.latitude.toFixed(6);
+            document.querySelector('[name=classroom_lng]').value = pos.coords.longitude.toFixed(6);
+            status.innerText = '✅ Location captured: ' + pos.coords.latitude.toFixed(6) + ', ' + pos.coords.longitude.toFixed(6);
+            status.className = 'text-xs text-emerald-600 font-semibold';
+        }}, function(err) {{
+            status.innerText = '❌ Could not detect location: ' + err.message;
+            status.className = 'text-xs text-red-500';
+        }}, {{ enableHighAccuracy: true }});
+    }}
+    </script>
+    """
+    return page_wrapper("Location Settings", body, is_admin=True)
 
 
 # =========================================================
