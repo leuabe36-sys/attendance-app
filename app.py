@@ -4698,9 +4698,20 @@ def student_qr_scan_portal():
         qrStatus.innerText = "⏳ Submitting attendance…";
         qrStatus.className = "text-sm font-semibold text-blue-500";
 
+        // Safety net: if the server hasn't responded in 10s, tell the student
+        // instead of leaving "Submitting attendance…" up indefinitely.
+        const qrSubmitTimeout = setTimeout(() => {{
+            qrStatus.innerText = "⏳ Still working — this is taking longer than usual…";
+            qrStatus.className = "text-sm font-semibold text-amber-600";
+        }}, 10000);
+
+        const qrAbortController = new AbortController();
+        const qrAbortTimer = setTimeout(() => qrAbortController.abort(), 20000);
+
         fetch('/student/checkin/api', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
+            signal: qrAbortController.signal,
             body: JSON.stringify({{
                 session_code: code,
                 latitude: qrStudentLat,
@@ -4710,6 +4721,8 @@ def student_qr_scan_portal():
         }})
         .then(r => r.json())
         .then(data => {{
+            clearTimeout(qrSubmitTimeout);
+            clearTimeout(qrAbortTimer);
             const resultBox = document.getElementById('qrResultBox');
             if (data.ok) {{
                 const icon = data.already_marked ? '\u2139\ufe0f' : '\u2705';
@@ -4719,9 +4732,10 @@ def student_qr_scan_portal():
                         <div class="text-4xl">${{icon}}</div>
                         <div class="font-bold text-lg">${{data.message}}</div>
                         ${{data.class_name ? '<div class="text-sm opacity-70">Class: ' + data.class_name + '</div>' : ''}}
-                        <a href="/student" class="inline-block mt-3 bg-slate-800 text-white font-bold px-6 py-2 rounded-xl text-sm">Go to Dashboard</a>
+                        <div class="text-xs opacity-60 mt-2">Redirecting to your dashboard…</div>
                     </div>`;
                 qrStatus.innerText = '';
+                setTimeout(() => {{ window.location.href = '/student'; }}, 2000);
             }} else if (data.absent) {{
                 resultBox.innerHTML = `
                     <div class="rounded-2xl border-2 bg-red-50 border-red-200 text-red-800 text-center p-5 space-y-2">
@@ -4749,10 +4763,16 @@ def student_qr_scan_portal():
             }}
         }})
         .catch(err => {{
+            clearTimeout(qrSubmitTimeout);
+            clearTimeout(qrAbortTimer);
+            const timedOut = err && err.name === 'AbortError';
             document.getElementById('qrResultBox').innerHTML = `
                 <div class="rounded-2xl border-2 bg-amber-50 border-amber-200 text-amber-800 text-center p-5">
-                    <div class="font-bold">Network error. Please check your connection.</div>
-                    <button onclick="retryQR()" class="mt-3 bg-blue-600 text-white font-bold px-5 py-2 rounded-xl text-sm">↺ Try Again</button>
+                    <div class="font-bold">${{timedOut ? 'Request timed out. Please try again.' : 'Network error. Please check your connection.'}}</div>
+                    <div class="flex justify-center gap-3 mt-3 flex-wrap">
+                        <button onclick="retryQR()" class="bg-blue-600 text-white font-bold px-5 py-2 rounded-xl text-sm">↺ Try Again</button>
+                        <a href="/student" class="bg-slate-800 text-white font-bold px-5 py-2 rounded-xl text-sm">Dashboard</a>
+                    </div>
                 </div>`;
             qrStatus.innerText = '';
         }});
