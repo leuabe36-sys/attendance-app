@@ -1823,7 +1823,7 @@ def register_school():
         return page_wrapper("Register Your School", """
         <div class="max-w-lg mx-auto my-8 p-6 bg-white border border-slate-200 rounded-xl shadow-sm">
             <h2 class="text-2xl font-bold text-slate-800 mb-2">🏫 Register Your School</h2>
-            <p class="text-sm text-slate-500 mb-6">Create your school's account. We'll email you a confirmation link — once verified, you'll get a unique <b>School Code</b> that your staff and students use to log in.</p>
+            <p class="text-sm text-slate-500 mb-6">Submit your school's details below. Once a system administrator reviews and approves your request, you'll be able to log in with your School Code.</p>
             <form method="POST" class="space-y-4">
                 <div>
                     <label class="block text-sm font-medium text-slate-700 mb-1">School Full Name</label>
@@ -1845,7 +1845,7 @@ def register_school():
                     <label class="block text-sm font-medium text-slate-700 mb-1">Admin Password</label>
                     <input type="password" name="admin_password" placeholder="Strong password" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
                 </div>
-                <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition" type="submit">Send Verification Email</button>
+                <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition" type="submit">Submit for Approval</button>
             </form>
             <div class="mt-4 border-t pt-4 text-center">
                 <a class="text-sm text-blue-600 hover:underline" href="/">← Back to Home</a>
@@ -1875,21 +1875,18 @@ def register_school():
         if cur.fetchone():
             conn.close()
             return "<script>alert('That Admin Username is already taken. Please choose another.');window.location.href='/register-school';</script>"
-        # Check pending (unexpired) registrations for the same collisions
-        cur.execute("DELETE FROM pending_school_registrations WHERE expires_at < NOW()")
+        # Check pending (not-yet-reviewed) requests for the same collisions
         cur.execute("SELECT 1 FROM pending_school_registrations WHERE code=%s", (code,))
         if cur.fetchone():
-            conn.commit()
             conn.close()
-            return "<script>alert('That School Code is already pending verification by someone else. Please choose another.');window.location.href='/register-school';</script>"
+            return "<script>alert('That School Code is already pending approval for another request. Please choose another.');window.location.href='/register-school';</script>"
         cur.execute("SELECT 1 FROM pending_school_registrations WHERE admin_username=%s", (admin_username,))
         if cur.fetchone():
-            conn.commit()
             conn.close()
-            return "<script>alert('That Admin Username is already pending verification by someone else. Please choose another.');window.location.href='/register-school';</script>"
+            return "<script>alert('That Admin Username is already pending approval for another request. Please choose another.');window.location.href='/register-school';</script>"
 
         token = secrets.token_urlsafe(32)
-        expires_at = datetime.now() + timedelta(hours=24)
+        expires_at = datetime.now() + timedelta(days=30)
         cur.execute("""
             INSERT INTO pending_school_registrations (token, name, code, admin_username, admin_password, email, expires_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -1901,38 +1898,21 @@ def register_school():
         msg = str(e).split('\n')[0].replace("'", "")
         return f"<script>alert('Error: {msg}');window.location.href='/register-school';</script>"
     conn.close()
-
-    base_url = APP_BASE_URL or request.host_url.rstrip("/")
-    verify_link = f"{base_url}/verify-school/{token}"
-    sent, err = send_email(
-        email,
-        "Confirm your school registration",
-        f"Hi,\n\nClick the link below to confirm and activate your school '{name}' (Code: {code}):\n\n{verify_link}\n\nThis link expires in 24 hours. If you didn't request this, you can ignore this email.",
-    )
-    if sent:
-        return ("<script>alert('Almost done! We sent a confirmation link to " + email +
-                ". Click it to activate your school.');window.location.href='/';</script>")
-    else:
-        # Email failed — surface the real reason plus the link so the flow isn't blocked
-        safe_err = err.replace("'", "").replace("\n", " ")[:200]
-        return (f"<script>alert('Could not send email: {safe_err}. "
-                f"Use this link to verify manually: {verify_link}');window.location.href='/';</script>")
+    return ("<script>alert('Thanks! Your request has been submitted and is waiting for admin approval. "
+            "You will be able to log in once it is approved.');window.location.href='/';</script>")
 
 
-@app.route("/verify-school/<token>")
-def verify_school(token):
+@app.route("/super-admin/approve-school/<int:pending_id>")
+def super_admin_approve_school(pending_id):
+    if not is_super_admin():
+        return redirect("/super-admin-login")
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM pending_school_registrations WHERE token=%s", (token,))
+    cur.execute("SELECT * FROM pending_school_registrations WHERE id=%s", (pending_id,))
     pending = cur.fetchone()
     if not pending:
         conn.close()
-        return "<script>alert('Invalid or already-used verification link.');window.location.href='/register-school';</script>"
-    if pending["expires_at"] < datetime.now():
-        cur.execute("DELETE FROM pending_school_registrations WHERE token=%s", (token,))
-        conn.commit()
-        conn.close()
-        return "<script>alert('This verification link has expired. Please register again.');window.location.href='/register-school';</script>"
+        return "<script>alert('Request not found (it may have already been handled).');window.location.href='/super-admin';</script>"
 
     try:
         cur.execute("""
@@ -1947,22 +1927,31 @@ def verify_school(token):
                 INSERT INTO admin_settings (school_id, key, value) VALUES (%s, 'admin_password', %s)
                 ON CONFLICT (school_id, key) DO UPDATE SET value=%s
             """, (new_school["id"], pending["admin_password"], pending["admin_password"]))
-        cur.execute("DELETE FROM pending_school_registrations WHERE token=%s", (token,))
+        cur.execute("DELETE FROM pending_school_registrations WHERE id=%s", (pending_id,))
         conn.commit()
     except Exception as e:
         conn.rollback()
         conn.close()
         msg = str(e).split('\n')[0].replace("'", "")
         if "schools_code_key" in msg:
-            msg = "That School Code was just taken by someone else. Please register again with a different code."
+            msg = "That School Code was already taken by another approved school. Reject this request and ask them to resubmit with a different code."
         elif "schools_admin_username_key" in msg:
-            msg = "That Admin Username was just taken by someone else. Please register again with a different username."
-        return f"<script>alert('Error: {msg}');window.location.href='/register-school';</script>"
+            msg = "That Admin Username was already taken by another approved school. Reject this request and ask them to resubmit with a different username."
+        return f"<script>alert('Error: {msg}');window.location.href='/super-admin';</script>"
     conn.close()
-    name = pending["name"]
-    code = pending["code"]
-    return (f"<script>alert('Your school \\'{name}\\' is now active! Your School Code is: {code}. "
-            f"Save this code \u2014 you and your staff will need it to log in.');window.location.href='/admin-login';</script>")
+    return f"<script>alert('Approved! {pending['name']} is now active with code {pending['code']}.');window.location.href='/super-admin';</script>"
+
+
+@app.route("/super-admin/reject-school/<int:pending_id>")
+def super_admin_reject_school(pending_id):
+    if not is_super_admin():
+        return redirect("/super-admin-login")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM pending_school_registrations WHERE id=%s", (pending_id,))
+    conn.commit()
+    conn.close()
+    return "<script>alert('Request rejected and removed.');window.location.href='/super-admin';</script>"
 
 
 
@@ -4223,6 +4212,32 @@ def super_admin_dashboard():
         return redirect("/super-admin-login")
     schools = get_all_schools()
     super_name = session.get("super_admin_name", get_super_admin_name())
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM pending_school_registrations ORDER BY created_at DESC")
+    pending_requests = cur.fetchall()
+    conn.close()
+
+    pending_rows_html = ""
+    for p in pending_requests:
+        pending_rows_html += f"""
+        <tr>
+            <td class="p-3 font-semibold">{p['name']}</td>
+            <td class="p-3 text-slate-500 text-sm">{p['email']}</td>
+            <td class="p-3 font-mono font-bold text-blue-700">{p['code']}</td>
+            <td class="p-3 text-slate-500 text-sm">{p['admin_username']}</td>
+            <td class="p-3 text-xs text-slate-400">{p['created_at']}</td>
+            <td class="p-3 whitespace-nowrap">
+                <a class="text-emerald-600 hover:underline text-sm font-bold mr-3"
+                   href="/super-admin/approve-school/{p['id']}"
+                   onclick="return confirm('Approve this school? It will go live immediately.')">✅ Approve</a>
+                <a class="text-red-500 hover:underline text-sm font-medium"
+                   href="/super-admin/reject-school/{p['id']}"
+                   onclick="return confirm('Reject and delete this request?')">Reject</a>
+            </td>
+        </tr>"""
+
     rows_html = ""
     for s in schools:
         rows_html += f"""
@@ -4301,6 +4316,18 @@ def super_admin_dashboard():
                     <button class="btn green" type="submit">Create School</button>
                 </div>
             </form>
+        </div>
+        <div class="card">
+            <div class="card-header"><span class="card-header-title">📥 Pending School Requests {f'<span class="ml-2 inline-block bg-amber-100 text-amber-700 text-xs font-bold px-2 py-0.5 rounded-full">{len(pending_requests)}</span>' if pending_requests else ''}</span></div>
+            <div class="tbl-wrap">
+            <table>
+                <thead><tr>
+                    <th>School Name</th><th>Email</th><th>Requested Code</th>
+                    <th>Admin Username</th><th>Submitted</th><th>Action</th>
+                </tr></thead>
+                <tbody>{pending_rows_html if pending_rows_html else "<tr><td colspan='6' style='padding:24px;text-align:center;color:#94a3b8;'>No pending requests.</td></tr>"}</tbody>
+            </table>
+            </div>
         </div>
         <div class="card">
             <div class="card-header"><span class="card-header-title">All Schools</span></div>
