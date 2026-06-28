@@ -530,7 +530,7 @@ def get_active_session_for_class(class_id, school_id):
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-            SELECT code, teacher_lat, teacher_lng, teacher_ip, rotate_seconds
+            SELECT code, teacher_lat, teacher_lng, teacher_ip, rotate_seconds, expires_at
             FROM class_sessions
             WHERE class_id=%s AND school_id=%s AND active=TRUE AND expires_at > NOW()
             ORDER BY id DESC LIMIT 1
@@ -4828,9 +4828,55 @@ def student_dashboard_portal():
 
     classes = get_classes_for_student(student_db_id)
     history = get_attendance_for_student(student_id)
+    school_id = get_current_school_id()
+
+    # Check which of the student's classes currently have an open attendance window,
+    # so we can show a live "time left to scan" countdown for each.
+    open_sessions = []
+    for c in classes:
+        active_sess = get_active_session_for_class(c["id"], school_id)
+        if active_sess and active_sess.get("expires_at"):
+            open_sessions.append({
+                "class_id": c["id"],
+                "class_name": c["class_name"],
+                "expires_at": utc_iso(active_sess["expires_at"])
+            })
+
+    # Build the "attendance open" banner — one row per class with a live window right now.
+    open_sessions_html = ""
+    if open_sessions:
+        rows_html = ""
+        for s in open_sessions:
+            rows_html += f"""
+                <div class="flex items-center justify-between gap-3 bg-white/70 rounded-xl px-4 py-2.5">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                        </span>
+                        <span class="font-bold text-slate-800 text-sm truncate">{s["class_name"]}</span>
+                    </div>
+                    <div class="flex items-center gap-3 flex-shrink-0">
+                        <span class="font-mono font-black text-emerald-700 text-lg tabular-nums"
+                            data-expires="{s['expires_at']}" data-role="countdown">--:--</span>
+                        <a href="/student/qr-scan" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition whitespace-nowrap">
+                            <i class="fas fa-qrcode mr-1"></i> Scan Now
+                        </a>
+                    </div>
+                </div>
+            """
+        open_sessions_html = f"""
+        <div class="lg:col-span-3 bg-gradient-to-r from-emerald-50 to-teal-50 border-2 border-emerald-300 rounded-2xl p-4 space-y-2 shadow-sm">
+            <div class="flex items-center gap-2 px-1">
+                <span class="text-emerald-700 font-extrabold text-sm uppercase tracking-wide">⏳ Attendance Open — Time Left to Scan</span>
+            </div>
+            {rows_html}
+        </div>
+        """
 
     body = f"""
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {open_sessions_html}
         <div class="lg:col-span-1 space-y-6">
             <div class="bg-white border rounded-xl p-6 text-center shadow-sm">
                 <img class="w-24 h-24 object-cover rounded-full mx-auto border-2 border-blue-500 mb-3 shadow-inner" src="{supabase_public_url(student_ctx["image_file"])}">
@@ -4933,6 +4979,39 @@ def student_dashboard_portal():
         </div>
     </div>
     """
+
+    if open_sessions:
+        body += """
+        <script>
+        (function() {
+            function tick() {
+                document.querySelectorAll('[data-role="countdown"]').forEach(function(el) {
+                    var expires = new Date(el.getAttribute('data-expires'));
+                    var now = new Date();
+                    var diffMs = expires - now;
+                    if (diffMs <= 0) {
+                        el.innerText = "Closed";
+                        el.classList.remove('text-emerald-700');
+                        el.classList.add('text-rose-500');
+                        return;
+                    }
+                    var totalSecs = Math.floor(diffMs / 1000);
+                    var mins = Math.floor(totalSecs / 60);
+                    var secs = totalSecs % 60;
+                    el.innerText = mins + ":" + String(secs).padStart(2, "0");
+                    // Flip to an urgent color in the final 30 seconds
+                    if (totalSecs <= 30) {
+                        el.classList.remove('text-emerald-700');
+                        el.classList.add('text-rose-500');
+                    }
+                });
+            }
+            tick();
+            setInterval(tick, 1000);
+        })();
+        </script>
+        """
+
     return page_wrapper("Student Personal Hub Portal", body, is_student=True, student_context=student_ctx)
 
 
