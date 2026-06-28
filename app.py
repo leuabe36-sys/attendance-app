@@ -761,6 +761,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
     else:
         content_html = f"""
         <div class="public-wrap">
+            <button class="dm-toggle dm-float" id="dmBtn" onclick="toggleDark()" title="Toggle dark mode">🌙</button>
             {body}
         </div>
         """
@@ -1200,6 +1201,16 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             line-height: 1;
         }}
         .dm-toggle:hover {{ background: var(--c-accent-light); border-color: var(--c-accent); }}
+        .dm-float {{
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 999;
+            box-shadow: var(--shadow-md);
+            width: 42px; height: 42px;
+            border-radius: 10px;
+            font-size: 19px;
+        }}
 
         /* ── CHART CONTAINER ── */
         .chart-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }}
