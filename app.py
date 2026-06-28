@@ -4442,48 +4442,52 @@ def super_admin_dashboard():
             </div>
         </div>
     </div>
+    """
+    # JS is outside the f-string to avoid escaping issues with arrow functions and braces
+    body += """
     <script>
     // ── PENDING CHECKBOXES ──
     function toggleAllPending(master) {
-        document.querySelectorAll('.pending-cb').forEach(cb => cb.checked = master.checked);
+        document.querySelectorAll('.pending-cb').forEach(function(cb) { cb.checked = master.checked; });
         updateBulkBar();
     }
     document.addEventListener('change', function(e) {
         if (e.target.classList.contains('pending-cb')) updateBulkBar();
     });
     function getCheckedPending() {
-        return [...document.querySelectorAll('.pending-cb:checked')].map(cb => cb.value);
+        return Array.from(document.querySelectorAll('.pending-cb:checked')).map(function(cb) { return cb.value; });
     }
     function updateBulkBar() {
-        const ids = getCheckedPending();
-        const bar = document.getElementById('pending-bulk-bar');
-        const count = document.getElementById('pending-sel-count');
+        var ids = getCheckedPending();
+        var bar = document.getElementById('pending-bulk-bar');
+        var count = document.getElementById('pending-sel-count');
         if (ids.length > 0) {
             bar.style.cssText = 'display:flex!important;align-items:center;gap:8px;';
             count.textContent = ids.length + ' selected';
         } else {
             bar.style.cssText = 'display:none!important;';
         }
-        const all = document.querySelectorAll('.pending-cb');
-        document.getElementById('pending-select-all').indeterminate = ids.length > 0 && ids.length < all.length;
-        document.getElementById('pending-select-all').checked = ids.length === all.length && all.length > 0;
+        var all = document.querySelectorAll('.pending-cb');
+        var selAll = document.getElementById('pending-select-all');
+        selAll.indeterminate = ids.length > 0 && ids.length < all.length;
+        selAll.checked = ids.length === all.length && all.length > 0;
     }
 
     // ── SINGLE APPROVE / REJECT ──
     async function handlePending(id, action, name) {
-        const msg = action === 'approve'
-            ? `Approve "${name}"? It will go live immediately.`
-            : `Reject and delete the request for "${name}"?`;
+        var msg = action === 'approve'
+            ? 'Approve "' + name + '"? It will go live immediately.'
+            : 'Reject and delete the request for "' + name + '"?';
         if (!confirm(msg)) return;
-        const url = action === 'approve'
-            ? `/super-admin/approve-school/${id}`
-            : `/super-admin/reject-school/${id}`;
+        var url = action === 'approve'
+            ? '/super-admin/approve-school/' + id
+            : '/super-admin/reject-school/' + id;
         try {
-            const res = await fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-            const data = await res.json();
+            var res = await fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            var data = await res.json();
             if (data.ok) {
                 showToast(data.message, 'success');
-                const row = document.getElementById('pending-row-' + id);
+                var row = document.getElementById('pending-row-' + id);
                 if (row) row.remove();
                 updateBulkBar();
             } else {
@@ -4494,21 +4498,21 @@ def super_admin_dashboard():
 
     // ── BULK APPROVE / REJECT ──
     async function bulkPending(action) {
-        const ids = getCheckedPending();
+        var ids = getCheckedPending();
         if (!ids.length) return;
-        const label = action === 'approve' ? 'approve' : 'reject';
-        if (!confirm(`${label.charAt(0).toUpperCase()+label.slice(1)} ${ids.length} selected request(s)?`)) return;
+        var label = action === 'approve' ? 'Approve' : 'Reject';
+        if (!confirm(label + ' ' + ids.length + ' selected request(s)?')) return;
         try {
-            const res = await fetch('/super-admin/bulk-pending', {
+            var res = await fetch('/super-admin/bulk-pending', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ ids, action })
+                body: JSON.stringify({ ids: ids, action: action })
             });
-            const data = await res.json();
+            var data = await res.json();
             if (data.ok) {
                 showToast(data.message, 'success');
-                ids.forEach(id => {
-                    const row = document.getElementById('pending-row-' + id);
+                ids.forEach(function(id) {
+                    var row = document.getElementById('pending-row-' + id);
                     if (row) row.remove();
                 });
                 updateBulkBar();
@@ -4520,13 +4524,13 @@ def super_admin_dashboard():
 
     // ── DELETE SCHOOL ──
     async function deleteSchool(id, name) {
-        if (!confirm(`Delete "${name}" and ALL its data? This cannot be undone.`)) return;
+        if (!confirm('Delete "' + name + '" and ALL its data? This cannot be undone.')) return;
         try {
-            const res = await fetch(`/super-admin/delete-school/${id}`, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-            const data = await res.json();
+            var res = await fetch('/super-admin/delete-school/' + id, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            var data = await res.json();
             if (data.ok) {
                 showToast(data.message, 'success');
-                const row = document.getElementById('school-row-' + id);
+                var row = document.getElementById('school-row-' + id);
                 if (row) row.remove();
             } else {
                 showToast(data.error || 'Something went wrong.', 'error');
