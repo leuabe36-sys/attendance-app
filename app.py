@@ -7055,9 +7055,9 @@ def student_dm_page(classmate_db_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT sc1.class_id FROM student_classes sc1
-        JOIN student_classes sc2 ON sc1.class_id = sc2.class_id
-        WHERE sc1.student_id=%s AND sc2.student_id=%s
+        SELECT sc1.class_id_fk AS class_id FROM student_classes sc1
+        JOIN student_classes sc2 ON sc1.class_id_fk = sc2.class_id_fk
+        WHERE sc1.student_id_fk=%s AND sc2.student_id_fk=%s
         LIMIT 1
     """, (student_db_id, classmate_db_id))
     shared = cur.fetchone()
@@ -7239,9 +7239,9 @@ def student_dm_send(classmate_db_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT sc1.class_id FROM student_classes sc1
-        JOIN student_classes sc2 ON sc1.class_id = sc2.class_id
-        WHERE sc1.student_id=%s AND sc2.student_id=%s LIMIT 1
+        SELECT sc1.class_id_fk AS class_id FROM student_classes sc1
+        JOIN student_classes sc2 ON sc1.class_id_fk = sc2.class_id_fk
+        WHERE sc1.student_id_fk=%s AND sc2.student_id_fk=%s LIMIT 1
     """, (student_db_id, classmate_db_id))
     shared = cur.fetchone()
     if not shared:
