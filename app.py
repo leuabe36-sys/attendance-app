@@ -98,6 +98,80 @@ def supabase_public_url(filename):
         return filename
     return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{filename}" 
 
+def generate_video_thumbnail(video_bytes, ext):
+    """
+    Extract a cover-frame JPEG from raw video bytes using OpenCV.
+    Writes to a temp file (cv2 can't read from an in-memory buffer reliably
+    for compressed video containers), grabs an early frame, and returns
+    JPEG-encoded bytes. Returns None on any failure so callers can fall
+    back gracefully (video still works, just without a custom poster).
+    """
+    import tempfile
+    tmp_path = None
+    try:
+        suffix = f".{ext}" if ext else ".mp4"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(video_bytes)
+            tmp_path = tmp.name
+
+        cap = cv2.VideoCapture(tmp_path)
+        if not cap.isOpened():
+            return None
+
+        # Skip a few frames in — the very first frame is sometimes black/blank
+        # on some encoders. Fall back to frame 0 if the video is too short.
+        frame = None
+        for frame_idx in (5, 0):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ok, candidate = cap.read()
+            if ok and candidate is not None:
+                frame = candidate
+                break
+        cap.release()
+
+        if frame is None:
+            return None
+
+        # Cap thumbnail resolution so it stays small/fast to load
+        h, w = frame.shape[:2]
+        max_dim = 480
+        if max(h, w) > max_dim:
+            scale = max_dim / float(max(h, w))
+            frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+
+        ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if not ok:
+            return None
+        return buf.tobytes()
+    except Exception as e:
+        print("Video thumbnail generation error:", e, flush=True)
+        return None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def maybe_generate_and_upload_thumb(storage_name, file_bytes, ext):
+    """
+    If the file is a video, generate a poster-frame thumbnail and upload it
+    to Supabase next to the video. Returns the thumbnail's public URL, or
+    "" if not a video or generation/upload failed (caller treats "" as "no
+    custom poster" and falls back to native browser behavior).
+    """
+    video_exts = ("mp4", "mov", "avi", "webm", "mkv")
+    if (ext or "").lower() not in video_exts:
+        return ""
+    thumb_bytes = generate_video_thumbnail(file_bytes, ext)
+    if not thumb_bytes:
+        return ""
+    thumb_name = f"{storage_name}.thumb.jpg"
+    thumb_url = supabase_upload(thumb_name, thumb_bytes, "image/jpeg")
+    return thumb_url or ""
+
+
 # MediaPipe face mesh for embeddings
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
@@ -417,6 +491,9 @@ def init_db():
     cur.execute("ALTER TABLE class_comments ADD COLUMN IF NOT EXISTS file_name TEXT DEFAULT NULL")
     cur.execute("ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS file_url TEXT DEFAULT NULL")
     cur.execute("ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS file_name TEXT DEFAULT NULL")
+    # Video cover/poster thumbnail (auto-generated server-side on upload)
+    cur.execute("ALTER TABLE class_comments ADD COLUMN IF NOT EXISTS file_thumb_url TEXT DEFAULT NULL")
+    cur.execute("ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS file_thumb_url TEXT DEFAULT NULL")
 
     conn.commit()
     conn.close()
@@ -494,7 +571,7 @@ def utc_iso(dt):
     return dt.isoformat()
 
 
-def render_file_html(file_url, file_name):
+def render_file_html(file_url, file_name, file_thumb_url=None):
     """Return rich HTML preview for a file attachment (image/video/doc)."""
     if not file_url:
         return ""
@@ -506,8 +583,11 @@ def render_file_html(file_url, file_name):
                 f'</a></div>')
     elif ext in ("mp4", "mov", "avi", "webm", "mkv"):
         mime = "video/quicktime" if ext == "mov" else f"video/{ext}"
+        poster_attr = f' poster="{file_thumb_url}"' if file_thumb_url else ""
         return (f'<div style="margin-top:5px;border-radius:8px;overflow:hidden;max-width:260px;background:#000;">'
-                f'<video controls preload="metadata" style="display:block;max-width:260px;max-height:200px;border-radius:8px;width:100%;">'
+                f'<video preload="metadata"{poster_attr} playsinline '
+                f'onclick="if(this.requestFullscreen){{this.requestFullscreen();}}else if(this.webkitRequestFullscreen){{this.webkitRequestFullscreen();}}this.controls=true;this.play();" '
+                f'style="display:block;max-width:260px;max-height:200px;border-radius:8px;width:100%;cursor:pointer;">'
                 f'<source src="{file_url}" type="{mime}"></video></div>')
     else:
         icons = {"pdf":"📕","doc":"📝","docx":"📝","xls":"📊","xlsx":"📊","ppt":"📋","pptx":"📋",
@@ -5813,7 +5893,7 @@ def student_class_feed(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority, file_url, file_name
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority, file_url, file_name, file_thumb_url
         FROM class_comments
         WHERE class_id=%s AND school_id=%s
         ORDER BY created_at ASC
@@ -5861,7 +5941,8 @@ def student_class_feed(class_id):
         # File attachment
         furl = m.get("file_url") or ""
         fname = m.get("file_name") or ""
-        fhtml = render_file_html(furl, fname)
+        fthumb = m.get("file_thumb_url") or ""
+        fhtml = render_file_html(furl, fname, fthumb)
         txt_html = f'<div class="tg-bubble-text">{txt}</div>' if txt else ''
         if is_me and not is_teacher:
             return (f'<div class="tg-msg-row tg-mine" id="msg-{mid}">' +
@@ -6217,7 +6298,7 @@ function nameColor(name) {{
 }}
 
 // ── Render a single message bubble ──
-function buildFileHtml(file_url, file_name) {{
+function buildFileHtml(file_url, file_name, file_thumb_url) {{
     if (!file_url) return '';
     const ext = (file_name || '').split('.').pop().toLowerCase();
     const isImage = ['jpg','jpeg','png','gif','webp'].includes(ext);
@@ -6229,9 +6310,10 @@ function buildFileHtml(file_url, file_name) {{
             </a>
         </div>`;
     }} else if (isVideo) {{
+        const posterAttr = file_thumb_url ? ` poster="${{file_thumb_url}}"` : '';
         return `<div style="margin-top:5px;border-radius:8px;overflow:hidden;max-width:260px;background:#000;position:relative;">
-            <video controls preload="metadata" style="display:block;max-width:260px;max-height:200px;border-radius:8px;width:100%;"
-                poster="">
+            <video preload="metadata" playsinline${{posterAttr}} style="display:block;max-width:260px;max-height:200px;border-radius:8px;width:100%;cursor:pointer;"
+                onclick="if(this.requestFullscreen){{this.requestFullscreen();}}else if(this.webkitRequestFullscreen){{this.webkitRequestFullscreen();}}this.controls=true;this.play();">
                 <source src="${{file_url}}" type="video/${{ext === 'mov' ? 'quicktime' : ext}}">
             </video>
         </div>`;
@@ -6252,7 +6334,7 @@ function renderMsg(m) {{
     const ts = m.ts_display || '';
     const txt = m.comment ? m.comment.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
     const txtHtml = txt ? `<div class="tg-bubble-text">${{txt}}</div>` : '';
-    const fHtml = buildFileHtml(m.file_url, m.file_name);
+    const fHtml = buildFileHtml(m.file_url, m.file_name, m.file_thumb_url);
 
     if (isMe) {{
         return `<div class="tg-msg-row tg-mine" id="msg-${{m.id}}">
@@ -6498,7 +6580,7 @@ def student_class_messages(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority, file_url, file_name
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority, file_url, file_name, file_thumb_url
         FROM class_comments
         WHERE class_id=%s AND school_id=%s AND id>%s
         ORDER BY created_at ASC LIMIT 30
@@ -6526,6 +6608,7 @@ def student_class_messages(class_id):
             "is_priority": r.get("is_priority") or False,
             "file_url": r.get("file_url") or "",
             "file_name": r.get("file_name") or "",
+            "file_thumb_url": r.get("file_thumb_url") or "",
         })
     return jsonify({"messages": result})
 
@@ -6545,6 +6628,7 @@ def student_post_comment(class_id):
     # Support both JSON (text only) and multipart (file + optional text)
     file_url = None
     file_name = None
+    file_thumb_url = None
     if request.content_type and 'multipart' in request.content_type:
         comment = (request.form.get("comment") or "").strip()
         f = request.files.get("file")
@@ -6552,9 +6636,11 @@ def student_post_comment(class_id):
             filename = secure_filename(f.filename)
             file_bytes = f.read()
             content_type = f.content_type or "application/octet-stream"
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             storage_name = f"class_{class_id}/{student_db_id}_{int(datetime.now().timestamp())}_{filename}"
             file_url = supabase_upload(storage_name, file_bytes, content_type)
             file_name = filename
+            file_thumb_url = maybe_generate_and_upload_thumb(storage_name, file_bytes, ext)
     else:
         data = request.get_json(silent=True) or {}
         comment = (data.get("comment") or "").strip()
@@ -6573,9 +6659,9 @@ def student_post_comment(class_id):
     cur = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type, file_url, file_name)
-            VALUES (%s, %s, %s, %s, %s, %s, 'student', %s, %s)
-        """, (school_id, class_id, student_db_id, student_row["full_name"], student_row["image_file"], comment, file_url, file_name))
+            INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type, file_url, file_name, file_thumb_url)
+            VALUES (%s, %s, %s, %s, %s, %s, 'student', %s, %s, %s)
+        """, (school_id, class_id, student_db_id, student_row["full_name"], student_row["image_file"], comment, file_url, file_name, file_thumb_url))
         conn.commit()
         cur.execute("SELECT id, created_at FROM class_comments WHERE school_id=%s AND class_id=%s AND student_db_id=%s ORDER BY id DESC LIMIT 1", (school_id, class_id, student_db_id))
         new_row = cur.fetchone()
@@ -6599,6 +6685,7 @@ def student_post_comment(class_id):
         "poster_type": "student",
         "file_url": file_url or "",
         "file_name": file_name or "",
+        "file_thumb_url": file_thumb_url or "",
         "is_priority": False,
     }})
 
@@ -6667,7 +6754,7 @@ def teacher_class_feed(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, file_url, file_name, file_thumb_url
         FROM class_comments
         WHERE class_id=%s AND school_id=%s
         ORDER BY created_at ASC LIMIT 80
@@ -6694,6 +6781,7 @@ def teacher_class_feed(class_id):
             ts_str = str(ts)[:16]
         txt = m["comment"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         mid = m["id"]
+        fhtml = render_file_html(m.get("file_url"), m.get("file_name"), m.get("file_thumb_url"))
         is_me = (m.get("poster_type") == "teacher" and m.get("teacher_id_fk") == teacher_id)
         pr = m.get("is_priority", False)
         pring = "border:2px solid #f59e0b;box-shadow:0 0 10px rgba(245,158,11,0.3);" if pr else ""
@@ -6703,7 +6791,7 @@ def teacher_class_feed(class_id):
         if is_me:
             return (f'<div class="tg-msg-row tg-mine" id="msg-{mid}">' +
                     f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}" onmouseenter="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=1)" onmouseleave="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=0)">' +
-                    f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>' +
+                    f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str} ✓✓</div>{priority_btn}{del_btn}</div></div>')
         else:
             name = m["student_name"]
@@ -6714,7 +6802,7 @@ def teacher_class_feed(class_id):
                     f'<div class="tg-av-wrap"><div style="display:contents;">{av}</div></div>' +
                     f'<div><div class="tg-sender-name" style="color:{nc};">{name}</div>' +
                     f'<div class="tg-bubble tg-bubble-theirs" style="position:relative;{pring}" onmouseenter="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=1)" onmouseleave="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=0)">' +
-                    f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>' +
+                    f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str}</div>{priority_btn}{del_btn}</div></div></div>')
 
     msgs_html = "".join(_msg_html_teacher(m) for m in messages)
@@ -6888,7 +6976,7 @@ function autoResize(el) {{
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }}
 
-function buildFileHtml(file_url, file_name) {{
+function buildFileHtml(file_url, file_name, file_thumb_url) {{
     if (!file_url) return '';
     const ext = (file_name || '').split('.').pop().toLowerCase();
     const isImage = ['jpg','jpeg','png','gif','webp'].includes(ext);
@@ -6896,8 +6984,10 @@ function buildFileHtml(file_url, file_name) {{
     if (isImage) {{
         return `<div style="margin-top:5px;"><a href="${{file_url}}" target="_blank"><img src="${{file_url}}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;object-fit:cover;"></a></div>`;
     }} else if (isVideo) {{
+        const posterAttr = file_thumb_url ? ` poster="${{file_thumb_url}}"` : '';
         return `<div style="margin-top:5px;border-radius:8px;overflow:hidden;max-width:260px;background:#000;">
-            <video controls preload="metadata" style="display:block;max-width:260px;max-height:200px;border-radius:8px;width:100%;">
+            <video preload="metadata" playsinline${{posterAttr}} style="display:block;max-width:260px;max-height:200px;border-radius:8px;width:100%;cursor:pointer;"
+                onclick="if(this.requestFullscreen){{this.requestFullscreen();}}else if(this.webkitRequestFullscreen){{this.webkitRequestFullscreen();}}this.controls=true;this.play();">
                 <source src="${{file_url}}" type="video/${{ext === 'mov' ? 'quicktime' : ext}}">
             </video>
         </div>`;
@@ -6915,7 +7005,7 @@ function renderMsg(m) {{
     const ts = m.ts_display || '';
     const txt = (m.comment || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const txtHtml = txt ? `<div class="tg-bubble-text">${{txt}}</div>` : '';
-    const fHtml = buildFileHtml(m.file_url, m.file_name);
+    const fHtml = buildFileHtml(m.file_url, m.file_name, m.file_thumb_url);
     const isMe = m.poster_type === 'teacher' && m.teacher_id_fk === TEACHER_ID;
 
     if (isMe) {{
@@ -7124,7 +7214,7 @@ def teacher_class_messages(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, file_url, file_name, file_thumb_url
         FROM class_comments
         WHERE class_id=%s AND school_id=%s AND id>%s
         ORDER BY created_at ASC LIMIT 30
@@ -7149,6 +7239,9 @@ def teacher_class_messages(class_id):
             "ts_display": ts_display,
             "poster_type": r.get("poster_type") or "student",
             "teacher_id_fk": r.get("teacher_id_fk"),
+            "file_url": r.get("file_url") or "",
+            "file_name": r.get("file_name") or "",
+            "file_thumb_url": r.get("file_thumb_url") or "",
         })
     return jsonify({"messages": result})
 
@@ -7351,7 +7444,7 @@ def student_dm_page(classmate_db_id):
 
     # Fetch conversation
     cur.execute("""
-        SELECT id, sender_db_id, sender_name, sender_image, message, created_at, is_read, file_url, file_name
+        SELECT id, sender_db_id, sender_name, sender_image, message, created_at, is_read, file_url, file_name, file_thumb_url
         FROM direct_messages
         WHERE school_id=%s
           AND ((sender_db_id=%s AND receiver_db_id=%s) OR (sender_db_id=%s AND receiver_db_id=%s))
@@ -7377,7 +7470,8 @@ def student_dm_page(classmate_db_id):
         mid = m["id"]
         furl = m.get("file_url") or ""
         fname = m.get("file_name") or ""
-        fhtml = render_file_html(furl, fname)
+        fthumb = m.get("file_thumb_url") or ""
+        fhtml = render_file_html(furl, fname, fthumb)
         txt_html = f'<div class="tg-bubble-text">{txt}</div>' if txt else ''
         if is_me:
             return f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
@@ -7586,6 +7680,7 @@ def student_dm_send(classmate_db_id):
     # Support multipart (file) or JSON (text)
     file_url = None
     file_name = None
+    file_thumb_url = None
     if request.content_type and 'multipart' in request.content_type:
         message = (request.form.get("message") or "").strip()
         f = request.files.get("file")
@@ -7593,9 +7688,11 @@ def student_dm_send(classmate_db_id):
             fname = secure_filename(f.filename)
             file_bytes = f.read()
             content_type = f.content_type or "application/octet-stream"
+            ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
             storage_name = f"dm_{student_db_id}_{classmate_db_id}_{int(datetime.now().timestamp())}_{fname}"
             file_url = supabase_upload(storage_name, file_bytes, content_type)
             file_name = fname
+            file_thumb_url = maybe_generate_and_upload_thumb(storage_name, file_bytes, ext)
     else:
         data = request.get_json(silent=True) or {}
         message = (data.get("message") or "").strip()
@@ -7611,9 +7708,9 @@ def student_dm_send(classmate_db_id):
 
     me = get_student_row_by_db_id(student_db_id)
     cur.execute("""
-        INSERT INTO direct_messages (school_id, class_id, sender_db_id, receiver_db_id, sender_name, sender_image, message, file_url, file_name)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-    """, (school_id, class_id, student_db_id, classmate_db_id, me["full_name"], me["image_file"], message, file_url, file_name))
+        INSERT INTO direct_messages (school_id, class_id, sender_db_id, receiver_db_id, sender_name, sender_image, message, file_url, file_name, file_thumb_url)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (school_id, class_id, student_db_id, classmate_db_id, me["full_name"], me["image_file"], message, file_url, file_name, file_thumb_url))
     new_id = cur.fetchone()["id"]
     conn.commit()
     conn.close()
@@ -7631,7 +7728,7 @@ def student_dm_poll(classmate_db_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, sender_db_id, sender_name, sender_image, message, created_at, file_url, file_name
+        SELECT id, sender_db_id, sender_name, sender_image, message, created_at, file_url, file_name, file_thumb_url
         FROM direct_messages
         WHERE school_id=%s
           AND ((sender_db_id=%s AND receiver_db_id=%s) OR (sender_db_id=%s AND receiver_db_id=%s))
@@ -7654,7 +7751,7 @@ def student_dm_poll(classmate_db_id):
         ts_str = ts.strftime("%I:%M %p") if hasattr(ts, "strftime") else str(ts)[:16]
         txt = m["message"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
         mid = m["id"]
-        fhtml = render_file_html(m.get("file_url"), m.get("file_name"))
+        fhtml = render_file_html(m.get("file_url"), m.get("file_name"), m.get("file_thumb_url"))
         if is_me:
             html = f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
                 <div class="tg-bubble tg-bubble-mine" style="position:relative;">
@@ -7695,6 +7792,7 @@ def teacher_post_comment(class_id):
 
     file_url = None
     file_name = None
+    file_thumb_url = None
     if request.content_type and 'multipart' in request.content_type:
         comment = (request.form.get("comment") or "").strip()
         f = request.files.get("file")
@@ -7702,9 +7800,11 @@ def teacher_post_comment(class_id):
             filename = secure_filename(f.filename)
             file_bytes = f.read()
             content_type = f.content_type or "application/octet-stream"
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             storage_name = f"class_{class_id}/teacher_{teacher_id}_{int(datetime.now().timestamp())}_{filename}"
             file_url = supabase_upload(storage_name, file_bytes, content_type)
             file_name = filename
+            file_thumb_url = maybe_generate_and_upload_thumb(storage_name, file_bytes, ext)
     else:
         data = request.get_json(silent=True) or {}
         comment = (data.get("comment") or "").strip()
@@ -7723,9 +7823,9 @@ def teacher_post_comment(class_id):
     cur = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type, teacher_id_fk, file_url, file_name)
-            VALUES (%s, %s, %s, %s, %s, %s, 'teacher', %s, %s, %s)
-        """, (school_id, class_id, 0, teacher_name, teacher_photo, comment, teacher_id, file_url, file_name))
+            INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type, teacher_id_fk, file_url, file_name, file_thumb_url)
+            VALUES (%s, %s, %s, %s, %s, %s, 'teacher', %s, %s, %s, %s)
+        """, (school_id, class_id, 0, teacher_name, teacher_photo, comment, teacher_id, file_url, file_name, file_thumb_url))
         conn.commit()
         cur.execute("SELECT id, created_at FROM class_comments WHERE school_id=%s AND class_id=%s AND teacher_id_fk=%s ORDER BY id DESC LIMIT 1", (school_id, class_id, teacher_id))
         new_row = cur.fetchone()
@@ -7748,6 +7848,7 @@ def teacher_post_comment(class_id):
         "poster_type": "teacher",
         "file_url": file_url or "",
         "file_name": file_name or "",
+        "file_thumb_url": file_thumb_url or "",
         "is_priority": False,
     }})
 
