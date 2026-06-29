@@ -7131,6 +7131,50 @@ def student_class_priority_message(class_id):
 # =========================================================
 # DIRECT MESSAGES — Student ↔ Student within class
 # =========================================================
+# ── FIX: static-path DM routes MUST come before the dynamic <int:classmate_db_id> route
+# so Flask doesn't try to cast "delete" or "unread-counts" as integers and 404.
+
+@app.route("/student/dm/delete/<int:msg_id>", methods=["POST"])
+def student_dm_delete(msg_id):
+    protect = student_required()
+    if protect:
+        return jsonify({"ok": False})
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT sender_db_id FROM direct_messages WHERE id=%s AND school_id=%s", (msg_id, school_id))
+    row = cur.fetchone()
+    if not row or row["sender_db_id"] != student_db_id:
+        conn.close()
+        return jsonify({"ok": False, "error": "Not authorized."})
+    cur.execute("DELETE FROM direct_messages WHERE id=%s", (msg_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/student/dm/unread-counts")
+def student_dm_unread_counts():
+    """Returns {sender_db_id: count} for unread DMs for the logged-in student."""
+    protect = student_required()
+    if protect:
+        return jsonify({})
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT sender_db_id, COUNT(*) as cnt
+        FROM direct_messages
+        WHERE receiver_db_id=%s AND school_id=%s AND is_read=FALSE
+        GROUP BY sender_db_id
+    """, (student_db_id, school_id))
+    rows = cur.fetchall()
+    conn.close()
+    return jsonify({str(r["sender_db_id"]): r["cnt"] for r in rows})
+
+
 @app.route("/student/dm/<int:classmate_db_id>")
 def student_dm_page(classmate_db_id):
     protect = student_required()
@@ -7141,15 +7185,16 @@ def student_dm_page(classmate_db_id):
     if student_db_id == classmate_db_id:
         return redirect("/student")
 
-    # Verify they share a class
+    # Verify they share a class (scoped to this school)
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
         SELECT sc1.class_id_fk AS class_id FROM student_classes sc1
         JOIN student_classes sc2 ON sc1.class_id_fk = sc2.class_id_fk
-        WHERE sc1.student_id_fk=%s AND sc2.student_id_fk=%s
+        JOIN classes c ON c.id = sc1.class_id_fk
+        WHERE sc1.student_id_fk=%s AND sc2.student_id_fk=%s AND c.school_id=%s
         LIMIT 1
-    """, (student_db_id, classmate_db_id))
+    """, (student_db_id, classmate_db_id, school_id))
     shared = cur.fetchone()
     if not shared:
         conn.close()
@@ -7276,7 +7321,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
     <input type="file" id="fileInput" style="display:none" onchange="previewFile(this)">
     <button class="tg-attach-btn" onclick="document.getElementById('fileInput').click()" title="Attach file">📎</button>
     <div style="flex:1;display:flex;flex-direction:column;gap:4px;">
-        <div id="filePreview" style="display:none;background:#182533;border-radius:8px;padding:6px 10px;font-size:12px;color:#5b9bd9;display:flex;align-items:center;gap:6px;"></div>
+        <div id="filePreview" style="display:none;background:#182533;border-radius:8px;padding:6px 10px;font-size:12px;color:#5b9bd9;align-items:center;gap:6px;"></div>
         <textarea class="tg-input" id="msgInput" placeholder="Message {them_name}..." rows="1"
             onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendMsg();}}"></textarea>
     </div>
@@ -7295,6 +7340,7 @@ function previewFile(input) {{
     pendingFile = f;
     const preview = document.getElementById('filePreview');
     preview.style.display = 'flex';
+    preview.style.alignItems = 'center';
     preview.innerHTML = `📎 ${{f.name}} <button onclick="clearFile()" style="background:none;border:none;color:#f87171;cursor:pointer;margin-left:auto;">✕</button>`;
 }}
 
@@ -7367,14 +7413,15 @@ def student_dm_send(classmate_db_id):
     if student_db_id == classmate_db_id:
         return jsonify({"ok": False, "error": "Cannot message yourself."})
 
-    # Verify shared class
+    # Verify shared class (scoped to this school)
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
         SELECT sc1.class_id_fk AS class_id FROM student_classes sc1
         JOIN student_classes sc2 ON sc1.class_id_fk = sc2.class_id_fk
-        WHERE sc1.student_id_fk=%s AND sc2.student_id_fk=%s LIMIT 1
-    """, (student_db_id, classmate_db_id))
+        JOIN classes c ON c.id = sc1.class_id_fk
+        WHERE sc1.student_id_fk=%s AND sc2.student_id_fk=%s AND c.school_id=%s LIMIT 1
+    """, (student_db_id, classmate_db_id, school_id))
     shared = cur.fetchone()
     if not shared:
         conn.close()
@@ -7485,47 +7532,6 @@ def student_dm_poll(classmate_db_id):
             </div>"""
         result.append({"id": mid, "html": html})
     return jsonify(result)
-
-
-@app.route("/student/dm/delete/<int:msg_id>", methods=["POST"])
-def student_dm_delete(msg_id):
-    protect = student_required()
-    if protect:
-        return jsonify({"ok": False})
-    student_db_id = get_logged_student_db_id()
-    school_id = get_current_school_id()
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT sender_db_id FROM direct_messages WHERE id=%s AND school_id=%s", (msg_id, school_id))
-    row = cur.fetchone()
-    if not row or row["sender_db_id"] != student_db_id:
-        conn.close()
-        return jsonify({"ok": False, "error": "Not authorized."})
-    cur.execute("DELETE FROM direct_messages WHERE id=%s", (msg_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-
-@app.route("/student/dm/unread-counts")
-def student_dm_unread_counts():
-    """Returns {sender_db_id: count} for unread DMs for the logged-in student."""
-    protect = student_required()
-    if protect:
-        return jsonify({})
-    student_db_id = get_logged_student_db_id()
-    school_id = get_current_school_id()
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT sender_db_id, COUNT(*) as cnt
-        FROM direct_messages
-        WHERE receiver_db_id=%s AND school_id=%s AND is_read=FALSE
-        GROUP BY sender_db_id
-    """, (student_db_id, school_id))
-    rows = cur.fetchall()
-    conn.close()
-    return jsonify({str(r["sender_db_id"]): r["cnt"] for r in rows})
 
 
 @app.route("/teacher/class/<int:class_id>/comment", methods=["POST"])
