@@ -7000,8 +7000,9 @@ def teacher_class_feed(class_id):
             colors2 = ["#5b9bd9","#e8699a","#a876d8","#f4a623","#52c97f","#4db8d4","#e8645b","#7986cb"]
             nc = colors2[sum(ord(c) for c in name) % len(colors2)]
             av = _tg_avatar(m["student_image"], name, 34)
+            sid = m["student_db_id"]
             return (f'<div class="tg-msg-row tg-theirs" id="msg-{mid}">' +
-                    f'<div class="tg-av-wrap"><div style="display:contents;">{av}</div></div>' +
+                    f'<div class="tg-av-wrap"><a href="/teacher/class/{class_id}/student-profile/{sid}" style="display:contents;">{av}</a></div>' +
                     f'<div><div class="tg-sender-name" style="color:{nc};">{name}</div>' +
                     f'<div class="tg-bubble tg-bubble-theirs" style="position:relative;{pring}" onclick="toggleMsgSelect(event,this)">' +
                     f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>{fhtml}' +
@@ -7227,7 +7228,7 @@ function renderMsg(m) {{
             ? `<img src="${{m.student_image}}" style="width:34px;height:34px;border-radius:50%;object-fit:cover;">`
             : `<div class="tg-letter-av" style="width:34px;height:34px;background:${{nc}};">${{m.student_name[0].toUpperCase()}}</div>`;
         return `<div class="tg-msg-row tg-theirs" id="msg-${{m.id}}">
-            <div class="tg-av-wrap">${{avStyle}}</div>
+            <div class="tg-av-wrap"><a href="/teacher/class/{class_id}/student-profile/${{m.student_db_id}}" style="display:contents;">${{avStyle}}</a></div>
             <div>
                 <div class="tg-sender-name" style="color:${{nc}};">${{m.student_name}}</div>
                 <div class="tg-bubble tg-bubble-theirs" style="position:relative;" onclick="toggleMsgSelect(event,this)">
@@ -7735,7 +7736,7 @@ def student_dm_page(classmate_db_id):
         else:
             av = _tg_avatar(m["sender_image"], m["sender_name"], 34)
             return f"""<div class="tg-msg-row tg-theirs" id="dm-{mid}">
-                <div class="tg-av-wrap">{av}</div>
+                <div class="tg-av-wrap"><a href="/student/classmate/{classmate_db_id}" style="display:contents;">{av}</a></div>
                 <div>
                     <div class="tg-bubble tg-bubble-theirs">
                         {txt_html}{fhtml}
@@ -7788,11 +7789,13 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 <body>
 <div class="tg-topbar">
     <a href="/student/classmate/{classmate_db_id}" class="tg-back">←</a>
-    {them_av}
-    <div class="tg-topbar-info">
-        <div class="tg-topbar-title">{them_name}</div>
-        <div class="tg-topbar-sub">Direct Message</div>
-    </div>
+    <a href="/student/classmate/{classmate_db_id}" style="display:contents;text-decoration:none;color:inherit;">
+        {them_av}
+        <div class="tg-topbar-info">
+            <div class="tg-topbar-title">{them_name}</div>
+            <div class="tg-topbar-sub">Direct Message</div>
+        </div>
+    </a>
 </div>
 
 <div class="tg-chat-bg" id="chatBox">
@@ -8067,7 +8070,7 @@ def student_dm_poll(classmate_db_id):
         else:
             av = _tg_avatar(m["sender_image"], m["sender_name"], 34)
             html = f"""<div class="tg-msg-row tg-theirs" id="dm-{mid}">
-                <div class="tg-av-wrap">{av}</div>
+                <div class="tg-av-wrap"><a href="/student/classmate/{classmate_db_id}" style="display:contents;">{av}</a></div>
                 <div>
                     <div class="tg-bubble tg-bubble-theirs">
                         {'<div class="tg-bubble-text">' + txt + '</div>' if txt else ''}
