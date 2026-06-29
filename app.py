@@ -6066,15 +6066,19 @@ def student_class_feed(class_id):
         pname = priority_row["student_name"]
         pid = priority_row["id"]
         priority_banner_html = (
-            '<div id="priorityBanner" onclick="scrollToPriority(' + str(pid) + ')" '
+            '<div id="priorityBanner" data-pin-id="' + str(pid) + '" '
             'style="background:linear-gradient(90deg,#92400e,#78350f);border-bottom:1px solid #d97706;'
-            'padding:8px 16px;display:flex;align-items:center;gap:10px;cursor:pointer;flex-shrink:0;">'
-            '<span style="font-size:16px;">📌</span>'
-            '<div style="flex:1;min-width:0;">'
-            '<div style="font-size:10px;color:#fbbf24;font-weight:700;text-transform:uppercase;">High Priority — ' + pname + '</div>'
+            'padding:8px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0;">'
+            '<span style="font-size:16px;cursor:pointer;" onclick="scrollToPriority(' + str(pid) + ')">📌</span>'
+            '<div style="flex:1;min-width:0;cursor:pointer;" onclick="scrollToPriority(' + str(pid) + ')">'
+            '<div style="font-size:10px;color:#fbbf24;font-weight:700;text-transform:uppercase;">Pinned by teacher — ' + pname + '</div>'
             '<div style="font-size:13px;color:#fef3c7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + ptxt + '</div>'
-            '</div></div>'
-        ) 
+            '</div>'
+            '<button onclick="dismissServerPin(' + str(pid) + ')" title="Dismiss for me" '
+            'style="background:none;border:none;color:#92400e;cursor:pointer;font-size:18px;padding:0 4px;flex-shrink:0;line-height:1;" '
+            'onmouseenter="this.style.color=\'#fef3c7\'" onmouseleave="this.style.color=\'#92400e\'">✕</button>'
+            '</div>'
+        )
 
     # Build initial messages HTML (with delete, priority ring, DM button)
     def _msg_html(m, is_me):
@@ -6646,6 +6650,17 @@ pollMessages();
 pollTimer = setInterval(pollMessages, 1000);
 
 // Poll for priority message changes every 8s
+// ── Teacher pin dismiss helpers (localStorage, per-class) ──
+const DISMISS_KEY = 'class_pin_dismissed_{class_id}';
+function getDismissedPinId() {{
+    try {{ return parseInt(localStorage.getItem(DISMISS_KEY) || '0', 10) || null; }} catch(e) {{ return null; }}
+}}
+function dismissServerPin(msgId) {{
+    try {{ localStorage.setItem(DISMISS_KEY, String(msgId)); }} catch(e) {{}}
+    const banner = document.getElementById('priorityBanner');
+    if (banner) banner.remove();
+}}
+
 async function pollPriority() {{
     try {{
         const res = await fetch('/student/class/{class_id}/priority-message');
@@ -6653,8 +6668,19 @@ async function pollPriority() {{
         const banner = document.getElementById('priorityBanner');
         const wrap = document.querySelector('.tg-messages-wrap');
         if (data.msg) {{
+            const mid = data.msg.id;
+            // If the user dismissed this exact pin, don't re-show it
+            if (getDismissedPinId() === mid) {{
+                if (banner) banner.remove();
+                return;
+            }}
+            // If teacher pinned a NEW message, clear the old dismiss so it shows
+            const prevDismissed = getDismissedPinId();
+            if (prevDismissed && prevDismissed !== mid) {{
+                try {{ localStorage.removeItem(DISMISS_KEY); }} catch(e) {{}}
+            }}
             const ptxt = data.msg.text.substring(0, 120);
-            const newHtml = `<div id="priorityBanner" onclick="scrollToPriority(${{data.msg.id}})" style="background:linear-gradient(90deg,#92400e,#78350f);border-bottom:1px solid #d97706;padding:8px 16px;display:flex;align-items:center;gap:10px;cursor:pointer;flex-shrink:0;"><span style="font-size:16px;">📌</span><div style="flex:1;min-width:0;"><div style="font-size:10px;color:#fbbf24;font-weight:700;text-transform:uppercase;">High Priority — ${{data.msg.name}}</div><div style="font-size:13px;color:#fef3c7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${{ptxt}}</div></div></div>`;
+            const newHtml = `<div id="priorityBanner" data-pin-id="${{mid}}" style="background:linear-gradient(90deg,#92400e,#78350f);border-bottom:1px solid #d97706;padding:8px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0;"><span style="font-size:16px;cursor:pointer;" onclick="scrollToPriority(${{mid}})">📌</span><div style="flex:1;min-width:0;cursor:pointer;" onclick="scrollToPriority(${{mid}})"><div style="font-size:10px;color:#fbbf24;font-weight:700;text-transform:uppercase;">Pinned by teacher — ${{data.msg.name}}</div><div style="font-size:13px;color:#fef3c7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${{ptxt}}</div></div><button onclick="dismissServerPin(${{mid}})" title="Dismiss for me" style="background:none;border:none;color:#92400e;cursor:pointer;font-size:18px;padding:0 4px;flex-shrink:0;line-height:1;" onmouseenter="this.style.color='#fef3c7'" onmouseleave="this.style.color='#92400e'">✕</button></div>`;
             if (banner) {{
                 banner.outerHTML = newHtml;
             }} else {{
@@ -6667,6 +6693,14 @@ async function pollPriority() {{
     }} catch(e) {{}}
 }}
 setInterval(pollPriority, 8000);
+
+// On load: hide the banner immediately if this pin was already dismissed by this user
+(function() {{
+    const banner = document.getElementById('priorityBanner');
+    if (!banner) return;
+    const pinId = parseInt(banner.getAttribute('data-pin-id') || '0', 10);
+    if (pinId && getDismissedPinId() === pinId) banner.remove();
+}})();
 
 function scrollToPriority(msgId) {{
     const el = document.getElementById('msg-' + msgId);
@@ -6731,6 +6765,10 @@ document.addEventListener('click', () => {{
                 <span style="font-size:15px;">✅</span> Select
             </div>
             <div style="height:1px;background:#2b3c4e;margin:3px 0;"></div>
+            <div class="_ctx-item" id="_ctxPin" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;font-size:14px;color:#fbbf24;transition:background 0.12s;">
+                <span style="font-size:15px;">📌</span> <span id="_ctxPinLabel">Pin for me</span>
+            </div>
+            <div style="height:1px;background:#2b3c4e;margin:3px 0;"></div>
             <div class="_ctx-item" id="_ctxDelete" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;font-size:14px;color:#f87171;transition:background 0.12s;">
                 <span style="font-size:15px;">🗑️</span> Delete
             </div>`;
@@ -6746,14 +6784,63 @@ document.addEventListener('click', () => {{
     let _ctxTargetMsgId = null;
     const menu = document.getElementById('_ctxMenu');
 
+    // ── Personal pin helpers (localStorage, per-class) ──
+    const PIN_KEY = 'class_pin_{class_id}';
+    function getMyPin() {{
+        try {{ return JSON.parse(localStorage.getItem(PIN_KEY) || 'null'); }} catch(e) {{ return null; }}
+    }}
+    function setMyPin(msgId, text, name) {{
+        localStorage.setItem(PIN_KEY, JSON.stringify({{id: msgId, text, name}}));
+        renderMyPinBanner();
+    }}
+    function clearMyPin() {{
+        localStorage.removeItem(PIN_KEY);
+        renderMyPinBanner();
+    }}
+    function renderMyPinBanner() {{
+        const pin = getMyPin();
+        let existing = document.getElementById('_myPinBanner');
+        const wrap = document.querySelector('.tg-messages-wrap');
+        const chatBg = document.getElementById('chatBg');
+        if (pin) {{
+            const ptxt = (pin.text || '').substring(0, 100);
+            const html = `<div id="_myPinBanner" style="background:linear-gradient(90deg,#1e3a5f,#162c47);border-bottom:1px solid #2b5278;padding:8px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0;">
+                <span style="font-size:16px;cursor:pointer;" onclick="scrollToPriority(${{pin.id}})">📌</span>
+                <div style="flex:1;min-width:0;cursor:pointer;" onclick="scrollToPriority(${{pin.id}})">
+                    <div style="font-size:10px;color:#5b9bd9;font-weight:700;text-transform:uppercase;">Pinned by you — ${{pin.name}}</div>
+                    <div style="font-size:13px;color:#c8d8e8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${{ptxt}}</div>
+                </div>
+                <button onclick="clearMyPin()" title="Unpin" style="background:none;border:none;color:#5a6a7a;cursor:pointer;font-size:18px;padding:0 4px;flex-shrink:0;line-height:1;" onmouseenter="this.style.color='#f87171'" onmouseleave="this.style.color='#5a6a7a'">✕</button>
+            </div>`;
+            if (existing) {{
+                existing.outerHTML = html;
+            }} else {{
+                // Insert above chatBg but below the server priority banner (if any)
+                const serverBanner = document.getElementById('priorityBanner');
+                const ref = serverBanner ? serverBanner.nextSibling : chatBg;
+                if (wrap && ref) wrap.insertBefore(document.createRange().createContextualFragment(html), ref);
+                else if (wrap && chatBg) wrap.insertBefore(document.createRange().createContextualFragment(html), chatBg);
+            }}
+        }} else {{
+            if (existing) existing.remove();
+        }}
+    }}
+    // Show personal pin on load
+    renderMyPinBanner();
+
     function showCtxMenu(x, y, bubbleEl, msgId) {{
         _ctxTargetBubble = bubbleEl;
         _ctxTargetMsgId = msgId;
 
+        // Update pin label: "Unpin" if this msg is already personally pinned
+        const pin = getMyPin();
+        const pinLabel = document.getElementById('_ctxPinLabel');
+        if (pinLabel) pinLabel.textContent = (pin && pin.id === msgId) ? 'Unpin for me' : 'Pin for me';
+
         // Position: keep inside viewport
         menu.style.display = 'block';
         const vw = window.innerWidth, vh = window.innerHeight;
-        const mw = menu.offsetWidth || 160, mh = menu.offsetHeight || 90;
+        const mw = menu.offsetWidth || 160, mh = menu.offsetHeight || 110;
         menu.style.left = (x + mw > vw ? vw - mw - 8 : x) + 'px';
         menu.style.top  = (y + mh > vh ? vh - mh - 8 : y) + 'px';
 
@@ -6776,6 +6863,27 @@ document.addEventListener('click', () => {{
             if (!wasSelected) _ctxTargetBubble.classList.add('selected');
         }}
         hideCtxMenu();
+    }});
+
+    // Pin action (personal, localStorage)
+    document.getElementById('_ctxPin').addEventListener('click', () => {{
+        const id = _ctxTargetMsgId;
+        const bubble = _ctxTargetBubble;
+        hideCtxMenu();
+        if (!id) return;
+        const pin = getMyPin();
+        if (pin && pin.id === id) {{
+            clearMyPin();
+        }} else {{
+            // Extract text from the bubble
+            const textEl = bubble ? bubble.querySelector('.tg-bubble-text') : null;
+            const text = textEl ? textEl.textContent.trim() : '';
+            // Extract sender name from the row
+            const row = document.getElementById('msg-' + id);
+            const nameEl = row ? row.querySelector('.tg-sender-name') : null;
+            const name = nameEl ? nameEl.textContent.trim().split('\\n')[0].trim() : 'Message';
+            setMyPin(id, text, name);
+        }}
     }});
 
     // Delete action
@@ -7551,12 +7659,16 @@ function markPressMoved() {{
         m.style.cssText = [
             'position:fixed','z-index:9999','background:#1e2d3d','border:1px solid #2b4a6a',
             'border-radius:10px','box-shadow:0 8px 28px rgba(0,0,0,0.55)',
-            'padding:4px 0','min-width:160px','display:none','user-select:none',
+            'padding:4px 0','min-width:170px','display:none','user-select:none',
             'backdrop-filter:blur(4px)'
         ].join(';');
         m.innerHTML = `
             <div class="_ctx-item" id="_ctxSelect" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;font-size:14px;color:#c8d8e8;transition:background 0.12s;">
                 <span style="font-size:15px;">✅</span> Select
+            </div>
+            <div style="height:1px;background:#2b3c4e;margin:3px 0;"></div>
+            <div class="_ctx-item" id="_ctxPin" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;font-size:14px;color:#fbbf24;transition:background 0.12s;">
+                <span style="font-size:15px;">📌</span> <span id="_ctxPinLabel">Pin message</span>
             </div>
             <div style="height:1px;background:#2b3c4e;margin:3px 0;"></div>
             <div class="_ctx-item" id="_ctxDelete" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;font-size:14px;color:#f87171;transition:background 0.12s;">
@@ -7573,12 +7685,23 @@ function markPressMoved() {{
     let _ctxTargetMsgId = null;
     const menu = document.getElementById('_ctxMenu');
 
+    // Track currently pinned msg id (read from server banner rendered on load)
+    let _pinnedMsgId = null;
+    const _serverBanner = document.getElementById('priorityBanner');
+    if (_serverBanner) {{
+        const _bm = (_serverBanner.getAttribute('onclick') || '').match(/\d+/);
+        if (_bm) _pinnedMsgId = parseInt(_bm[0], 10);
+    }}
+
     function showCtxMenu(x, y, bubbleEl, msgId) {{
         _ctxTargetBubble = bubbleEl;
         _ctxTargetMsgId = msgId;
+        // Show "Unpin" if already pinned, else "Pin message"
+        const pinLabel = document.getElementById('_ctxPinLabel');
+        if (pinLabel) pinLabel.textContent = (_pinnedMsgId === msgId) ? 'Unpin message' : 'Pin message';
         menu.style.display = 'block';
         const vw = window.innerWidth, vh = window.innerHeight;
-        const mw = menu.offsetWidth || 160, mh = menu.offsetHeight || 90;
+        const mw = menu.offsetWidth || 170, mh = menu.offsetHeight || 120;
         menu.style.left = (x + mw > vw ? vw - mw - 8 : x) + 'px';
         menu.style.top  = (y + mh > vh ? vh - mh - 8 : y) + 'px';
         document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
@@ -7598,6 +7721,16 @@ function markPressMoved() {{
             if (!wasSelected) _ctxTargetBubble.classList.add('selected');
         }}
         hideCtxMenu();
+    }});
+
+    // Pin/Unpin — calls server setPriority endpoint (teacher-only backend)
+    document.getElementById('_ctxPin').addEventListener('click', async () => {{
+        const id = _ctxTargetMsgId;
+        hideCtxMenu();
+        if (!id || typeof setPriority !== 'function') return;
+        const isAlreadyPinned = (_pinnedMsgId === id);
+        _pinnedMsgId = isAlreadyPinned ? null : id;
+        await setPriority(id, isAlreadyPinned ? 0 : 1);
     }});
 
     document.getElementById('_ctxDelete').addEventListener('click', async () => {{
