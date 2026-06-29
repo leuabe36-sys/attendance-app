@@ -412,6 +412,12 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_dm_receiver ON direct_messages(receiver_db_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_dm_sender ON direct_messages(sender_db_id)")
 
+    # ── FILE ATTACHMENTS ──
+    cur.execute("ALTER TABLE class_comments ADD COLUMN IF NOT EXISTS file_url TEXT DEFAULT NULL")
+    cur.execute("ALTER TABLE class_comments ADD COLUMN IF NOT EXISTS file_name TEXT DEFAULT NULL")
+    cur.execute("ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS file_url TEXT DEFAULT NULL")
+    cur.execute("ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS file_name TEXT DEFAULT NULL")
+
     conn.commit()
     conn.close()
 
@@ -5774,7 +5780,7 @@ def student_class_feed(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority, file_url, file_name
         FROM class_comments
         WHERE class_id=%s AND school_id=%s
         ORDER BY created_at ASC
@@ -5814,15 +5820,28 @@ def student_class_feed(class_id):
                 ts_str = ts.strftime("%b %d, %I:%M %p")
         else:
             ts_str = str(ts)[:16]
-        txt = m["comment"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        txt = (m["comment"] or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         mid = m["id"]
         is_teacher = (m.get("poster_type") == "teacher")
         pr = m.get("is_priority", False)
         pring = "border:2px solid #f59e0b;box-shadow:0 0 10px rgba(245,158,11,0.3);" if pr else ""
+        # File attachment
+        furl = m.get("file_url") or ""
+        fname = m.get("file_name") or ""
+        ext = fname.rsplit(".", 1)[-1].lower() if fname else ""
+        if furl:
+            if ext in ("jpg", "jpeg", "png", "gif", "webp"):
+                fhtml = f'<div style="margin-top:5px;"><a href="{furl}" target="_blank"><img src="{furl}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;"></a></div>'
+            else:
+                icon = "🎬" if ext in ("mp4","mov","avi") else "📄"
+                fhtml = f'<div style="margin-top:5px;"><a href="{furl}" target="_blank" style="color:#5b9bd9;font-size:13px;text-decoration:none;">{icon} {fname or "Download file"}</a></div>'
+        else:
+            fhtml = ""
+        txt_html = f'<div class="tg-bubble-text">{txt}</div>' if txt else ''
         if is_me and not is_teacher:
             return (f'<div class="tg-msg-row tg-mine" id="msg-{mid}">' +
                     f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}">' +
-                    f'<div class="tg-bubble-text">{txt}</div>' +
+                    f'{txt_html}{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str} ✓✓</div>' +
                     f'<button onclick="deleteMsg({mid})" class="chat-del-btn">✕</button>' +
                     f'</div></div>')
@@ -5832,7 +5851,7 @@ def student_class_feed(class_id):
                     f'<div><div class="tg-sender-name" style="color:#a78bfa;">{m["student_name"]} ' +
                     f'<span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;margin-left:4px;">Teacher</span></div>' +
                     f'<div class="tg-bubble" style="max-width:min(420px,72vw);padding:8px 12px 4px;border-radius:4px 16px 16px 16px;background:#2d1b69;border:1px solid #4c1d95;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,0.25);{pring}">' +
-                    f'<div class="tg-bubble-text">{txt}</div>' +
+                    f'{txt_html}{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str}</div></div></div></div>')
         else:
             av = _tg_avatar(m["student_image"], m["student_name"], 34)
@@ -5843,7 +5862,7 @@ def student_class_feed(class_id):
                     f'<div><div class="tg-sender-name" style="color:{nc};">{m["student_name"]} ' +
                     f'<a href="/student/dm/{sid}" style="margin-left:6px;font-size:10px;background:#1e3a5f;color:#5b9bd9;padding:1px 7px;border-radius:6px;text-decoration:none;">&#128172; DM</a></div>' +
                     f'<div class="tg-bubble tg-bubble-theirs" style="{pring}">' +
-                    f'<div class="tg-bubble-text">{txt}</div>' +
+                    f'{txt_html}{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str}</div></div></div></div>')
 
     def _name_color(name):
@@ -6077,8 +6096,11 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
         <!-- COMPOSER -->
         <div class="tg-composer">
             <div class="tg-emoji-panel" id="emojiPanel">{emoji_btns}</div>
+            <div id="classFilePreview" style="display:none;background:#182533;margin:0 12px 4px;border-radius:8px;padding:6px 10px;font-size:12px;color:#5b9bd9;align-items:center;gap:6px;"></div>
             <div class="tg-composer-row">
                 <button class="tg-emoji-toggle" onclick="toggleEmoji()" title="Emoji">🙂</button>
+                <input type="file" id="classFileInput" style="display:none" onchange="previewClassFile(this)">
+                <button class="tg-emoji-toggle" onclick="document.getElementById('classFileInput').click()" title="Attach file" style="font-size:18px;">📎</button>
                 <textarea class="tg-input" id="msgInput" placeholder="Message {cname}…" rows="1"
                     oninput="autoResize(this)" onkeydown="handleKey(event)"></textarea>
                 <button class="tg-send-btn" id="sendBtn" onclick="sendMessage()" title="Send">
@@ -6171,12 +6193,24 @@ function nameColor(name) {{
 function renderMsg(m) {{
     const isMe = m.student_db_id === MY_DB_ID && m.poster_type !== 'teacher';
     const ts = m.ts_display || '';
-    const txt = m.comment.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const txt = m.comment ? m.comment.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
+    const txtHtml = txt ? `<div class="tg-bubble-text">${{txt}}</div>` : '';
+
+    let fHtml = '';
+    if (m.file_url) {{
+        const ext = (m.file_name || '').split('.').pop().toLowerCase();
+        if (['jpg','jpeg','png','gif','webp'].includes(ext)) {{
+            fHtml = `<div style="margin-top:5px;"><a href="${{m.file_url}}" target="_blank"><img src="${{m.file_url}}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;"></a></div>`;
+        }} else {{
+            const icon = ['mp4','mov','avi'].includes(ext) ? '🎬' : '📄';
+            fHtml = `<div style="margin-top:5px;"><a href="${{m.file_url}}" target="_blank" style="color:#5b9bd9;font-size:13px;text-decoration:none;">${{icon}} ${{m.file_name || 'Download file'}}</a></div>`;
+        }}
+    }}
 
     if (isMe) {{
         return `<div class="tg-msg-row tg-mine" id="msg-${{m.id}}">
             <div class="tg-bubble tg-bubble-mine">
-                <div class="tg-bubble-text">${{txt}}</div>
+                ${{txtHtml}}${{fHtml}}
                 <div class="tg-bubble-ts">${{ts}} ✓✓</div>
             </div>
         </div>`;
@@ -6188,7 +6222,7 @@ function renderMsg(m) {{
             <div>
                 <div class="tg-sender-name" style="color:#a78bfa;">${{m.student_name}} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;margin-left:4px;">Teacher</span></div>
                 <div class="tg-bubble" style="max-width:min(420px,72vw);padding:8px 12px 4px;border-radius:4px 16px 16px 16px;background:#2d1b69;border:1px solid #4c1d95;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,0.25);">
-                    <div class="tg-bubble-text">${{txt}}</div>
+                    ${{txtHtml}}${{fHtml}}
                     <div class="tg-bubble-ts">${{ts}}</div>
                 </div>
             </div>
@@ -6205,7 +6239,7 @@ function renderMsg(m) {{
             <div>
                 <div class="tg-sender-name" style="color:${{color}};">${{m.student_name}}</div>
                 <div class="tg-bubble tg-bubble-theirs">
-                    <div class="tg-bubble-text">${{txt}}</div>
+                    ${{txtHtml}}${{fHtml}}
                     <div class="tg-bubble-ts">${{ts}}</div>
                 </div>
             </div>
@@ -6213,23 +6247,45 @@ function renderMsg(m) {{
     }}
 }}
 
+// ── File attach for class chat ──
+let pendingClassFile = null;
+function previewClassFile(input) {{
+    const f = input.files[0];
+    if (!f) return;
+    pendingClassFile = f;
+    const preview = document.getElementById('classFilePreview');
+    preview.style.display = 'flex';
+    preview.innerHTML = `📎 ${{f.name}} <button onclick="clearClassFile()" style="background:none;border:none;color:#f87171;cursor:pointer;margin-left:auto;">✕</button>`;
+}}
+function clearClassFile() {{
+    pendingClassFile = null;
+    document.getElementById('classFileInput').value = '';
+    const preview = document.getElementById('classFilePreview');
+    preview.style.display = 'none';
+    preview.innerHTML = '';
+}}
+
 // ── Send message ──
 async function sendMessage() {{
     const input = document.getElementById('msgInput');
     const btn = document.getElementById('sendBtn');
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && !pendingClassFile) return;
 
     input.value = '';
     autoResize(input);
     btn.disabled = true;
     document.getElementById('emojiPanel').classList.remove('open');
 
+    const fd = new FormData();
+    if (text) fd.append('comment', text);
+    if (pendingClassFile) fd.append('file', pendingClassFile);
+    clearClassFile();
+
     try {{
         const res = await fetch('/student/class/{class_id}/comment', {{
             method: 'POST',
-            headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{comment: text}})
+            body: fd
         }});
         const data = await res.json();
         if (!data.ok) {{ showToast(data.error || 'Could not send'); input.value = text; }}
@@ -6385,7 +6441,7 @@ def student_class_messages(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority, file_url, file_name
         FROM class_comments
         WHERE class_id=%s AND school_id=%s AND id>%s
         ORDER BY created_at ASC LIMIT 30
@@ -6411,6 +6467,8 @@ def student_class_messages(class_id):
             "poster_type": r.get("poster_type") or "student",
             "teacher_id_fk": r.get("teacher_id_fk"),
             "is_priority": r.get("is_priority") or False,
+            "file_url": r.get("file_url") or "",
+            "file_name": r.get("file_name") or "",
         })
     return jsonify({"messages": result})
 
@@ -6427,20 +6485,37 @@ def student_post_comment(class_id):
     if not student_belongs_to_class(student_db_id, class_id):
         return ajax_err("You are not enrolled in this class.")
 
-    data = request.get_json(silent=True) or {}
-    comment = (data.get("comment") or "").strip()
-    if not comment:
-        return ajax_err("Comment cannot be empty.")
+    # Support both JSON (text only) and multipart (file + optional text)
+    file_url = None
+    file_name = None
+    if request.content_type and 'multipart' in request.content_type:
+        comment = (request.form.get("comment") or "").strip()
+        f = request.files.get("file")
+        if f and f.filename:
+            filename = secure_filename(f.filename)
+            file_bytes = f.read()
+            content_type = f.content_type or "application/octet-stream"
+            storage_name = f"class_{class_id}/{student_db_id}_{int(datetime.now().timestamp())}_{filename}"
+            file_url = supabase_upload(storage_name, file_bytes, content_type)
+            file_name = filename
+    else:
+        data = request.get_json(silent=True) or {}
+        comment = (data.get("comment") or "").strip()
+
+    if not comment and not file_url:
+        return ajax_err("Message cannot be empty.")
     if len(comment) > 500:
-        return ajax_err("Comment too long (max 500 characters).")
+        return ajax_err("Message too long (max 500 characters).")
+    if not comment:
+        comment = ""
 
     student_row = get_student_row_by_db_id(student_db_id)
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type)
-        VALUES (%s, %s, %s, %s, %s, %s, 'student')
-    """, (school_id, class_id, student_db_id, student_row["full_name"], student_row["image_file"], comment))
+        INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type, file_url, file_name)
+        VALUES (%s, %s, %s, %s, %s, %s, 'student', %s, %s)
+    """, (school_id, class_id, student_db_id, student_row["full_name"], student_row["image_file"], comment, file_url, file_name))
     conn.commit()
     conn.close()
     return ajax_ok("Comment posted!")
@@ -7109,10 +7184,22 @@ def student_dm_page(classmate_db_id):
         ts_str = ts.strftime("%I:%M %p") if hasattr(ts, "strftime") else str(ts)[:16]
         txt = m["message"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
         mid = m["id"]
+        furl = m.get("file_url") or ""
+        fname = m.get("file_name") or ""
+        ext = fname.rsplit(".", 1)[-1].lower() if fname else ""
+        if furl:
+            if ext in ("jpg", "jpeg", "png", "gif", "webp"):
+                fhtml = f'<div style="margin-top:5px;"><a href="{furl}" target="_blank"><img src="{furl}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;"></a></div>'
+            else:
+                icon = "🎬" if ext in ("mp4","mov","avi") else "📄"
+                fhtml = f'<div style="margin-top:5px;"><a href="{furl}" target="_blank" style="color:#5b9bd9;font-size:13px;text-decoration:none;">{icon} {fname or "Download file"}</a></div>'
+        else:
+            fhtml = ""
+        txt_html = f'<div class="tg-bubble-text">{txt}</div>' if txt else ''
         if is_me:
             return f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
                 <div class="tg-bubble tg-bubble-mine" style="position:relative;">
-                    <div class="tg-bubble-text">{txt}</div>
+                    {txt_html}{fhtml}
                     <div class="tg-bubble-ts">{ts_str} ✓✓</div>
                     <button onclick="deleteDM({mid})" class="del-btn" title="Delete">✕</button>
                 </div>
@@ -7123,7 +7210,7 @@ def student_dm_page(classmate_db_id):
                 <div class="tg-av-wrap">{av}</div>
                 <div>
                     <div class="tg-bubble tg-bubble-theirs">
-                        <div class="tg-bubble-text">{txt}</div>
+                        {txt_html}{fhtml}
                         <div class="tg-bubble-ts">{ts_str}</div>
                     </div>
                 </div>
@@ -7161,6 +7248,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .tg-input{{flex:1;background:#0e1621;border:1px solid #243447;border-radius:22px;padding:10px 16px;color:#e4e7eb;font-size:14px;outline:none;resize:none;max-height:100px;overflow-y:auto;}}
 .tg-send-btn{{width:42px;height:42px;border-radius:50%;background:#2b5278;border:none;cursor:pointer;color:#5b9bd9;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background 0.15s;}}
 .tg-send-btn:hover{{background:#3a6a96;}}
+.tg-attach-btn{{width:36px;height:36px;border-radius:50%;background:none;border:none;cursor:pointer;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0;opacity:0.7;transition:opacity 0.15s;}}
+.tg-attach-btn:hover{{opacity:1;}}
 .del-btn{{position:absolute;top:2px;right:-22px;background:none;border:none;color:#f87171;font-size:11px;cursor:pointer;opacity:0;transition:opacity 0.15s;padding:2px 4px;}}
 .tg-bubble:hover .del-btn{{opacity:1;}}
 </style>
@@ -7180,8 +7269,13 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 </div>
 
 <div class="tg-input-bar">
-    <textarea class="tg-input" id="msgInput" placeholder="Message {them_name}..." rows="1"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendMsg();}}"></textarea>
+    <input type="file" id="fileInput" style="display:none" onchange="previewFile(this)">
+    <button class="tg-attach-btn" onclick="document.getElementById('fileInput').click()" title="Attach file">📎</button>
+    <div style="flex:1;display:flex;flex-direction:column;gap:4px;">
+        <div id="filePreview" style="display:none;background:#182533;border-radius:8px;padding:6px 10px;font-size:12px;color:#5b9bd9;display:flex;align-items:center;gap:6px;"></div>
+        <textarea class="tg-input" id="msgInput" placeholder="Message {them_name}..." rows="1"
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendMsg();}}"></textarea>
+    </div>
     <button class="tg-send-btn" onclick="sendMsg()">➤</button>
 </div>
 
@@ -7189,18 +7283,41 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 let lastId = {last_id};
 const chatBox = document.getElementById('chatBox');
 chatBox.scrollTop = chatBox.scrollHeight;
+let pendingFile = null;
+
+function previewFile(input) {{
+    const f = input.files[0];
+    if (!f) return;
+    pendingFile = f;
+    const preview = document.getElementById('filePreview');
+    preview.style.display = 'flex';
+    preview.innerHTML = `📎 ${{f.name}} <button onclick="clearFile()" style="background:none;border:none;color:#f87171;cursor:pointer;margin-left:auto;">✕</button>`;
+}}
+
+function clearFile() {{
+    pendingFile = null;
+    document.getElementById('fileInput').value = '';
+    const preview = document.getElementById('filePreview');
+    preview.style.display = 'none';
+    preview.innerHTML = '';
+}}
 
 async function sendMsg() {{
     const inp = document.getElementById('msgInput');
     const msg = inp.value.trim();
-    if (!msg) return;
+    if (!msg && !pendingFile) return;
     inp.value = '';
     inp.style.height = 'auto';
+
+    const fd = new FormData();
+    if (msg) fd.append('message', msg);
+    if (pendingFile) fd.append('file', pendingFile);
+    clearFile();
+
     try {{
         const res = await fetch('/student/dm/{classmate_db_id}/send', {{
             method: 'POST',
-            headers: {{'Content-Type':'application/json'}},
-            body: JSON.stringify({{message: msg}})
+            body: fd
         }});
         const data = await res.json();
         if (data.ok) pollMessages();
@@ -7260,17 +7377,37 @@ def student_dm_send(classmate_db_id):
         return jsonify({"ok": False, "error": "Not in same class."})
     class_id = shared["class_id"]
 
-    data = request.get_json(silent=True) or {}
-    message = (data.get("message") or "").strip()
-    if not message or len(message) > 1000:
+    # Support multipart (file) or JSON (text)
+    file_url = None
+    file_name = None
+    if request.content_type and 'multipart' in request.content_type:
+        message = (request.form.get("message") or "").strip()
+        f = request.files.get("file")
+        if f and f.filename:
+            fname = secure_filename(f.filename)
+            file_bytes = f.read()
+            content_type = f.content_type or "application/octet-stream"
+            storage_name = f"dm_{student_db_id}_{classmate_db_id}_{int(datetime.now().timestamp())}_{fname}"
+            file_url = supabase_upload(storage_name, file_bytes, content_type)
+            file_name = fname
+    else:
+        data = request.get_json(silent=True) or {}
+        message = (data.get("message") or "").strip()
+
+    if not message and not file_url:
         conn.close()
-        return jsonify({"ok": False, "error": "Invalid message."})
+        return jsonify({"ok": False, "error": "Message cannot be empty."})
+    if len(message) > 1000:
+        conn.close()
+        return jsonify({"ok": False, "error": "Message too long."})
+    if not message:
+        message = ""
 
     me = get_student_row_by_db_id(student_db_id)
     cur.execute("""
-        INSERT INTO direct_messages (school_id, class_id, sender_db_id, receiver_db_id, sender_name, sender_image, message)
-        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-    """, (school_id, class_id, student_db_id, classmate_db_id, me["full_name"], me["image_file"], message))
+        INSERT INTO direct_messages (school_id, class_id, sender_db_id, receiver_db_id, sender_name, sender_image, message, file_url, file_name)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (school_id, class_id, student_db_id, classmate_db_id, me["full_name"], me["image_file"], message, file_url, file_name))
     new_id = cur.fetchone()["id"]
     conn.commit()
     conn.close()
@@ -7288,7 +7425,7 @@ def student_dm_poll(classmate_db_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, sender_db_id, sender_name, sender_image, message, created_at
+        SELECT id, sender_db_id, sender_name, sender_image, message, created_at, file_url, file_name
         FROM direct_messages
         WHERE school_id=%s
           AND ((sender_db_id=%s AND receiver_db_id=%s) OR (sender_db_id=%s AND receiver_db_id=%s))
@@ -7304,6 +7441,15 @@ def student_dm_poll(classmate_db_id):
     conn.commit()
     conn.close()
 
+    def _file_html(furl, fname):
+        if not furl:
+            return ""
+        ext = (fname or "").rsplit(".", 1)[-1].lower() if fname else ""
+        if ext in ("jpg", "jpeg", "png", "gif", "webp"):
+            return f'<div style="margin-top:5px;"><a href="{furl}" target="_blank"><img src="{furl}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;"></a></div>'
+        icon = "📄" if ext not in ("mp4","mov","avi") else "🎬"
+        return f'<div style="margin-top:5px;"><a href="{furl}" target="_blank" style="color:#5b9bd9;font-size:13px;text-decoration:none;">{icon} {fname or "Download file"}</a></div>'
+
     result = []
     for m in rows:
         is_me = m["sender_db_id"] == student_db_id
@@ -7311,10 +7457,12 @@ def student_dm_poll(classmate_db_id):
         ts_str = ts.strftime("%I:%M %p") if hasattr(ts, "strftime") else str(ts)[:16]
         txt = m["message"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
         mid = m["id"]
+        fhtml = _file_html(m.get("file_url"), m.get("file_name"))
         if is_me:
             html = f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
                 <div class="tg-bubble tg-bubble-mine" style="position:relative;">
-                    <div class="tg-bubble-text">{txt}</div>
+                    {'<div class="tg-bubble-text">' + txt + '</div>' if txt else ''}
+                    {fhtml}
                     <div class="tg-bubble-ts">{ts_str} ✓✓</div>
                     <button onclick="deleteDM({mid})" class="del-btn" title="Delete">✕</button>
                 </div>
@@ -7325,7 +7473,8 @@ def student_dm_poll(classmate_db_id):
                 <div class="tg-av-wrap">{av}</div>
                 <div>
                     <div class="tg-bubble tg-bubble-theirs">
-                        <div class="tg-bubble-text">{txt}</div>
+                        {'<div class="tg-bubble-text">' + txt + '</div>' if txt else ''}
+                        {fhtml}
                         <div class="tg-bubble-ts">{ts_str}</div>
                     </div>
                 </div>
