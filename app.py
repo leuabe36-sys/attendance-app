@@ -7716,6 +7716,14 @@ def student_view_classmate(classmate_db_id):
         <svg style="margin-left:auto;color:#4a6a8a;" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
     </a>""" for sc in shared_classes)
 
+    dm_btn = "" if is_me else (
+        f'<div style="margin-top:16px;">'
+        f'<a href="/student/dm/{classmate_db_id}" '
+        f'style="display:inline-flex;align-items:center;gap:8px;background:#2b5278;color:#e4e7eb;'
+        f'font-size:14px;font-weight:700;padding:10px 24px;border-radius:50px;text-decoration:none;">'
+        f'&#128172; Send Message</a></div>'
+    )
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7728,6 +7736,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .tg-letter-av{{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:32px;flex-shrink:0;}}
 .class-link{{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#1a2635;border-radius:12px;text-decoration:none;transition:background 0.15s;}}
 .class-link:hover{{background:#1e3048;}}
+.dm-btn{{display:inline-flex;align-items:center;gap:8px;background:#2b5278;color:#e4e7eb;font-size:14px;font-weight:700;padding:10px 24px;border-radius:50px;text-decoration:none;transition:background 0.15s;margin-top:16px;}}
+.dm-btn:hover{{background:#3a6a96;}}
 </style>
 </head>
 <body>
@@ -7753,7 +7763,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
                 <span style="width:7px;height:7px;background:#52c97f;border-radius:50%;display:inline-block;"></span>
                 Active Student
             </div>
-            {(f'<div style="margin-top:16px;"><a href="/student/dm/{classmate_db_id}" style="display:inline-flex;align-items:center;gap:8px;background:#2b5278;color:#e4e7eb;font-size:14px;font-weight:700;padding:10px 24px;border-radius:50px;text-decoration:none;transition:background 0.15s;" onmouseover="this.style.background=\'#3a6a96\'" onmouseout="this.style.background=\'#2b5278\'">💬 Send Message</a></div>') if not is_me else ''}
+            {dm_btn}
         </div>
     </div>
 
