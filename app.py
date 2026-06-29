@@ -7275,23 +7275,25 @@ def student_dm_page(classmate_db_id):
             </div>"""
 
     msgs_html = "".join(_dm_html(m) for m in messages)
-    last_id = messages[-1]["id"] if messages else 0
+    last_id = int(messages[-1]["id"]) if messages else 0
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>DM · {them_name}</title>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;height:100vh;display:flex;flex-direction:column;overflow:hidden;color:#e4e7eb;}}
+*{{box-sizing:border-box;}}
+html{{height:100%;height:-webkit-fill-available;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden;color:#e4e7eb;}}
 .tg-topbar{{height:56px;background:#17212b;border-bottom:1px solid #0f1923;display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0;box-shadow:0 1px 8px rgba(0,0,0,0.3);}}
 .tg-back{{color:#5b9bd9;font-size:13px;font-weight:600;text-decoration:none;padding:6px 10px;border-radius:8px;}}
 .tg-topbar-info{{flex:1;min-width:0;}}
 .tg-topbar-title{{font-weight:700;font-size:15px;color:#e4e7eb;}}
 .tg-topbar-sub{{font-size:12px;color:#5a8ebd;}}
-.tg-chat-bg{{flex:1;overflow-y:auto;padding:16px 12px;display:flex;flex-direction:column;gap:2px;}}
+.tg-chat-bg{{flex:1;overflow-y:auto;overflow-x:hidden;padding:16px 12px;display:flex;flex-direction:column;gap:2px;-webkit-overflow-scrolling:touch;}}
 .tg-msg-row{{display:flex;align-items:flex-end;gap:8px;margin-bottom:2px;}}
 .tg-mine{{flex-direction:row-reverse;}}
 .tg-theirs{{flex-direction:row;}}
@@ -7302,8 +7304,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .tg-bubble-theirs{{background:#182533;border:1px solid #1f3344;}}
 .tg-bubble-text{{font-size:14px;line-height:1.45;color:#e4e7eb;}}
 .tg-bubble-ts{{font-size:10px;color:#5a8ebd;margin-top:3px;text-align:right;}}
-.tg-input-bar{{background:#17212b;border-top:1px solid #0f1923;padding:10px 12px;display:flex;align-items:center;gap:8px;flex-shrink:0;}}
-.tg-input{{flex:1;background:#0e1621;border:1px solid #243447;border-radius:22px;padding:10px 16px;color:#e4e7eb;font-size:14px;outline:none;resize:none;max-height:100px;overflow-y:auto;}}
+.tg-input-bar{{background:#17212b;border-top:1px solid #0f1923;padding:10px 12px;padding-bottom:max(10px,env(safe-area-inset-bottom));display:flex;align-items:center;gap:8px;flex-shrink:0;}}
+.tg-input{{flex:1;background:#0e1621;border:1px solid #243447;border-radius:22px;padding:10px 16px;color:#e4e7eb;font-size:16px;outline:none;resize:none;max-height:100px;overflow-y:auto;}}
 .tg-send-btn{{width:42px;height:42px;border-radius:50%;background:#2b5278;border:none;cursor:pointer;color:#5b9bd9;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background 0.15s;}}
 .tg-send-btn:hover{{background:#3a6a96;}}
 .tg-attach-btn{{width:36px;height:36px;border-radius:50%;background:none;border:none;cursor:pointer;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0;opacity:0.7;transition:opacity 0.15s;}}
