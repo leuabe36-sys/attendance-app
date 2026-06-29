@@ -6714,6 +6714,97 @@ function markPressMoved() {{
 document.addEventListener('click', () => {{
     document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
 }});
+// ── Right-click context menu (desktop) ──────────────────────────────────
+(function() {{
+    // Inject the menu element once
+    if (!document.getElementById('_ctxMenu')) {{
+        const m = document.createElement('div');
+        m.id = '_ctxMenu';
+        m.style.cssText = [
+            'position:fixed','z-index:9999','background:#1e2d3d','border:1px solid #2b4a6a',
+            'border-radius:10px','box-shadow:0 8px 28px rgba(0,0,0,0.55)',
+            'padding:4px 0','min-width:160px','display:none','user-select:none',
+            'backdrop-filter:blur(4px)'
+        ].join(';');
+        m.innerHTML = `
+            <div class="_ctx-item" id="_ctxSelect" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;font-size:14px;color:#c8d8e8;transition:background 0.12s;">
+                <span style="font-size:15px;">✅</span> Select
+            </div>
+            <div style="height:1px;background:#2b3c4e;margin:3px 0;"></div>
+            <div class="_ctx-item" id="_ctxDelete" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;font-size:14px;color:#f87171;transition:background 0.12s;">
+                <span style="font-size:15px;">🗑️</span> Delete
+            </div>`;
+        // Hover effect
+        m.querySelectorAll('._ctx-item').forEach(el => {{
+            el.addEventListener('mouseenter', () => el.style.background = '#253647');
+            el.addEventListener('mouseleave', () => el.style.background = '');
+        }});
+        document.body.appendChild(m);
+    }}
+
+    let _ctxTargetBubble = null;
+    let _ctxTargetMsgId = null;
+    const menu = document.getElementById('_ctxMenu');
+
+    function showCtxMenu(x, y, bubbleEl, msgId) {{
+        _ctxTargetBubble = bubbleEl;
+        _ctxTargetMsgId = msgId;
+
+        // Position: keep inside viewport
+        menu.style.display = 'block';
+        const vw = window.innerWidth, vh = window.innerHeight;
+        const mw = menu.offsetWidth || 160, mh = menu.offsetHeight || 90;
+        menu.style.left = (x + mw > vw ? vw - mw - 8 : x) + 'px';
+        menu.style.top  = (y + mh > vh ? vh - mh - 8 : y) + 'px';
+
+        // Highlight the bubble
+        document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+        if (bubbleEl) bubbleEl.classList.add('selected');
+    }}
+
+    function hideCtxMenu() {{
+        menu.style.display = 'none';
+        _ctxTargetBubble = null;
+        _ctxTargetMsgId = null;
+    }}
+
+    // Select action
+    document.getElementById('_ctxSelect').addEventListener('click', () => {{
+        if (_ctxTargetBubble) {{
+            const wasSelected = _ctxTargetBubble.classList.contains('selected');
+            document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+            if (!wasSelected) _ctxTargetBubble.classList.add('selected');
+        }}
+        hideCtxMenu();
+    }});
+
+    // Delete action
+    document.getElementById('_ctxDelete').addEventListener('click', async () => {{
+        const id = _ctxTargetMsgId;
+        hideCtxMenu();
+        if (id && typeof deleteMsg === 'function') await deleteMsg(id);
+    }});
+
+    // Attach contextmenu to all bubbles (current + future via delegation)
+    document.addEventListener('contextmenu', e => {{
+        const bubble = e.target.closest('.tg-bubble');
+        if (!bubble) {{ hideCtxMenu(); return; }}
+        e.preventDefault();
+        e.stopPropagation();
+        // Extract msg id from the parent row's id ("msg-123")
+        const row = bubble.closest('[id^="msg-"]');
+        const msgId = row ? parseInt(row.id.replace('msg-', ''), 10) : null;
+        showCtxMenu(e.clientX, e.clientY, bubble, msgId);
+    }});
+
+    // Close on outside click or scroll
+    document.addEventListener('click', e => {{
+        if (!menu.contains(e.target)) hideCtxMenu();
+    }});
+    document.addEventListener('scroll', hideCtxMenu, true);
+    document.addEventListener('keydown', e => {{ if (e.key === 'Escape') hideCtxMenu(); }});
+}})();
+
 
 // Poll unread DM counts and update sidebar badges
 async function pollDmUnread() {{
@@ -7952,6 +8043,97 @@ function markPressMoved() {{
 document.addEventListener('click', () => {{
     document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
 }});
+// ── Right-click context menu (desktop) ──────────────────────────────────
+(function() {{
+    // Inject the menu element once
+    if (!document.getElementById('_ctxMenu')) {{
+        const m = document.createElement('div');
+        m.id = '_ctxMenu';
+        m.style.cssText = [
+            'position:fixed','z-index:9999','background:#1e2d3d','border:1px solid #2b4a6a',
+            'border-radius:10px','box-shadow:0 8px 28px rgba(0,0,0,0.55)',
+            'padding:4px 0','min-width:160px','display:none','user-select:none',
+            'backdrop-filter:blur(4px)'
+        ].join(';');
+        m.innerHTML = `
+            <div class="_ctx-item" id="_ctxSelect" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;font-size:14px;color:#c8d8e8;transition:background 0.12s;">
+                <span style="font-size:15px;">✅</span> Select
+            </div>
+            <div style="height:1px;background:#2b3c4e;margin:3px 0;"></div>
+            <div class="_ctx-item" id="_ctxDelete" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;font-size:14px;color:#f87171;transition:background 0.12s;">
+                <span style="font-size:15px;">🗑️</span> Delete
+            </div>`;
+        // Hover effect
+        m.querySelectorAll('._ctx-item').forEach(el => {{
+            el.addEventListener('mouseenter', () => el.style.background = '#253647');
+            el.addEventListener('mouseleave', () => el.style.background = '');
+        }});
+        document.body.appendChild(m);
+    }}
+
+    let _ctxTargetBubble = null;
+    let _ctxTargetMsgId = null;
+    const menu = document.getElementById('_ctxMenu');
+
+    function showCtxMenu(x, y, bubbleEl, msgId) {{
+        _ctxTargetBubble = bubbleEl;
+        _ctxTargetMsgId = msgId;
+
+        // Position: keep inside viewport
+        menu.style.display = 'block';
+        const vw = window.innerWidth, vh = window.innerHeight;
+        const mw = menu.offsetWidth || 160, mh = menu.offsetHeight || 90;
+        menu.style.left = (x + mw > vw ? vw - mw - 8 : x) + 'px';
+        menu.style.top  = (y + mh > vh ? vh - mh - 8 : y) + 'px';
+
+        // Highlight the bubble
+        document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+        if (bubbleEl) bubbleEl.classList.add('selected');
+    }}
+
+    function hideCtxMenu() {{
+        menu.style.display = 'none';
+        _ctxTargetBubble = null;
+        _ctxTargetMsgId = null;
+    }}
+
+    // Select action
+    document.getElementById('_ctxSelect').addEventListener('click', () => {{
+        if (_ctxTargetBubble) {{
+            const wasSelected = _ctxTargetBubble.classList.contains('selected');
+            document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+            if (!wasSelected) _ctxTargetBubble.classList.add('selected');
+        }}
+        hideCtxMenu();
+    }});
+
+    // Delete action
+    document.getElementById('_ctxDelete').addEventListener('click', async () => {{
+        const id = _ctxTargetMsgId;
+        hideCtxMenu();
+        if (id && typeof deleteMsg === 'function') await deleteMsg(id);
+    }});
+
+    // Attach contextmenu to all bubbles (current + future via delegation)
+    document.addEventListener('contextmenu', e => {{
+        const bubble = e.target.closest('.tg-bubble');
+        if (!bubble) {{ hideCtxMenu(); return; }}
+        e.preventDefault();
+        e.stopPropagation();
+        // Extract msg id from the parent row's id ("msg-123")
+        const row = bubble.closest('[id^="msg-"]');
+        const msgId = row ? parseInt(row.id.replace('msg-', ''), 10) : null;
+        showCtxMenu(e.clientX, e.clientY, bubble, msgId);
+    }});
+
+    // Close on outside click or scroll
+    document.addEventListener('click', e => {{
+        if (!menu.contains(e.target)) hideCtxMenu();
+    }});
+    document.addEventListener('scroll', hideCtxMenu, true);
+    document.addEventListener('keydown', e => {{ if (e.key === 'Escape') hideCtxMenu(); }});
+}})();
+
 
 async function pollMessages() {{
     try {{
