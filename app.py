@@ -5907,11 +5907,12 @@ def student_class_feed(class_id):
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>{cname} · Group Chat</title>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;height:100vh;display:flex;flex-direction:column;overflow:hidden;color:#e4e7eb;}}
+html{{height:100%;height:-webkit-fill-available;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden;color:#e4e7eb;}}
 
 /* ── TOPBAR ── */
 .tg-topbar{{
@@ -5984,7 +5985,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 
 /* ── COMPOSER ── */
 .tg-composer{{
-    background:#17212b;border-top:1px solid #0f1923;padding:10px 12px;flex-shrink:0;
+    background:#17212b;border-top:1px solid #0f1923;padding:10px 12px;padding-bottom:max(10px,env(safe-area-inset-bottom));flex-shrink:0;
 }}
 .tg-composer-row{{display:flex;align-items:flex-end;gap:8px;}}
 .tg-emoji-toggle{{
@@ -5994,7 +5995,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .tg-emoji-toggle:hover{{background:rgba(255,255,255,0.07);}}
 .tg-input{{
     flex:1;background:#242f3d;border:none;border-radius:20px;
-    padding:10px 16px;color:#e4e7eb;font-size:14px;outline:none;
+    padding:10px 16px;color:#e4e7eb;font-size:16px;outline:none;
     resize:none;max-height:120px;min-height:42px;line-height:1.4;
     font-family:inherit;
 }}
