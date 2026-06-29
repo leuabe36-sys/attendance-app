@@ -494,6 +494,35 @@ def utc_iso(dt):
     return dt.isoformat()
 
 
+def render_file_html(file_url, file_name):
+    """Return rich HTML preview for a file attachment (image/video/doc)."""
+    if not file_url:
+        return ""
+    ext = (file_name or "").rsplit(".", 1)[-1].lower() if file_name else ""
+    if ext in ("jpg", "jpeg", "png", "gif", "webp"):
+        return (f'<div style="margin-top:5px;">'
+                f'<a href="{file_url}" target="_blank">'
+                f'<img src="{file_url}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;object-fit:cover;">'
+                f'</a></div>')
+    elif ext in ("mp4", "mov", "avi", "webm", "mkv"):
+        mime = "video/quicktime" if ext == "mov" else f"video/{ext}"
+        return (f'<div style="margin-top:5px;border-radius:8px;overflow:hidden;max-width:260px;background:#000;">'
+                f'<video controls preload="metadata" style="display:block;max-width:260px;max-height:200px;border-radius:8px;width:100%;">'
+                f'<source src="{file_url}" type="{mime}"></video></div>')
+    else:
+        icons = {"pdf":"📕","doc":"📝","docx":"📝","xls":"📊","xlsx":"📊","ppt":"📋","pptx":"📋",
+                 "zip":"🗜️","rar":"🗜️","txt":"📄","mp3":"🎵","wav":"🎵"}
+        icon = icons.get(ext, "📄")
+        label = (file_name or "Download file").replace("&","&amp;").replace("<","&lt;")
+        return (f'<div style="margin-top:5px;">'
+                f'<a href="{file_url}" target="_blank" style="display:inline-flex;align-items:center;gap:8px;'
+                f'background:rgba(0,0,0,0.2);border:1px solid rgba(91,155,217,0.3);border-radius:10px;'
+                f'padding:8px 12px;text-decoration:none;max-width:220px;">'
+                f'<span style="font-size:22px;flex-shrink:0;">{icon}</span>'
+                f'<span style="color:#5b9bd9;font-size:12px;word-break:break-all;line-height:1.3;">{label}</span>'
+                f'</a></div>')
+
+
 def haversine_distance(lat1, lon1, lat2, lon2):
     """Returns distance in meters between two GPS coordinates."""
     R = 6371000
@@ -5832,15 +5861,7 @@ def student_class_feed(class_id):
         # File attachment
         furl = m.get("file_url") or ""
         fname = m.get("file_name") or ""
-        ext = fname.rsplit(".", 1)[-1].lower() if fname else ""
-        if furl:
-            if ext in ("jpg", "jpeg", "png", "gif", "webp"):
-                fhtml = f'<div style="margin-top:5px;"><a href="{furl}" target="_blank"><img src="{furl}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;"></a></div>'
-            else:
-                icon = "🎬" if ext in ("mp4","mov","avi") else "📄"
-                fhtml = f'<div style="margin-top:5px;"><a href="{furl}" target="_blank" style="color:#5b9bd9;font-size:13px;text-decoration:none;">{icon} {fname or "Download file"}</a></div>'
-        else:
-            fhtml = ""
+        fhtml = render_file_html(furl, fname)
         txt_html = f'<div class="tg-bubble-text">{txt}</div>' if txt else ''
         if is_me and not is_teacher:
             return (f'<div class="tg-msg-row tg-mine" id="msg-{mid}">' +
@@ -6196,22 +6217,42 @@ function nameColor(name) {{
 }}
 
 // ── Render a single message bubble ──
+function buildFileHtml(file_url, file_name) {{
+    if (!file_url) return '';
+    const ext = (file_name || '').split('.').pop().toLowerCase();
+    const isImage = ['jpg','jpeg','png','gif','webp'].includes(ext);
+    const isVideo = ['mp4','mov','avi','webm','mkv'].includes(ext);
+    if (isImage) {{
+        return `<div style="margin-top:5px;">
+            <a href="${{file_url}}" target="_blank">
+                <img src="${{file_url}}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;object-fit:cover;">
+            </a>
+        </div>`;
+    }} else if (isVideo) {{
+        return `<div style="margin-top:5px;border-radius:8px;overflow:hidden;max-width:260px;background:#000;position:relative;">
+            <video controls preload="metadata" style="display:block;max-width:260px;max-height:200px;border-radius:8px;width:100%;"
+                poster="">
+                <source src="${{file_url}}" type="video/${{ext === 'mov' ? 'quicktime' : ext}}">
+            </video>
+        </div>`;
+    }} else {{
+        const icons = {{pdf:'📕',doc:'📝',docx:'📝',xls:'📊',xlsx:'📊',ppt:'📋',pptx:'📋',zip:'🗜️',rar:'🗜️',txt:'📄',mp3:'🎵',wav:'🎵'}};
+        const icon = icons[ext] || '📄';
+        return `<div style="margin-top:5px;">
+            <a href="${{file_url}}" target="_blank" style="display:inline-flex;align-items:center;gap:8px;background:rgba(0,0,0,0.2);border:1px solid rgba(91,155,217,0.3);border-radius:10px;padding:8px 12px;text-decoration:none;max-width:220px;">
+                <span style="font-size:22px;flex-shrink:0;">${{icon}}</span>
+                <span style="color:#5b9bd9;font-size:12px;word-break:break-all;line-height:1.3;">${{file_name || 'Download file'}}</span>
+            </a>
+        </div>`;
+    }}
+}}
+
 function renderMsg(m) {{
     const isMe = m.student_db_id === MY_DB_ID && m.poster_type !== 'teacher';
     const ts = m.ts_display || '';
     const txt = m.comment ? m.comment.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
     const txtHtml = txt ? `<div class="tg-bubble-text">${{txt}}</div>` : '';
-
-    let fHtml = '';
-    if (m.file_url) {{
-        const ext = (m.file_name || '').split('.').pop().toLowerCase();
-        if (['jpg','jpeg','png','gif','webp'].includes(ext)) {{
-            fHtml = `<div style="margin-top:5px;"><a href="${{m.file_url}}" target="_blank"><img src="${{m.file_url}}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;"></a></div>`;
-        }} else {{
-            const icon = ['mp4','mov','avi'].includes(ext) ? '🎬' : '📄';
-            fHtml = `<div style="margin-top:5px;"><a href="${{m.file_url}}" target="_blank" style="color:#5b9bd9;font-size:13px;text-decoration:none;">${{icon}} ${{m.file_name || 'Download file'}}</a></div>`;
-        }}
-    }}
+    const fHtml = buildFileHtml(m.file_url, m.file_name);
 
     if (isMe) {{
         return `<div class="tg-msg-row tg-mine" id="msg-${{m.id}}">
@@ -6847,15 +6888,40 @@ function autoResize(el) {{
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }}
 
+function buildFileHtml(file_url, file_name) {{
+    if (!file_url) return '';
+    const ext = (file_name || '').split('.').pop().toLowerCase();
+    const isImage = ['jpg','jpeg','png','gif','webp'].includes(ext);
+    const isVideo = ['mp4','mov','avi','webm','mkv'].includes(ext);
+    if (isImage) {{
+        return `<div style="margin-top:5px;"><a href="${{file_url}}" target="_blank"><img src="${{file_url}}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;object-fit:cover;"></a></div>`;
+    }} else if (isVideo) {{
+        return `<div style="margin-top:5px;border-radius:8px;overflow:hidden;max-width:260px;background:#000;">
+            <video controls preload="metadata" style="display:block;max-width:260px;max-height:200px;border-radius:8px;width:100%;">
+                <source src="${{file_url}}" type="video/${{ext === 'mov' ? 'quicktime' : ext}}">
+            </video>
+        </div>`;
+    }} else {{
+        const icons = {{pdf:'📕',doc:'📝',docx:'📝',xls:'📊',xlsx:'📊',ppt:'📋',pptx:'📋',zip:'🗜️',rar:'🗜️',txt:'📄',mp3:'🎵',wav:'🎵'}};
+        const icon = icons[ext] || '📄';
+        return `<div style="margin-top:5px;"><a href="${{file_url}}" target="_blank" style="display:inline-flex;align-items:center;gap:8px;background:rgba(0,0,0,0.2);border:1px solid rgba(91,155,217,0.3);border-radius:10px;padding:8px 12px;text-decoration:none;max-width:220px;">
+            <span style="font-size:22px;flex-shrink:0;">${{icon}}</span>
+            <span style="color:#5b9bd9;font-size:12px;word-break:break-all;line-height:1.3;">${{file_name || 'Download file'}}</span>
+        </a></div>`;
+    }}
+}}
+
 function renderMsg(m) {{
     const ts = m.ts_display || '';
-    const txt = m.comment.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const txt = (m.comment || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const txtHtml = txt ? `<div class="tg-bubble-text">${{txt}}</div>` : '';
+    const fHtml = buildFileHtml(m.file_url, m.file_name);
     const isMe = m.poster_type === 'teacher' && m.teacher_id_fk === TEACHER_ID;
 
     if (isMe) {{
         return `<div class="tg-msg-row tg-mine" id="msg-${{m.id}}">
             <div class="tg-bubble tg-bubble-mine">
-                <div class="tg-bubble-text">${{txt}}</div>
+                ${{txtHtml}}${{fHtml}}
                 <div class="tg-bubble-ts">${{ts}} ✓✓</div>
             </div></div>`;
     }} else {{
@@ -6870,7 +6936,7 @@ function renderMsg(m) {{
             <div>
                 <div class="tg-sender-name" style="color:${{nc}};">${{m.student_name}}</div>
                 <div class="tg-bubble tg-bubble-theirs">
-                    <div class="tg-bubble-text">${{txt}}</div>
+                    ${{txtHtml}}${{fHtml}}
                     <div class="tg-bubble-ts">${{ts}}</div>
                 </div>
             </div></div>`;
@@ -7311,15 +7377,7 @@ def student_dm_page(classmate_db_id):
         mid = m["id"]
         furl = m.get("file_url") or ""
         fname = m.get("file_name") or ""
-        ext = fname.rsplit(".", 1)[-1].lower() if fname else ""
-        if furl:
-            if ext in ("jpg", "jpeg", "png", "gif", "webp"):
-                fhtml = f'<div style="margin-top:5px;"><a href="{furl}" target="_blank"><img src="{furl}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;"></a></div>'
-            else:
-                icon = "🎬" if ext in ("mp4","mov","avi") else "📄"
-                fhtml = f'<div style="margin-top:5px;"><a href="{furl}" target="_blank" style="color:#5b9bd9;font-size:13px;text-decoration:none;">{icon} {fname or "Download file"}</a></div>'
-        else:
-            fhtml = ""
+        fhtml = render_file_html(furl, fname)
         txt_html = f'<div class="tg-bubble-text">{txt}</div>' if txt else ''
         if is_me:
             return f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
@@ -7589,15 +7647,6 @@ def student_dm_poll(classmate_db_id):
     conn.commit()
     conn.close()
 
-    def _file_html(furl, fname):
-        if not furl:
-            return ""
-        ext = (fname or "").rsplit(".", 1)[-1].lower() if fname else ""
-        if ext in ("jpg", "jpeg", "png", "gif", "webp"):
-            return f'<div style="margin-top:5px;"><a href="{furl}" target="_blank"><img src="{furl}" style="max-width:220px;max-height:180px;border-radius:8px;display:block;"></a></div>'
-        icon = "📄" if ext not in ("mp4","mov","avi") else "🎬"
-        return f'<div style="margin-top:5px;"><a href="{furl}" target="_blank" style="color:#5b9bd9;font-size:13px;text-decoration:none;">{icon} {fname or "Download file"}</a></div>'
-
     result = []
     for m in rows:
         is_me = m["sender_db_id"] == student_db_id
@@ -7605,7 +7654,7 @@ def student_dm_poll(classmate_db_id):
         ts_str = ts.strftime("%I:%M %p") if hasattr(ts, "strftime") else str(ts)[:16]
         txt = m["message"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
         mid = m["id"]
-        fhtml = _file_html(m.get("file_url"), m.get("file_name"))
+        fhtml = render_file_html(m.get("file_url"), m.get("file_name"))
         if is_me:
             html = f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
                 <div class="tg-bubble tg-bubble-mine" style="position:relative;">
