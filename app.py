@@ -6767,9 +6767,14 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
         <div class="tg-input-bar">
             <div class="tg-input-wrap">
                 <button class="tg-emoji-toggle" onclick="toggleEmoji()" title="Emoji">😊</button>
-                <textarea class="tg-input" id="msgInput" placeholder="Message {cname}…" rows="1"
-                    oninput="autoResize(this)"
-                    onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendMessage();}}"></textarea>
+                <input type="file" id="teacherFileInput" style="display:none" onchange="previewTeacherFile(this)">
+                <button class="tg-emoji-toggle" onclick="document.getElementById('teacherFileInput').click()" title="Attach file" style="font-size:18px;">📎</button>
+                <div style="flex:1;display:flex;flex-direction:column;">
+                    <div id="teacherFilePreview" style="display:none;background:#182533;border-radius:8px;padding:5px 10px;font-size:12px;color:#5b9bd9;align-items:center;gap:6px;margin-bottom:4px;"></div>
+                    <textarea class="tg-input" id="msgInput" placeholder="Message {cname}…" rows="1"
+                        oninput="autoResize(this)"
+                        onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendMessage();}}"></textarea>
+                </div>
             </div>
             <button class="tg-send" id="sendBtn" onclick="sendMessage()" title="Send">➤</button>
         </div>
@@ -6845,20 +6850,44 @@ function renderMsg(m) {{
     }}
 }}
 
+let pendingTeacherFile = null;
+
+function previewTeacherFile(input) {{
+    const f = input.files[0];
+    if (!f) return;
+    pendingTeacherFile = f;
+    const preview = document.getElementById('teacherFilePreview');
+    preview.style.display = 'flex';
+    preview.innerHTML = `📎 ${{f.name}} <button onclick="clearTeacherFile()" style="background:none;border:none;color:#f87171;cursor:pointer;margin-left:auto;">✕</button>`;
+}}
+
+function clearTeacherFile() {{
+    pendingTeacherFile = null;
+    document.getElementById('teacherFileInput').value = '';
+    const preview = document.getElementById('teacherFilePreview');
+    preview.style.display = 'none';
+    preview.innerHTML = '';
+}}
+
 async function sendMessage() {{
     const input = document.getElementById('msgInput');
     const btn = document.getElementById('sendBtn');
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && !pendingTeacherFile) return;
     input.value = '';
     autoResize(input);
     btn.disabled = true;
     document.getElementById('emojiPanel').classList.remove('open');
+
+    const fd = new FormData();
+    if (text) fd.append('comment', text);
+    if (pendingTeacherFile) fd.append('file', pendingTeacherFile);
+    clearTeacherFile();
+
     try {{
         const res = await fetch('/teacher/class/{class_id}/comment', {{
             method: 'POST',
-            headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{comment: text}})
+            body: fd
         }});
         const data = await res.json();
         if (!data.ok) {{ input.value = text; }}
@@ -7559,23 +7588,45 @@ def teacher_post_comment(class_id):
     if not class_row or class_row["teacher_id"] != teacher_id:
         return ajax_err("Not authorized for this class.")
 
-    data = request.get_json(silent=True) or {}
-    comment = (data.get("comment") or "").strip()
-    if not comment:
-        return ajax_err("Comment cannot be empty.")
+    file_url = None
+    file_name = None
+    if request.content_type and 'multipart' in request.content_type:
+        comment = (request.form.get("comment") or "").strip()
+        f = request.files.get("file")
+        if f and f.filename:
+            filename = secure_filename(f.filename)
+            file_bytes = f.read()
+            content_type = f.content_type or "application/octet-stream"
+            storage_name = f"class_{class_id}/teacher_{teacher_id}_{int(datetime.now().timestamp())}_{filename}"
+            file_url = supabase_upload(storage_name, file_bytes, content_type)
+            file_name = filename
+    else:
+        data = request.get_json(silent=True) or {}
+        comment = (data.get("comment") or "").strip()
+
+    if not comment and not file_url:
+        return ajax_err("Message cannot be empty.")
     if len(comment) > 500:
         return ajax_err("Comment too long (max 500 characters).")
+    if not comment:
+        comment = ""
 
     teacher_name = session.get("teacher_name", "Teacher")
     teacher_photo = session.get("teacher_photo", "")
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type, teacher_id_fk)
-        VALUES (%s, %s, %s, %s, %s, %s, 'teacher', %s)
-    """, (school_id, class_id, 0, teacher_name, teacher_photo, comment, teacher_id))
-    conn.commit()
+    try:
+        cur.execute("""
+            INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type, teacher_id_fk, file_url, file_name)
+            VALUES (%s, %s, %s, %s, %s, %s, 'teacher', %s, %s, %s)
+        """, (school_id, class_id, 0, teacher_name, teacher_photo, comment, teacher_id, file_url, file_name))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        print("teacher_post_comment DB error:", repr(e), flush=True)
+        return ajax_err("Failed to post message. Please try again.")
     conn.close()
     return ajax_ok("Comment posted!")
 
