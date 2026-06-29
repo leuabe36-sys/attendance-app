@@ -5875,6 +5875,7 @@ def student_class_feed(class_id):
 
     msgs_html = "".join(_msg_html(m, m["student_db_id"] == student_db_id) for m in messages)
     last_id = messages[-1]["id"] if messages else 0
+    student_db_id = int(student_db_id) if student_db_id else 0
 
     # Members sidebar HTML — priority star + DM button
     members_html = ""
