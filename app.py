@@ -382,12 +382,35 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_cc_class ON class_comments(class_id)")
 
+    # Student priority flag (teacher can mark a student as high priority per class)
+    cur.execute("ALTER TABLE student_classes ADD COLUMN IF NOT EXISTS is_priority BOOLEAN NOT NULL DEFAULT FALSE")
+
     # Migrate class_comments to support teacher posts
     cur.execute("ALTER TABLE class_comments ADD COLUMN IF NOT EXISTS poster_type TEXT NOT NULL DEFAULT 'student'")
     cur.execute("ALTER TABLE class_comments ADD COLUMN IF NOT EXISTS teacher_id_fk INTEGER DEFAULT NULL")
-    # Allow student_db_id to be 0 for teacher posts (default was NOT NULL FK)
+    # Allow student_db_id to be 0 for teacher posts
     cur.execute("ALTER TABLE class_comments ALTER COLUMN student_db_id DROP NOT NULL")
     cur.execute("ALTER TABLE class_comments DROP CONSTRAINT IF EXISTS class_comments_student_db_id_fkey")
+    # High priority / pinned flag set by teacher
+    cur.execute("ALTER TABLE class_comments ADD COLUMN IF NOT EXISTS is_priority BOOLEAN NOT NULL DEFAULT FALSE")
+
+    # ── DIRECT MESSAGES (student ↔ student within same class) ──
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS direct_messages (
+            id SERIAL PRIMARY KEY,
+            school_id INTEGER NOT NULL DEFAULT 1,
+            class_id INTEGER NOT NULL,
+            sender_db_id INTEGER NOT NULL,
+            receiver_db_id INTEGER NOT NULL,
+            sender_name TEXT NOT NULL,
+            sender_image TEXT,
+            message TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            is_read BOOLEAN NOT NULL DEFAULT FALSE
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_dm_receiver ON direct_messages(receiver_db_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_dm_sender ON direct_messages(sender_db_id)")
 
     conn.commit()
     conn.close()
@@ -877,11 +900,11 @@ def get_students_in_class(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT s.*
+        SELECT s.*, sc.is_priority AS is_priority
         FROM students s
         INNER JOIN student_classes sc ON sc.student_id_fk = s.id
         WHERE sc.class_id_fk=%s
-        ORDER BY s.full_name
+        ORDER BY sc.is_priority DESC, s.full_name
     """, (class_id,))
     rows = cur.fetchall()
     conn.close()
@@ -5751,16 +5774,36 @@ def student_class_feed(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority
         FROM class_comments
         WHERE class_id=%s AND school_id=%s
         ORDER BY created_at ASC
         LIMIT 80
     """, (class_id, school_id))
     messages = cur.fetchall()
+    cur.execute("""
+        SELECT id, student_name, comment FROM class_comments
+        WHERE class_id=%s AND school_id=%s AND is_priority=TRUE ORDER BY id DESC LIMIT 1
+    """, (class_id, school_id))
+    priority_row = cur.fetchone()
     conn.close()
+    priority_banner_html = ""
+    if priority_row:
+        ptxt = priority_row["comment"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")[:120]
+        pname = priority_row["student_name"]
+        pid = priority_row["id"]
+        priority_banner_html = (
+            '<div id="priorityBanner" onclick="scrollToPriority(' + str(pid) + ')" '
+            'style="background:linear-gradient(90deg,#92400e,#78350f);border-bottom:1px solid #d97706;'
+            'padding:8px 16px;display:flex;align-items:center;gap:10px;cursor:pointer;flex-shrink:0;">'
+            '<span style="font-size:16px;">📌</span>'
+            '<div style="flex:1;min-width:0;">'
+            '<div style="font-size:10px;color:#fbbf24;font-weight:700;text-transform:uppercase;">High Priority — ' + pname + '</div>'
+            '<div style="font-size:13px;color:#fef3c7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + ptxt + '</div>'
+            '</div></div>'
+        ) 
 
-    # Build initial messages HTML
+    # Build initial messages HTML (with delete, priority ring, DM button)
     def _msg_html(m, is_me):
         ts = m["created_at"]
         if hasattr(ts, "strftime"):
@@ -5771,48 +5814,37 @@ def student_class_feed(class_id):
                 ts_str = ts.strftime("%b %d, %I:%M %p")
         else:
             ts_str = str(ts)[:16]
-
         txt = m["comment"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         mid = m["id"]
         is_teacher = (m.get("poster_type") == "teacher")
-
+        pr = m.get("is_priority", False)
+        pring = "border:2px solid #f59e0b;box-shadow:0 0 10px rgba(245,158,11,0.3);" if pr else ""
         if is_me and not is_teacher:
-            return f"""
-            <div class="tg-msg-row tg-mine" id="msg-{mid}">
-                <div class="tg-bubble tg-bubble-mine">
-                    <div class="tg-bubble-text">{txt}</div>
-                    <div class="tg-bubble-ts">{ts_str} ✓✓</div>
-                </div>
-            </div>"""
+            return (f'<div class="tg-msg-row tg-mine" id="msg-{mid}">' +
+                    f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}">' +
+                    f'<div class="tg-bubble-text">{txt}</div>' +
+                    f'<div class="tg-bubble-ts">{ts_str} ✓✓</div>' +
+                    f'<button onclick="deleteMsg({mid})" class="chat-del-btn">✕</button>' +
+                    f'</div></div>')
         elif is_teacher:
-            return f"""
-            <div class="tg-msg-row tg-theirs" id="msg-{mid}">
-                <div class="tg-av-wrap">
-                    <div class="tg-letter-av" style="width:34px;height:34px;background:#7c3aed;">👨‍🏫</div>
-                </div>
-                <div>
-                    <div class="tg-sender-name" style="color:#a78bfa;">{m['student_name']} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;margin-left:4px;">Teacher</span></div>
-                    <div class="tg-bubble" style="max-width:min(420px,72vw);padding:8px 12px 4px;border-radius:4px 16px 16px 16px;background:#2d1b69;border:1px solid #4c1d95;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,0.25);">
-                        <div class="tg-bubble-text">{txt}</div>
-                        <div class="tg-bubble-ts">{ts_str}</div>
-                    </div>
-                </div>
-            </div>"""
+            return (f'<div class="tg-msg-row tg-theirs" id="msg-{mid}">' +
+                    f'<div class="tg-av-wrap"><div class="tg-letter-av" style="width:34px;height:34px;background:#7c3aed;">&#128104;&#8205;&#127979;</div></div>' +
+                    f'<div><div class="tg-sender-name" style="color:#a78bfa;">{m["student_name"]} ' +
+                    f'<span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;margin-left:4px;">Teacher</span></div>' +
+                    f'<div class="tg-bubble" style="max-width:min(420px,72vw);padding:8px 12px 4px;border-radius:4px 16px 16px 16px;background:#2d1b69;border:1px solid #4c1d95;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,0.25);{pring}">' +
+                    f'<div class="tg-bubble-text">{txt}</div>' +
+                    f'<div class="tg-bubble-ts">{ts_str}</div></div></div></div>')
         else:
             av = _tg_avatar(m["student_image"], m["student_name"], 34)
-            return f"""
-            <div class="tg-msg-row tg-theirs" id="msg-{mid}">
-                <div class="tg-av-wrap">
-                    <a href="/student/classmate/{m['student_db_id']}" style="display:contents;">{av}</a>
-                </div>
-                <div>
-                    <div class="tg-sender-name" style="color:{_name_color(m['student_name'])};">{m['student_name']}</div>
-                    <div class="tg-bubble tg-bubble-theirs">
-                        <div class="tg-bubble-text">{txt}</div>
-                        <div class="tg-bubble-ts">{ts_str}</div>
-                    </div>
-                </div>
-            </div>"""
+            nc = _name_color(m["student_name"])
+            sid = m["student_db_id"]
+            return (f'<div class="tg-msg-row tg-theirs" id="msg-{mid}">' +
+                    f'<div class="tg-av-wrap"><a href="/student/classmate/{sid}" style="display:contents;">{av}</a></div>' +
+                    f'<div><div class="tg-sender-name" style="color:{nc};">{m["student_name"]} ' +
+                    f'<a href="/student/dm/{sid}" style="margin-left:6px;font-size:10px;background:#1e3a5f;color:#5b9bd9;padding:1px 7px;border-radius:6px;text-decoration:none;">&#128172; DM</a></div>' +
+                    f'<div class="tg-bubble tg-bubble-theirs" style="{pring}">' +
+                    f'<div class="tg-bubble-text">{txt}</div>' +
+                    f'<div class="tg-bubble-ts">{ts_str}</div></div></div></div>')
 
     def _name_color(name):
         colors = ["#5b9bd9","#e8699a","#a876d8","#f4a623","#52c97f","#4db8d4","#e8645b","#7986cb"]
@@ -5821,24 +5853,21 @@ def student_class_feed(class_id):
     msgs_html = "".join(_msg_html(m, m["student_db_id"] == student_db_id) for m in messages)
     last_id = messages[-1]["id"] if messages else 0
 
-    # Members sidebar HTML
+    # Members sidebar HTML — priority star + DM button
     members_html = ""
     for s in classmates:
         is_me = s["id"] == student_db_id
         av = _tg_avatar(s["image_file"], s["full_name"], 36)
         me_badge = '<span class="tg-me-badge">You</span>' if is_me else ''
+        is_p = s.get("is_priority", False)
+        star = '<span style="color:#f59e0b;font-size:13px;margin-left:3px;" title="High Priority Student">⭐</span>' if is_p else ''
+        dm_link = '' if is_me else f'<a href="/student/dm/{s["id"]}" style="margin-left:auto;font-size:11px;background:#1e3a5f;color:#5b9bd9;padding:3px 9px;border-radius:8px;text-decoration:none;flex-shrink:0;" id="dmbadge-{s["id"]}">&#128172; DM</a>'
         link = "javascript:void(0)" if is_me else f"/student/classmate/{s['id']}"
-        members_html += f"""
-        <a href="{link}" class="tg-member-item" {"style='cursor:default;'" if is_me else ""}>
-            <div class="tg-member-av">{av}</div>
-            <div class="tg-member-info">
-                <div class="tg-member-name">{s['full_name']} {me_badge}</div>
-                <div class="tg-member-id">ID: {s['student_id']}</div>
-            </div>
-        </a>
-        """
-
-    cname = class_row["class_name"]
+        members_html += (f'<div style="display:flex;align-items:center;padding:4px 12px;">' +
+            f'<a href="{link}" class="tg-member-item" style="flex:1;padding:6px 0;background:none;border-radius:0;{"cursor:default;" if is_me else ""}">' +
+            f'<div class="tg-member-av">{av}</div>' +
+            f'<div class="tg-member-info"><div class="tg-member-name">{s["full_name"]}{star} {me_badge}</div>' +
+            f'<div class="tg-member-id">ID: {s["student_id"]}</div></div></a>{dm_link}</div>')
     csubject = class_row.get("subject_name") or ""
     cteacher = class_row.get("teacher_display_name") or class_row.get("teacher_name") or ""
     cdept = class_row.get("department") or ""
@@ -5898,6 +5927,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .tg-theirs{{flex-direction:row;}}
 .tg-av-wrap{{flex-shrink:0;width:34px;align-self:flex-end;}}
 .tg-letter-av{{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:13px;flex-shrink:0;}}
+.chat-del-btn{{position:absolute;top:2px;right:-20px;background:none;border:none;color:#f87171;font-size:11px;cursor:pointer;opacity:0;transition:opacity 0.15s;padding:2px 4px;line-height:1;}}
+.tg-bubble:hover .chat-del-btn{{opacity:1;}}
 .tg-sender-name{{font-size:12px;font-weight:700;margin-bottom:3px;padding-left:2px;}}
 
 /* ── BUBBLES ── */
@@ -6034,6 +6065,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 <div class="tg-body">
     <!-- MESSAGES -->
     <div class="tg-messages-wrap">
+        {priority_banner_html}
         <div class="tg-chat-bg" id="chatBg">
             {'<div class="tg-date-divider"><span>Welcome to ' + cname + '</span></div>' if not messages else ''}
             {msgs_html if msgs_html else '<div style="text-align:center;color:#3a4a5a;padding:40px 20px;"><div style="font-size:40px;margin-bottom:10px;">👋</div><div style="font-size:14px;">No messages yet. Say hello!</div></div>'}
@@ -6239,6 +6271,67 @@ scrollToBottom();
 pollMessages();
 pollTimer = setInterval(pollMessages, 3000);
 
+// Poll for priority message changes every 8s
+async function pollPriority() {{
+    try {{
+        const res = await fetch('/student/class/{class_id}/priority-message');
+        const data = await res.json();
+        const banner = document.getElementById('priorityBanner');
+        const wrap = document.querySelector('.tg-messages-wrap');
+        if (data.msg) {{
+            const ptxt = data.msg.text.substring(0, 120);
+            const newHtml = `<div id="priorityBanner" onclick="scrollToPriority(${{data.msg.id}})" style="background:linear-gradient(90deg,#92400e,#78350f);border-bottom:1px solid #d97706;padding:8px 16px;display:flex;align-items:center;gap:10px;cursor:pointer;flex-shrink:0;"><span style="font-size:16px;">📌</span><div style="flex:1;min-width:0;"><div style="font-size:10px;color:#fbbf24;font-weight:700;text-transform:uppercase;">High Priority — ${{data.msg.name}}</div><div style="font-size:13px;color:#fef3c7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${{ptxt}}</div></div></div>`;
+            if (banner) {{
+                banner.outerHTML = newHtml;
+            }} else {{
+                const chatBg = document.getElementById('chatBg');
+                if (chatBg && wrap) wrap.insertBefore(document.createRange().createContextualFragment(newHtml), chatBg);
+            }}
+        }} else {{
+            if (banner) banner.remove();
+        }}
+    }} catch(e) {{}}
+}}
+setInterval(pollPriority, 8000);
+
+function scrollToPriority(msgId) {{
+    const el = document.getElementById('msg-' + msgId);
+    if (el) {{
+        el.scrollIntoView({{behavior:'smooth', block:'center'}});
+        el.style.outline = '2px solid #f59e0b';
+        setTimeout(() => el.style.outline = '', 2000);
+    }}
+}}
+
+async function deleteMsg(msgId) {{
+    if (!confirm('Delete this message?')) return;
+    try {{
+        const res = await fetch('/chat/delete-message/' + msgId, {{method:'POST'}});
+        const data = await res.json();
+        if (data.ok) {{
+            document.getElementById('msg-' + msgId)?.remove();
+        }} else {{
+            alert(data.error || 'Could not delete message.');
+        }}
+    }} catch(e) {{ alert('Error deleting message.'); }}
+}}
+
+// Poll unread DM counts and update sidebar badges
+async function pollDmUnread() {{
+    try {{
+        const res = await fetch('/student/dm/unread-counts');
+        const counts = await res.json();
+        for (const [sid, cnt] of Object.entries(counts)) {{
+            const badge = document.getElementById('dmbadge-' + sid);
+            if (badge && cnt > 0) {{
+                badge.innerHTML = `&#128172; DM <span style="background:#ef4444;color:#fff;border-radius:9999px;padding:0 5px;font-size:10px;margin-left:3px;">${{cnt}}</span>`;
+            }}
+        }}
+    }} catch(e) {{}}
+}}
+setInterval(pollDmUnread, 5000);
+pollDmUnread();
+
 // Click outside to close members on mobile
 document.addEventListener('click', e => {{
     const panel = document.getElementById('membersPanel');
@@ -6391,53 +6484,54 @@ def teacher_class_feed(class_id):
                 ts_str = ts.strftime("%b %d, %I:%M %p")
         else:
             ts_str = str(ts)[:16]
-
         txt = m["comment"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         mid = m["id"]
         is_me = (m.get("poster_type") == "teacher" and m.get("teacher_id_fk") == teacher_id)
-
+        pr = m.get("is_priority", False)
+        pring = "border:2px solid #f59e0b;box-shadow:0 0 10px rgba(245,158,11,0.3);" if pr else ""
+        pin_lbl = '<span style="font-size:10px;background:#92400e;color:#fbbf24;padding:1px 6px;border-radius:6px;margin-left:4px;">📌 Priority</span>' if pr else ''
+        priority_btn = f'<button onclick="setPriority({mid},{0 if pr else 1})" style="position:absolute;top:4px;right:4px;background:none;border:none;cursor:pointer;font-size:13px;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="{"Remove priority" if pr else "Set High Priority"}">{"📌" if pr else "📍"}</button>'
+        del_btn = f'<button onclick="deleteMsg({mid})" style="position:absolute;top:4px;right:26px;background:none;border:none;cursor:pointer;font-size:11px;color:#f87171;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="Delete">✕</button>'
         if is_me:
-            return f"""
-            <div class="tg-msg-row tg-mine" id="msg-{mid}">
-                <div class="tg-bubble tg-bubble-mine">
-                    <div class="tg-bubble-text">{txt}</div>
-                    <div class="tg-bubble-ts">{ts_str} ✓✓</div>
-                </div>
-            </div>"""
+            return (f'<div class="tg-msg-row tg-mine" id="msg-{mid}">' +
+                    f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}" onmouseenter="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=1)" onmouseleave="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=0)">' +
+                    f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>' +
+                    f'<div class="tg-bubble-ts">{ts_str} ✓✓</div>{priority_btn}{del_btn}</div></div>')
         else:
             name = m["student_name"]
             colors2 = ["#5b9bd9","#e8699a","#a876d8","#f4a623","#52c97f","#4db8d4","#e8645b","#7986cb"]
             nc = colors2[sum(ord(c) for c in name) % len(colors2)]
             av = _tg_avatar(m["student_image"], name, 34)
-            return f"""
-            <div class="tg-msg-row tg-theirs" id="msg-{mid}">
-                <div class="tg-av-wrap">
-                    <div style="display:contents;">{av}</div>
-                </div>
-                <div>
-                    <div class="tg-sender-name" style="color:{nc};">{name}</div>
-                    <div class="tg-bubble tg-bubble-theirs">
-                        <div class="tg-bubble-text">{txt}</div>
-                        <div class="tg-bubble-ts">{ts_str}</div>
-                    </div>
-                </div>
-            </div>"""
+            return (f'<div class="tg-msg-row tg-theirs" id="msg-{mid}">' +
+                    f'<div class="tg-av-wrap"><div style="display:contents;">{av}</div></div>' +
+                    f'<div><div class="tg-sender-name" style="color:{nc};">{name}</div>' +
+                    f'<div class="tg-bubble tg-bubble-theirs" style="position:relative;{pring}" onmouseenter="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=1)" onmouseleave="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=0)">' +
+                    f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>' +
+                    f'<div class="tg-bubble-ts">{ts_str}</div>{priority_btn}{del_btn}</div></div></div>')
 
     msgs_html = "".join(_msg_html_teacher(m) for m in messages)
     last_id = messages[-1]["id"] if messages else 0
 
-    # Members sidebar
+    # Members sidebar — with student priority star toggle
     members_html = ""
     for s in classmates:
         av = _tg_avatar(s["image_file"], s["full_name"], 36)
-        members_html += f"""
-        <a href="/teacher/class/{class_id}/student-profile/{s['id']}" class="tg-member-item">
-            <div class="tg-member-av">{av}</div>
-            <div class="tg-member-info">
-                <div class="tg-member-name">{s['full_name']}</div>
-                <div class="tg-member-id">ID: {s['student_id']}</div>
-            </div>
-        </a>"""
+        is_p = s.get("is_priority", False)
+        star = '<span style="color:#f59e0b;font-size:14px;margin-left:3px;" title="High Priority">⭐</span>' if is_p else ''
+        star_btn = (
+            f'<button onclick="toggleStudentPriority({s["id"]}, {0 if is_p else 1}, this)" ' +
+            f'style="background:none;border:none;cursor:pointer;font-size:18px;padding:2px 6px;border-radius:6px;color:{"#f59e0b" if is_p else "#3a4a5a"};transition:color 0.2s;" ' +
+            f'title="{"Remove priority" if is_p else "Set High Priority"}">{"⭐" if is_p else "☆"}</button>'
+        )
+        members_html += (
+            f'<div style="display:flex;align-items:center;padding:4px 8px 4px 12px;">' +
+            f'<a href="/teacher/class/{class_id}/student-profile/{s["id"]}" class="tg-member-item" style="flex:1;padding:6px 0;background:none;border-radius:0;">' +
+            f'<div class="tg-member-av">{av}</div>' +
+            f'<div class="tg-member-info">' +
+            f'<div class="tg-member-name">{s["full_name"]}{star}</div>' +
+            f'<div class="tg-member-id">ID: {s["student_id"]}</div>' +
+            f'</div></a>{star_btn}</div>'
+        )
 
     EMOJIS = ["😀","😂","🥰","😎","🤔","👍","👏","🙌","🔥","💯","❤️","🎉","📚","✅","🤝","😅","🙏","💪","😴","🎓"]
     emoji_btns = "".join(f'<button class="tg-emoji-btn" onclick="insertEmoji(\'{e}\')">{e}</button>' for e in EMOJIS)
@@ -6659,6 +6753,73 @@ function scrollToBottom() {{
 scrollToBottom();
 pollMessages();
 pollTimer = setInterval(pollMessages, 3000);
+
+async function toggleStudentPriority(studentId, priority, btn) {{
+    try {{
+        const res = await fetch('/teacher/class/{class_id}/student-priority/' + studentId, {{
+            method: 'POST',
+            headers: {{'Content-Type':'application/json'}},
+            body: JSON.stringify({{priority: !!priority}})
+        }});
+        const data = await res.json();
+        if (data.ok) {{
+            btn.textContent = data.priority ? '⭐' : '☆';
+            btn.style.color = data.priority ? '#f59e0b' : '#3a4a5a';
+            btn.title = data.priority ? 'Remove priority' : 'Set High Priority';
+            btn.setAttribute('onclick', `toggleStudentPriority(${{studentId}}, ${{data.priority ? 0 : 1}}, this)`);
+            // Update name badge
+            const memberName = btn.closest('div').querySelector('.tg-member-name');
+            if (memberName) {{
+                const existing = memberName.querySelector('.priority-star');
+                if (data.priority) {{
+                    if (!existing) {{
+                        const span = document.createElement('span');
+                        span.className = 'priority-star';
+                        span.style.cssText = 'color:#f59e0b;font-size:14px;margin-left:3px;';
+                        span.title = 'High Priority';
+                        span.textContent = '⭐';
+                        memberName.appendChild(span);
+                    }}
+                }} else {{
+                    existing?.remove();
+                }}
+            }}
+        }} else {{
+            alert(data.error || 'Failed.');
+        }}
+    }} catch(e) {{ alert('Error.'); }}
+}}
+
+async function setPriority(msgId, priority) {{
+    try {{
+        const res = await fetch('/teacher/class/{class_id}/set-priority/' + msgId, {{
+            method: 'POST',
+            headers: {{'Content-Type':'application/json'}},
+            body: JSON.stringify({{priority: !!priority}})
+        }});
+        const data = await res.json();
+        if (data.ok) {{
+            // Reload to reflect new priority styling
+            window.location.reload();
+        }} else {{
+            alert(data.error || 'Failed to set priority.');
+        }}
+    }} catch(e) {{ alert('Error setting priority.'); }}
+}}
+
+async function deleteMsg(msgId) {{
+    if (!confirm('Delete this message?')) return;
+    try {{
+        const res = await fetch('/chat/delete-message/' + msgId, {{method:'POST'}});
+        const data = await res.json();
+        if (data.ok) {{
+            document.getElementById('msg-' + msgId)?.remove();
+        }} else {{
+            alert(data.error || 'Could not delete message.');
+        }}
+    }} catch(e) {{ alert('Error.'); }}
+}}
+
 document.addEventListener('click', e => {{
     const panel = document.getElementById('membersPanel');
     const toggle = document.querySelector('.tg-members-toggle');
@@ -6718,6 +6879,488 @@ def teacher_class_messages(class_id):
             "teacher_id_fk": r.get("teacher_id_fk"),
         })
     return jsonify({"messages": result})
+
+
+# =========================================================
+# TEACHER — TOGGLE STUDENT HIGH PRIORITY IN CLASS
+# =========================================================
+@app.route("/teacher/class/<int:class_id>/student-priority/<int:student_db_id>", methods=["POST"])
+def teacher_toggle_student_priority(class_id, student_db_id):
+    protect = teacher_required()
+    if protect:
+        return jsonify({"ok": False, "error": "Not logged in."})
+    teacher_id = get_logged_teacher_id()
+    class_row = get_class_by_id(class_id)
+    if not class_row or class_row["teacher_id"] != teacher_id:
+        return jsonify({"ok": False, "error": "Not authorized."})
+    data = request.get_json(silent=True) or {}
+    priority = bool(data.get("priority", True))
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE student_classes SET is_priority=%s
+        WHERE student_id_fk=%s AND class_id_fk=%s
+    """, (priority, student_db_id, class_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "priority": priority})
+
+
+# =========================================================
+# CHAT — DELETE OWN MESSAGE (student) / ANY MESSAGE (teacher)
+# =========================================================
+@app.route("/chat/delete-message/<int:msg_id>", methods=["POST"])
+def delete_chat_message(msg_id):
+    school_id = get_current_school_id()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, student_db_id, poster_type, class_id FROM class_comments WHERE id=%s AND school_id=%s", (msg_id, school_id))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"ok": False, "error": "Message not found."})
+
+    # Student: can only delete their own messages
+    if is_student_logged_in():
+        student_db_id = get_logged_student_db_id()
+        if row["poster_type"] != "student" or row["student_db_id"] != student_db_id:
+            conn.close()
+            return jsonify({"ok": False, "error": "You can only delete your own messages."})
+
+    # Teacher: can delete any message in their class
+    elif is_teacher_logged_in():
+        teacher_id = get_logged_teacher_id()
+        class_row = get_class_by_id(row["class_id"])
+        if not class_row or class_row["teacher_id"] != teacher_id:
+            conn.close()
+            return jsonify({"ok": False, "error": "Not authorized."})
+    else:
+        conn.close()
+        return jsonify({"ok": False, "error": "Not logged in."})
+
+    cur.execute("DELETE FROM class_comments WHERE id=%s", (msg_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+# =========================================================
+# CHAT — TEACHER TOGGLE HIGH PRIORITY on a message
+# =========================================================
+@app.route("/teacher/class/<int:class_id>/set-priority/<int:msg_id>", methods=["POST"])
+def teacher_set_priority(class_id, msg_id):
+    protect = teacher_required()
+    if protect:
+        return jsonify({"ok": False, "error": "Not logged in."})
+    teacher_id = get_logged_teacher_id()
+    school_id = get_current_school_id()
+    class_row = get_class_by_id(class_id)
+    if not class_row or class_row["teacher_id"] != teacher_id:
+        return jsonify({"ok": False, "error": "Not authorized."})
+    data = request.get_json(silent=True) or {}
+    priority = bool(data.get("priority", True))
+    conn = get_db()
+    cur = conn.cursor()
+    # Clear existing priority in this class first (only one pinned at a time)
+    cur.execute("UPDATE class_comments SET is_priority=FALSE WHERE class_id=%s AND school_id=%s", (class_id, school_id))
+    if priority:
+        cur.execute("UPDATE class_comments SET is_priority=TRUE WHERE id=%s AND class_id=%s", (msg_id, class_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "priority": priority})
+
+
+# =========================================================
+# CHAT — MESSAGES POLL (new messages since last_id)
+# =========================================================
+@app.route("/student/class/<int:class_id>/messages")
+def student_class_messages_poll(class_id):
+    protect = student_required()
+    if protect:
+        return jsonify([])
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    if not student_belongs_to_class(student_db_id, class_id):
+        return jsonify([])
+    since = int(request.args.get("since", 0))
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority
+        FROM class_comments
+        WHERE class_id=%s AND school_id=%s AND id > %s
+        ORDER BY created_at ASC LIMIT 50
+    """, (class_id, school_id, since))
+    rows = cur.fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        ts = r["created_at"]
+        ts_str = ts.strftime("%I:%M %p") if hasattr(ts, "strftime") else str(ts)[:16]
+        result.append({
+            "id": r["id"],
+            "student_db_id": r["student_db_id"],
+            "student_name": r["student_name"],
+            "student_image": r["student_image"] or "",
+            "comment": r["comment"],
+            "ts": ts_str,
+            "poster_type": r["poster_type"],
+            "teacher_id_fk": r["teacher_id_fk"],
+            "is_priority": r["is_priority"],
+        })
+    return jsonify(result)
+
+
+# =========================================================
+# CHAT — PRIORITY MESSAGE POLL (get current pinned message)
+# =========================================================
+@app.route("/student/class/<int:class_id>/priority-message")
+def student_class_priority_message(class_id):
+    protect = student_required()
+    if protect:
+        return jsonify({"msg": None})
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    if not student_belongs_to_class(student_db_id, class_id):
+        return jsonify({"msg": None})
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, student_name, comment FROM class_comments
+        WHERE class_id=%s AND school_id=%s AND is_priority=TRUE
+        ORDER BY id DESC LIMIT 1
+    """, (class_id, school_id))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return jsonify({"msg": {"id": row["id"], "name": row["student_name"], "text": row["comment"]}})
+    return jsonify({"msg": None})
+
+
+# =========================================================
+# DIRECT MESSAGES — Student ↔ Student within class
+# =========================================================
+@app.route("/student/dm/<int:classmate_db_id>")
+def student_dm_page(classmate_db_id):
+    protect = student_required()
+    if protect:
+        return protect
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    if student_db_id == classmate_db_id:
+        return redirect("/student")
+
+    # Verify they share a class
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT sc1.class_id FROM student_classes sc1
+        JOIN student_classes sc2 ON sc1.class_id = sc2.class_id
+        WHERE sc1.student_id=%s AND sc2.student_id=%s
+        LIMIT 1
+    """, (student_db_id, classmate_db_id))
+    shared = cur.fetchone()
+    if not shared:
+        conn.close()
+        return "<script>alert('You are not in the same class.');window.location.href='/student';</script>"
+    class_id = shared["class_id"]
+
+    # Mark messages as read
+    cur.execute("""
+        UPDATE direct_messages SET is_read=TRUE
+        WHERE receiver_db_id=%s AND sender_db_id=%s AND school_id=%s
+    """, (student_db_id, classmate_db_id, school_id))
+
+    # Fetch conversation
+    cur.execute("""
+        SELECT id, sender_db_id, sender_name, sender_image, message, created_at, is_read
+        FROM direct_messages
+        WHERE school_id=%s
+          AND ((sender_db_id=%s AND receiver_db_id=%s) OR (sender_db_id=%s AND receiver_db_id=%s))
+        ORDER BY created_at ASC LIMIT 100
+    """, (school_id, student_db_id, classmate_db_id, classmate_db_id, student_db_id))
+    messages = cur.fetchall()
+    conn.commit()
+    conn.close()
+
+    me = get_student_row_by_db_id(student_db_id)
+    them = get_student_row_by_db_id(classmate_db_id)
+    if not them:
+        return "Student not found", 404
+
+    them_av = _tg_avatar(them["image_file"], them["full_name"], 40)
+    them_name = them["full_name"]
+
+    def _dm_html(m):
+        is_me = m["sender_db_id"] == student_db_id
+        ts = m["created_at"]
+        ts_str = ts.strftime("%I:%M %p") if hasattr(ts, "strftime") else str(ts)[:16]
+        txt = m["message"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+        mid = m["id"]
+        if is_me:
+            return f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
+                <div class="tg-bubble tg-bubble-mine" style="position:relative;">
+                    <div class="tg-bubble-text">{txt}</div>
+                    <div class="tg-bubble-ts">{ts_str} ✓✓</div>
+                    <button onclick="deleteDM({mid})" class="del-btn" title="Delete">✕</button>
+                </div>
+            </div>"""
+        else:
+            av = _tg_avatar(m["sender_image"], m["sender_name"], 34)
+            return f"""<div class="tg-msg-row tg-theirs" id="dm-{mid}">
+                <div class="tg-av-wrap">{av}</div>
+                <div>
+                    <div class="tg-bubble tg-bubble-theirs">
+                        <div class="tg-bubble-text">{txt}</div>
+                        <div class="tg-bubble-ts">{ts_str}</div>
+                    </div>
+                </div>
+            </div>"""
+
+    msgs_html = "".join(_dm_html(m) for m in messages)
+    last_id = messages[-1]["id"] if messages else 0
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DM · {them_name}</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;height:100vh;display:flex;flex-direction:column;overflow:hidden;color:#e4e7eb;}}
+.tg-topbar{{height:56px;background:#17212b;border-bottom:1px solid #0f1923;display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0;box-shadow:0 1px 8px rgba(0,0,0,0.3);}}
+.tg-back{{color:#5b9bd9;font-size:13px;font-weight:600;text-decoration:none;padding:6px 10px;border-radius:8px;}}
+.tg-topbar-info{{flex:1;min-width:0;}}
+.tg-topbar-title{{font-weight:700;font-size:15px;color:#e4e7eb;}}
+.tg-topbar-sub{{font-size:12px;color:#5a8ebd;}}
+.tg-chat-bg{{flex:1;overflow-y:auto;padding:16px 12px;display:flex;flex-direction:column;gap:2px;}}
+.tg-msg-row{{display:flex;align-items:flex-end;gap:8px;margin-bottom:2px;}}
+.tg-mine{{flex-direction:row-reverse;}}
+.tg-theirs{{flex-direction:row;}}
+.tg-av-wrap{{flex-shrink:0;width:34px;align-self:flex-end;}}
+.tg-letter-av{{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:13px;flex-shrink:0;}}
+.tg-bubble{{max-width:min(380px,72vw);padding:8px 12px 4px;border-radius:4px 16px 16px 16px;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,0.25);}}
+.tg-bubble-mine{{background:#2b5278;border-radius:16px 4px 16px 16px;}}
+.tg-bubble-theirs{{background:#182533;border:1px solid #1f3344;}}
+.tg-bubble-text{{font-size:14px;line-height:1.45;color:#e4e7eb;}}
+.tg-bubble-ts{{font-size:10px;color:#5a8ebd;margin-top:3px;text-align:right;}}
+.tg-input-bar{{background:#17212b;border-top:1px solid #0f1923;padding:10px 12px;display:flex;align-items:center;gap:8px;flex-shrink:0;}}
+.tg-input{{flex:1;background:#0e1621;border:1px solid #243447;border-radius:22px;padding:10px 16px;color:#e4e7eb;font-size:14px;outline:none;resize:none;max-height:100px;overflow-y:auto;}}
+.tg-send-btn{{width:42px;height:42px;border-radius:50%;background:#2b5278;border:none;cursor:pointer;color:#5b9bd9;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background 0.15s;}}
+.tg-send-btn:hover{{background:#3a6a96;}}
+.del-btn{{position:absolute;top:2px;right:-22px;background:none;border:none;color:#f87171;font-size:11px;cursor:pointer;opacity:0;transition:opacity 0.15s;padding:2px 4px;}}
+.tg-bubble:hover .del-btn{{opacity:1;}}
+</style>
+</head>
+<body>
+<div class="tg-topbar">
+    <a href="/student/classmate/{classmate_db_id}" class="tg-back">←</a>
+    {them_av}
+    <div class="tg-topbar-info">
+        <div class="tg-topbar-title">{them_name}</div>
+        <div class="tg-topbar-sub">Direct Message</div>
+    </div>
+</div>
+
+<div class="tg-chat-bg" id="chatBox">
+    {msgs_html}
+</div>
+
+<div class="tg-input-bar">
+    <textarea class="tg-input" id="msgInput" placeholder="Message {them_name}..." rows="1"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendMsg();}}"></textarea>
+    <button class="tg-send-btn" onclick="sendMsg()">➤</button>
+</div>
+
+<script>
+let lastId = {last_id};
+const chatBox = document.getElementById('chatBox');
+chatBox.scrollTop = chatBox.scrollHeight;
+
+async function sendMsg() {{
+    const inp = document.getElementById('msgInput');
+    const msg = inp.value.trim();
+    if (!msg) return;
+    inp.value = '';
+    inp.style.height = 'auto';
+    try {{
+        const res = await fetch('/student/dm/{classmate_db_id}/send', {{
+            method: 'POST',
+            headers: {{'Content-Type':'application/json'}},
+            body: JSON.stringify({{message: msg}})
+        }});
+        const data = await res.json();
+        if (data.ok) pollMessages();
+    }} catch(e) {{}}
+}}
+
+async function deleteDM(id) {{
+    if (!confirm('Delete this message?')) return;
+    const res = await fetch('/student/dm/delete/' + id, {{method:'POST'}});
+    const data = await res.json();
+    if (data.ok) document.getElementById('dm-' + id)?.remove();
+}}
+
+async function pollMessages() {{
+    try {{
+        const res = await fetch('/student/dm/{classmate_db_id}/poll?since=' + lastId);
+        const msgs = await res.json();
+        for (const m of msgs) {{
+            if (document.getElementById('dm-' + m.id)) continue;
+            lastId = Math.max(lastId, m.id);
+            const div = document.createElement('div');
+            div.innerHTML = m.html;
+            chatBox.appendChild(div.firstElementChild);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }}
+    }} catch(e) {{}}
+}}
+
+setInterval(pollMessages, 3000);
+</script>
+</body>
+</html>"""
+    return html
+
+
+@app.route("/student/dm/<int:classmate_db_id>/send", methods=["POST"])
+def student_dm_send(classmate_db_id):
+    protect = student_required()
+    if protect:
+        return jsonify({"ok": False})
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    if student_db_id == classmate_db_id:
+        return jsonify({"ok": False, "error": "Cannot message yourself."})
+
+    # Verify shared class
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT sc1.class_id FROM student_classes sc1
+        JOIN student_classes sc2 ON sc1.class_id = sc2.class_id
+        WHERE sc1.student_id=%s AND sc2.student_id=%s LIMIT 1
+    """, (student_db_id, classmate_db_id))
+    shared = cur.fetchone()
+    if not shared:
+        conn.close()
+        return jsonify({"ok": False, "error": "Not in same class."})
+    class_id = shared["class_id"]
+
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    if not message or len(message) > 1000:
+        conn.close()
+        return jsonify({"ok": False, "error": "Invalid message."})
+
+    me = get_student_row_by_db_id(student_db_id)
+    cur.execute("""
+        INSERT INTO direct_messages (school_id, class_id, sender_db_id, receiver_db_id, sender_name, sender_image, message)
+        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (school_id, class_id, student_db_id, classmate_db_id, me["full_name"], me["image_file"], message))
+    new_id = cur.fetchone()["id"]
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "id": new_id})
+
+
+@app.route("/student/dm/<int:classmate_db_id>/poll")
+def student_dm_poll(classmate_db_id):
+    protect = student_required()
+    if protect:
+        return jsonify([])
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    since = int(request.args.get("since", 0))
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, sender_db_id, sender_name, sender_image, message, created_at
+        FROM direct_messages
+        WHERE school_id=%s
+          AND ((sender_db_id=%s AND receiver_db_id=%s) OR (sender_db_id=%s AND receiver_db_id=%s))
+          AND id > %s
+        ORDER BY created_at ASC LIMIT 50
+    """, (school_id, student_db_id, classmate_db_id, classmate_db_id, student_db_id, since))
+    rows = cur.fetchall()
+    # Mark as read
+    cur.execute("""
+        UPDATE direct_messages SET is_read=TRUE
+        WHERE receiver_db_id=%s AND sender_db_id=%s AND school_id=%s AND id > %s
+    """, (student_db_id, classmate_db_id, school_id, since))
+    conn.commit()
+    conn.close()
+
+    result = []
+    for m in rows:
+        is_me = m["sender_db_id"] == student_db_id
+        ts = m["created_at"]
+        ts_str = ts.strftime("%I:%M %p") if hasattr(ts, "strftime") else str(ts)[:16]
+        txt = m["message"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+        mid = m["id"]
+        if is_me:
+            html = f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
+                <div class="tg-bubble tg-bubble-mine" style="position:relative;">
+                    <div class="tg-bubble-text">{txt}</div>
+                    <div class="tg-bubble-ts">{ts_str} ✓✓</div>
+                    <button onclick="deleteDM({mid})" class="del-btn" title="Delete">✕</button>
+                </div>
+            </div>"""
+        else:
+            av = _tg_avatar(m["sender_image"], m["sender_name"], 34)
+            html = f"""<div class="tg-msg-row tg-theirs" id="dm-{mid}">
+                <div class="tg-av-wrap">{av}</div>
+                <div>
+                    <div class="tg-bubble tg-bubble-theirs">
+                        <div class="tg-bubble-text">{txt}</div>
+                        <div class="tg-bubble-ts">{ts_str}</div>
+                    </div>
+                </div>
+            </div>"""
+        result.append({"id": mid, "html": html})
+    return jsonify(result)
+
+
+@app.route("/student/dm/delete/<int:msg_id>", methods=["POST"])
+def student_dm_delete(msg_id):
+    protect = student_required()
+    if protect:
+        return jsonify({"ok": False})
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT sender_db_id FROM direct_messages WHERE id=%s AND school_id=%s", (msg_id, school_id))
+    row = cur.fetchone()
+    if not row or row["sender_db_id"] != student_db_id:
+        conn.close()
+        return jsonify({"ok": False, "error": "Not authorized."})
+    cur.execute("DELETE FROM direct_messages WHERE id=%s", (msg_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/student/dm/unread-counts")
+def student_dm_unread_counts():
+    """Returns {sender_db_id: count} for unread DMs for the logged-in student."""
+    protect = student_required()
+    if protect:
+        return jsonify({})
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT sender_db_id, COUNT(*) as cnt
+        FROM direct_messages
+        WHERE receiver_db_id=%s AND school_id=%s AND is_read=FALSE
+        GROUP BY sender_db_id
+    """, (student_db_id, school_id))
+    rows = cur.fetchall()
+    conn.close()
+    return jsonify({str(r["sender_db_id"]): r["cnt"] for r in rows})
 
 
 @app.route("/teacher/class/<int:class_id>/comment", methods=["POST"])
