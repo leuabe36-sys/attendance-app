@@ -5871,6 +5871,7 @@ def student_class_feed(class_id):
     csubject = class_row.get("subject_name") or ""
     cteacher = class_row.get("teacher_display_name") or class_row.get("teacher_name") or ""
     cdept = class_row.get("department") or ""
+    cname = class_row.get("class_name") or "Class"
     letter = cname[0].upper()
     colors = ["#2196F3","#E91E63","#9C27B0","#FF9800","#4CAF50","#00BCD4","#F44336","#3F51B5"]
     color = colors[sum(ord(c) for c in cname) % len(colors)]
