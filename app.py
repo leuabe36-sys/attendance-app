@@ -6099,10 +6099,10 @@ def student_class_feed(class_id):
         txt_html = f'<div class="tg-bubble-text">{txt}</div>' if txt else ''
         if is_me and not is_teacher:
             return (f'<div class="tg-msg-row tg-mine" id="msg-{mid}">' +
-                    f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}">' +
+                    f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}" onclick="toggleMsgSelect(event,this)">' +
                     f'{txt_html}{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str} ✓✓</div>' +
-                    f'<button onclick="deleteMsg({mid})" class="chat-del-btn">✕</button>' +
+                    f'<button onclick="event.stopPropagation();deleteMsg({mid})" class="chat-del-btn">✕</button>' +
                     f'</div></div>')
         elif is_teacher:
             return (f'<div class="tg-msg-row tg-theirs" id="msg-{mid}">' +
@@ -6208,8 +6208,9 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .tg-theirs{{flex-direction:row;}}
 .tg-av-wrap{{flex-shrink:0;width:34px;align-self:flex-end;}}
 .tg-letter-av{{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:13px;flex-shrink:0;}}
-.chat-del-btn{{position:absolute;top:2px;right:-20px;background:none;border:none;color:#f87171;font-size:11px;cursor:pointer;opacity:0;transition:opacity 0.15s;padding:2px 4px;line-height:1;}}
-.tg-bubble:hover .chat-del-btn{{opacity:1;}}
+.chat-del-btn{{position:absolute;top:-10px;right:-10px;background:#f87171;border:2px solid #0e1621;color:#fff;font-size:11px;cursor:pointer;opacity:0;transform:scale(0.7);transition:opacity 0.15s,transform 0.15s;padding:0;width:22px;height:22px;border-radius:50%;line-height:1;display:flex;align-items:center;justify-content:center;pointer-events:none;}}
+.tg-bubble:hover .chat-del-btn,.tg-bubble.selected .chat-del-btn{{opacity:1;transform:scale(1);pointer-events:auto;}}
+.tg-bubble.selected{{outline:2px solid #f87171;outline-offset:2px;}}
 .tg-sender-name{{font-size:12px;font-weight:700;margin-bottom:3px;padding-left:2px;}}
 
 /* ── BUBBLES ── */
@@ -6491,9 +6492,10 @@ function renderMsg(m) {{
 
     if (isMe) {{
         return `<div class="tg-msg-row tg-mine" id="msg-${{m.id}}">
-            <div class="tg-bubble tg-bubble-mine">
+            <div class="tg-bubble tg-bubble-mine" style="position:relative;" onclick="toggleMsgSelect(event,this)">
                 ${{txtHtml}}${{fHtml}}
                 <div class="tg-bubble-ts">${{ts}} ✓✓</div>
+                <button onclick="event.stopPropagation();deleteMsg(${{m.id}})" class="chat-del-btn">✕</button>
             </div>
         </div>`;
     }} else if (m.poster_type === 'teacher') {{
@@ -6677,6 +6679,17 @@ async function deleteMsg(msgId) {{
         }}
     }} catch(e) {{ alert('Error deleting message.'); }}
 }}
+
+// ── Tap-to-select a message bubble to reveal its delete button (mobile-friendly) ──
+function toggleMsgSelect(evt, bubbleEl) {{
+    evt.stopPropagation();
+    const wasSelected = bubbleEl.classList.contains('selected');
+    document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+    if (!wasSelected) bubbleEl.classList.add('selected');
+}}
+document.addEventListener('click', () => {{
+    document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+}});
 
 // Poll unread DM counts and update sidebar badges
 async function pollDmUnread() {{
@@ -6975,11 +6988,11 @@ def teacher_class_feed(class_id):
         pr = m.get("is_priority", False)
         pring = "border:2px solid #f59e0b;box-shadow:0 0 10px rgba(245,158,11,0.3);" if pr else ""
         pin_lbl = '<span style="font-size:10px;background:#92400e;color:#fbbf24;padding:1px 6px;border-radius:6px;margin-left:4px;">📌 Priority</span>' if pr else ''
-        priority_btn = f'<button onclick="setPriority({mid},{0 if pr else 1})" style="position:absolute;top:4px;right:4px;background:none;border:none;cursor:pointer;font-size:13px;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="{"Remove priority" if pr else "Set High Priority"}">{"📌" if pr else "📍"}</button>'
-        del_btn = f'<button onclick="deleteMsg({mid})" style="position:absolute;top:4px;right:26px;background:none;border:none;cursor:pointer;font-size:11px;color:#f87171;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="Delete">✕</button>'
+        priority_btn = f'<button onclick="event.stopPropagation();setPriority({mid},{0 if pr else 1})" style="position:absolute;top:4px;right:4px;background:none;border:none;cursor:pointer;font-size:13px;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="{"Remove priority" if pr else "Set High Priority"}">{"📌" if pr else "📍"}</button>'
+        del_btn = f'<button onclick="event.stopPropagation();deleteMsg({mid})" style="position:absolute;top:4px;right:26px;background:none;border:none;cursor:pointer;font-size:11px;color:#f87171;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="Delete">✕</button>'
         if is_me:
             return (f'<div class="tg-msg-row tg-mine" id="msg-{mid}">' +
-                    f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}" onmouseenter="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=1)" onmouseleave="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=0)">' +
+                    f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}" onclick="toggleMsgSelect(event,this)">' +
                     f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str} ✓✓</div>{priority_btn}{del_btn}</div></div>')
         else:
@@ -6990,7 +7003,7 @@ def teacher_class_feed(class_id):
             return (f'<div class="tg-msg-row tg-theirs" id="msg-{mid}">' +
                     f'<div class="tg-av-wrap"><div style="display:contents;">{av}</div></div>' +
                     f'<div><div class="tg-sender-name" style="color:{nc};">{name}</div>' +
-                    f'<div class="tg-bubble tg-bubble-theirs" style="position:relative;{pring}" onmouseenter="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=1)" onmouseleave="this.querySelectorAll(\'.t-pin-btn\').forEach(b=>b.style.opacity=0)">' +
+                    f'<div class="tg-bubble tg-bubble-theirs" style="position:relative;{pring}" onclick="toggleMsgSelect(event,this)">' +
                     f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str}</div>{priority_btn}{del_btn}</div></div></div>')
 
@@ -7057,6 +7070,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .tg-bubble-theirs{{background:#182533;border:1px solid #1e3048;border-radius:4px 16px 16px 16px;}}
 .tg-bubble-text{{font-size:14px;line-height:1.5;color:#e4e7eb;}}
 .tg-bubble-ts{{font-size:10px;color:#7a9bbf;text-align:right;margin-top:4px;}}
+.tg-bubble:hover .t-pin-btn,.tg-bubble.selected .t-pin-btn{{opacity:1;}}
+.tg-bubble.selected{{outline:2px solid #f87171;outline-offset:2px;}}
 .tg-input-bar{{background:#17212b;border-top:1px solid #0f1923;padding:10px 12px;display:flex;align-items:flex-end;gap:8px;flex-shrink:0;}}
 .tg-input-wrap{{flex:1;background:#242f3d;border-radius:20px;display:flex;align-items:center;padding:6px 14px;gap:8px;}}
 .tg-emoji-toggle{{background:none;border:none;font-size:20px;cursor:pointer;flex-shrink:0;opacity:0.6;transition:opacity 0.15s;}}
@@ -7199,9 +7214,10 @@ function renderMsg(m) {{
 
     if (isMe) {{
         return `<div class="tg-msg-row tg-mine" id="msg-${{m.id}}">
-            <div class="tg-bubble tg-bubble-mine">
+            <div class="tg-bubble tg-bubble-mine" style="position:relative;" onclick="toggleMsgSelect(event,this)">
                 ${{txtHtml}}${{fHtml}}
                 <div class="tg-bubble-ts">${{ts}} ✓✓</div>
+                <button onclick="event.stopPropagation();deleteMsg(${{m.id}})" style="position:absolute;top:4px;right:4px;background:none;border:none;cursor:pointer;font-size:11px;color:#f87171;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="Delete">✕</button>
             </div></div>`;
     }} else {{
         const COLORS = ["#5b9bd9","#e8699a","#a876d8","#f4a623","#52c97f","#4db8d4","#e8645b","#7986cb"];
@@ -7214,9 +7230,10 @@ function renderMsg(m) {{
             <div class="tg-av-wrap">${{avStyle}}</div>
             <div>
                 <div class="tg-sender-name" style="color:${{nc}};">${{m.student_name}}</div>
-                <div class="tg-bubble tg-bubble-theirs">
+                <div class="tg-bubble tg-bubble-theirs" style="position:relative;" onclick="toggleMsgSelect(event,this)">
                     ${{txtHtml}}${{fHtml}}
                     <div class="tg-bubble-ts">${{ts}}</div>
+                    <button onclick="event.stopPropagation();deleteMsg(${{m.id}})" style="position:absolute;top:4px;right:4px;background:none;border:none;cursor:pointer;font-size:11px;color:#f87171;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="Delete">✕</button>
                 </div>
             </div></div>`;
     }}
@@ -7384,6 +7401,14 @@ async function deleteMsg(msgId) {{
     }} catch(e) {{ alert('Error.'); }}
 }}
 
+// ── Tap-to-select a message bubble to reveal its delete/priority buttons (mobile-friendly) ──
+function toggleMsgSelect(evt, bubbleEl) {{
+    evt.stopPropagation();
+    const wasSelected = bubbleEl.classList.contains('selected');
+    document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+    if (!wasSelected) bubbleEl.classList.add('selected');
+}}
+
 document.addEventListener('click', e => {{
     const panel = document.getElementById('membersPanel');
     const toggle = document.querySelector('.tg-members-toggle');
@@ -7391,6 +7416,7 @@ document.addEventListener('click', e => {{
         membersOpen = false;
         panel.classList.remove('open');
     }}
+    document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
 }});
 window.addEventListener('beforeunload', () => clearInterval(pollTimer));
 </script>
@@ -7700,10 +7726,10 @@ def student_dm_page(classmate_db_id):
         txt_html = f'<div class="tg-bubble-text">{txt}</div>' if txt else ''
         if is_me:
             return f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
-                <div class="tg-bubble tg-bubble-mine" style="position:relative;">
+                <div class="tg-bubble tg-bubble-mine" style="position:relative;" onclick="toggleMsgSelect(event,this)">
                     {txt_html}{fhtml}
                     <div class="tg-bubble-ts">{ts_str} ✓✓</div>
-                    <button onclick="deleteDM({mid})" class="del-btn" title="Delete">✕</button>
+                    <button onclick="event.stopPropagation();deleteDM({mid})" class="del-btn" title="Delete">✕</button>
                 </div>
             </div>"""
         else:
@@ -7754,8 +7780,9 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .tg-send-btn:hover{{background:#3a6a96;}}
 .tg-attach-btn{{width:36px;height:36px;border-radius:50%;background:none;border:none;cursor:pointer;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0;opacity:0.7;transition:opacity 0.15s;}}
 .tg-attach-btn:hover{{opacity:1;}}
-.del-btn{{position:absolute;top:2px;right:-22px;background:none;border:none;color:#f87171;font-size:11px;cursor:pointer;opacity:0;transition:opacity 0.15s;padding:2px 4px;}}
-.tg-bubble:hover .del-btn{{opacity:1;}}
+.del-btn{{position:absolute;top:-10px;right:-10px;background:#f87171;border:2px solid #0e1621;color:#fff;font-size:11px;cursor:pointer;opacity:0;transform:scale(0.7);transition:opacity 0.15s,transform 0.15s;padding:0;width:22px;height:22px;border-radius:50%;line-height:1;display:flex;align-items:center;justify-content:center;pointer-events:none;}}
+.tg-bubble:hover .del-btn,.tg-bubble.selected .del-btn{{opacity:1;transform:scale(1);pointer-events:auto;}}
+.tg-bubble.selected{{outline:2px solid #f87171;outline-offset:2px;}}
 </style>
 </head>
 <body>
@@ -7836,9 +7863,10 @@ async function sendMsg() {{
             const txtHtml = txt ? `<div class="tg-bubble-text">${{txt}}</div>` : '';
             const div = document.createElement('div');
             div.innerHTML = `<div class="tg-msg-row tg-mine" id="dm-${{data.id}}">
-                <div class="tg-bubble tg-bubble-mine" style="position:relative;">
+                <div class="tg-bubble tg-bubble-mine" style="position:relative;" onclick="toggleMsgSelect(event,this)">
                     ${{txtHtml}}
                     <div class="tg-bubble-ts">${{ts}} ✓✓</div>
+                    <button onclick="event.stopPropagation();deleteDM(${{data.id}})" class="del-btn" title="Delete">✕</button>
                 </div>
             </div>`;
             chatBox.appendChild(div.firstElementChild);
@@ -7854,6 +7882,17 @@ async function deleteDM(id) {{
     const data = await res.json();
     if (data.ok) document.getElementById('dm-' + id)?.remove();
 }}
+
+// ── Tap-to-select a message bubble to reveal its delete button (mobile-friendly) ──
+function toggleMsgSelect(evt, bubbleEl) {{
+    evt.stopPropagation();
+    const wasSelected = bubbleEl.classList.contains('selected');
+    document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+    if (!wasSelected) bubbleEl.classList.add('selected');
+}}
+document.addEventListener('click', () => {{
+    document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+}});
 
 async function pollMessages() {{
     try {{
@@ -8018,11 +8057,11 @@ def student_dm_poll(classmate_db_id):
         fhtml = render_file_html(m.get("file_url"), m.get("file_name"), m.get("file_thumb_url"))
         if is_me:
             html = f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
-                <div class="tg-bubble tg-bubble-mine" style="position:relative;">
+                <div class="tg-bubble tg-bubble-mine" style="position:relative;" onclick="toggleMsgSelect(event,this)">
                     {'<div class="tg-bubble-text">' + txt + '</div>' if txt else ''}
                     {fhtml}
                     <div class="tg-bubble-ts">{ts_str} ✓✓</div>
-                    <button onclick="deleteDM({mid})" class="del-btn" title="Delete">✕</button>
+                    <button onclick="event.stopPropagation();deleteDM({mid})" class="del-btn" title="Delete">✕</button>
                 </div>
             </div>"""
         else:
