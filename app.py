@@ -10698,6 +10698,7 @@ def teacher_inbox_thread(student_db_id):
     t_photo_url = supabase_public_url(teacher_photo) if teacher_photo else ""
     t_letter_big = (teacher_name_str or "T")[0].upper()
     s_name = student_row["full_name"]
+    s_name_js = s_name.replace("'", "\\'")
     s_img_url = supabase_public_url(student_row.get("image_file") or "") if student_row.get("image_file") else ""
     s_letter_big = (s_name or "?")[0].upper()
     topbar_av = f'<img src="{s_img_url}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;">' if s_img_url else f'<div style="width:40px;height:40px;border-radius:50%;background:#2b5278;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;">{s_letter_big}</div>'
@@ -10759,7 +10760,7 @@ const T_PHOTO = '{t_photo_url}';
 const T_LETTER = '{t_letter_big}';
 const S_IMG = '{s_img_url}';
 const S_LETTER = '{s_letter_big}';
-const S_NAME = '{s_name.replace("'", "\\'")}';
+const S_NAME = '{s_name_js}';
 
 async function sendMsg() {{
     const input = document.getElementById('msgInput');
