@@ -5860,7 +5860,7 @@ def student_class_feed(class_id):
         av = _tg_avatar(s["image_file"], s["full_name"], 36)
         me_badge = '<span class="tg-me-badge">You</span>' if is_me else ''
         is_p = s.get("is_priority", False)
-        star = '<span style="color:#f59e0b;font-size:13px;margin-left:3px;" title="High Priority Student">⭐</span>' if is_p else ''
+        star = f'<span id="member-priority-{s["id"]}"><span style="color:#f59e0b;font-size:13px;margin-left:3px;" title="High Priority Student">⭐</span></span>' if is_p else f'<span id="member-priority-{s["id"]}"></span>'
         dm_link = '' if is_me else f'<a href="/student/dm/{s["id"]}" style="margin-left:auto;font-size:11px;background:#1e3a5f;color:#5b9bd9;padding:3px 9px;border-radius:8px;text-decoration:none;flex-shrink:0;" id="dmbadge-{s["id"]}">&#128172; DM</a>'
         link = "javascript:void(0)" if is_me else f"/student/classmate/{s['id']}"
         members_html += (f'<div style="display:flex;align-items:center;padding:4px 12px;">' +
@@ -6333,6 +6333,23 @@ async function pollDmUnread() {{
 setInterval(pollDmUnread, 5000);
 pollDmUnread();
 
+// Poll member priority badges every 6s
+async function pollMembers() {{
+    try {{
+        const res = await fetch('/student/class/{class_id}/members');
+        const members = await res.json();
+        members.forEach(m => {{
+            const el = document.getElementById('member-priority-' + m.id);
+            if (!el) return;
+            el.innerHTML = m.is_priority
+                ? '<span style="color:#f59e0b;font-size:13px;margin-left:3px;" title="High Priority Student">⭐</span>'
+                : '';
+        }});
+    }} catch(e) {{}}
+}}
+setInterval(pollMembers, 6000);
+pollMembers();
+
 // Click outside to close members on mobile
 document.addEventListener('click', e => {{
     const panel = document.getElementById('membersPanel');
@@ -6368,7 +6385,7 @@ def student_class_messages(class_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk
+        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority
         FROM class_comments
         WHERE class_id=%s AND school_id=%s AND id>%s
         ORDER BY created_at ASC LIMIT 30
@@ -6393,6 +6410,7 @@ def student_class_messages(class_id):
             "ts_display": ts_display,
             "poster_type": r.get("poster_type") or "student",
             "teacher_id_fk": r.get("teacher_id_fk"),
+            "is_priority": r.get("is_priority") or False,
         })
     return jsonify({"messages": result})
 
@@ -6427,6 +6445,38 @@ def student_post_comment(class_id):
     conn.close()
     return ajax_ok("Comment posted!")
 
+
+
+# =========================================================
+# STUDENT — MEMBERS POLL (for live priority badge updates)
+# =========================================================
+@app.route("/student/class/<int:class_id>/members")
+def student_class_members_poll(class_id):
+    protect = student_required()
+    if protect:
+        return jsonify([])
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    if not student_belongs_to_class(student_db_id, class_id):
+        return jsonify([])
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT s.id, s.full_name, s.student_id, s.image_file, sc.is_priority
+        FROM students s
+        INNER JOIN student_classes sc ON sc.student_id_fk = s.id
+        WHERE sc.class_id_fk=%s AND s.school_id=%s
+        ORDER BY s.full_name ASC
+    """, (class_id, school_id))
+    rows = cur.fetchall()
+    conn.close()
+    return jsonify([{
+        "id": r["id"],
+        "full_name": r["full_name"],
+        "student_id": r["student_id"],
+        "image_file": supabase_public_url(r["image_file"] or ""),
+        "is_priority": bool(r["is_priority"]),
+    } for r in rows])
 
 
 # =========================================================
@@ -6971,45 +7021,6 @@ def teacher_set_priority(class_id, msg_id):
     return jsonify({"ok": True, "priority": priority})
 
 
-# =========================================================
-# CHAT — MESSAGES POLL (new messages since last_id)
-# =========================================================
-@app.route("/student/class/<int:class_id>/messages")
-def student_class_messages_poll(class_id):
-    protect = student_required()
-    if protect:
-        return jsonify([])
-    student_db_id = get_logged_student_db_id()
-    school_id = get_current_school_id()
-    if not student_belongs_to_class(student_db_id, class_id):
-        return jsonify([])
-    since = int(request.args.get("since", 0))
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, student_db_id, student_name, student_image, comment, created_at, poster_type, teacher_id_fk, is_priority
-        FROM class_comments
-        WHERE class_id=%s AND school_id=%s AND id > %s
-        ORDER BY created_at ASC LIMIT 50
-    """, (class_id, school_id, since))
-    rows = cur.fetchall()
-    conn.close()
-    result = []
-    for r in rows:
-        ts = r["created_at"]
-        ts_str = ts.strftime("%I:%M %p") if hasattr(ts, "strftime") else str(ts)[:16]
-        result.append({
-            "id": r["id"],
-            "student_db_id": r["student_db_id"],
-            "student_name": r["student_name"],
-            "student_image": r["student_image"] or "",
-            "comment": r["comment"],
-            "ts": ts_str,
-            "poster_type": r["poster_type"],
-            "teacher_id_fk": r["teacher_id_fk"],
-            "is_priority": r["is_priority"],
-        })
-    return jsonify(result)
 
 
 # =========================================================
