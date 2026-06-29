@@ -6514,13 +6514,21 @@ def student_post_comment(class_id):
         comment = ""
 
     student_row = get_student_row_by_db_id(student_db_id)
+    if not student_row:
+        return ajax_err("Student account not found. Please log in again.")
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type, file_url, file_name)
-        VALUES (%s, %s, %s, %s, %s, %s, 'student', %s, %s)
-    """, (school_id, class_id, student_db_id, student_row["full_name"], student_row["image_file"], comment, file_url, file_name))
-    conn.commit()
+    try:
+        cur.execute("""
+            INSERT INTO class_comments (school_id, class_id, student_db_id, student_name, student_image, comment, poster_type, file_url, file_name)
+            VALUES (%s, %s, %s, %s, %s, %s, 'student', %s, %s)
+        """, (school_id, class_id, student_db_id, student_row["full_name"], student_row["image_file"], comment, file_url, file_name))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        print("student_post_comment DB error:", repr(e), flush=True)
+        return ajax_err("Failed to post message. Please try again.")
     conn.close()
     return ajax_ok("Comment posted!")
 
