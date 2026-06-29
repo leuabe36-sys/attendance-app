@@ -6591,22 +6591,35 @@ async function sendMessage() {{
     }}
 }}
 
-// ── Poll for new messages ──
+// ── Poll for new messages (and removals) ──
 async function pollMessages() {{
     try {{
-        const res = await fetch('/student/class/{class_id}/messages?after=' + lastId);
-        const data = await res.json();
-        if (!data.messages || !data.messages.length) return;
         const bg = document.getElementById('chatBg');
-        const end = document.getElementById('messagesEnd');
-        data.messages.forEach(m => {{
-            if (document.getElementById('msg-' + m.id)) return;
-            const div = document.createElement('div');
-            div.innerHTML = renderMsg(m);
-            bg.insertBefore(div.firstElementChild, end);
-            lastId = Math.max(lastId, m.id);
-        }});
-        scrollToBottom();
+        const visibleIds = Array.from(bg.querySelectorAll('[id^="msg-"]'))
+            .map(el => el.id.slice(4))
+            .filter(id => /^\d+$/.test(id));
+        const url = '/student/class/{class_id}/messages?after=' + lastId +
+            (visibleIds.length ? '&ids=' + visibleIds.join(',') : '');
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.removed_ids && data.removed_ids.length) {{
+            data.removed_ids.forEach(id => {{
+                document.getElementById('msg-' + id)?.remove();
+            }});
+        }}
+
+        if (data.messages && data.messages.length) {{
+            const end = document.getElementById('messagesEnd');
+            data.messages.forEach(m => {{
+                if (document.getElementById('msg-' + m.id)) return;
+                const div = document.createElement('div');
+                div.innerHTML = renderMsg(m);
+                bg.insertBefore(div.firstElementChild, end);
+                lastId = Math.max(lastId, m.id);
+            }});
+            scrollToBottom();
+        }}
     }} catch(e) {{ /* silent */ }}
 }}
 
@@ -6730,6 +6743,18 @@ def student_class_messages(class_id):
         return jsonify({"messages": []})
 
     after = int(request.args.get("after", 0))
+
+    # IDs the client currently has rendered on screen — used to detect
+    # messages that were deleted (by anyone) since the client's last poll.
+    visible_ids = []
+    raw_ids = request.args.get("ids", "")
+    if raw_ids:
+        for part in raw_ids.split(","):
+            part = part.strip()
+            if part.isdigit():
+                visible_ids.append(int(part))
+        visible_ids = visible_ids[:500]  # safety cap
+
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
@@ -6739,6 +6764,17 @@ def student_class_messages(class_id):
         ORDER BY created_at ASC LIMIT 30
     """, (class_id, school_id, after))
     rows = cur.fetchall()
+
+    removed_ids = []
+    if visible_ids:
+        placeholders = ",".join(["%s"] * len(visible_ids))
+        cur.execute(
+            f"SELECT id FROM class_comments WHERE class_id=%s AND school_id=%s AND id IN ({placeholders})",
+            [class_id, school_id] + visible_ids
+        )
+        still_exist = {r["id"] for r in cur.fetchall()}
+        removed_ids = [i for i in visible_ids if i not in still_exist]
+
     conn.close()
 
     from datetime import date as _date
@@ -6763,7 +6799,7 @@ def student_class_messages(class_id):
             "file_name": r.get("file_name") or "",
             "file_thumb_url": r.get("file_thumb_url") or "",
         })
-    return jsonify({"messages": result})
+    return jsonify({"messages": result, "removed_ids": removed_ids})
 
 
 @app.route("/student/class/<int:class_id>/comment", methods=["POST"])
@@ -7244,19 +7280,32 @@ async function sendMessage() {{
 
 async function pollMessages() {{
     try {{
-        const res = await fetch('/teacher/class/{class_id}/messages?after=' + lastId);
-        const data = await res.json();
-        if (!data.messages || !data.messages.length) return;
         const bg = document.getElementById('chatBg');
-        const end = document.getElementById('messagesEnd');
-        data.messages.forEach(m => {{
-            if (document.getElementById('msg-' + m.id)) return;
-            const div = document.createElement('div');
-            div.innerHTML = renderMsg(m);
-            bg.insertBefore(div.firstElementChild, end);
-            lastId = Math.max(lastId, m.id);
-        }});
-        scrollToBottom();
+        const visibleIds = Array.from(bg.querySelectorAll('[id^="msg-"]'))
+            .map(el => el.id.slice(4))
+            .filter(id => /^\d+$/.test(id));
+        const url = '/teacher/class/{class_id}/messages?after=' + lastId +
+            (visibleIds.length ? '&ids=' + visibleIds.join(',') : '');
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.removed_ids && data.removed_ids.length) {{
+            data.removed_ids.forEach(id => {{
+                document.getElementById('msg-' + id)?.remove();
+            }});
+        }}
+
+        if (data.messages && data.messages.length) {{
+            const end = document.getElementById('messagesEnd');
+            data.messages.forEach(m => {{
+                if (document.getElementById('msg-' + m.id)) return;
+                const div = document.createElement('div');
+                div.innerHTML = renderMsg(m);
+                bg.insertBefore(div.firstElementChild, end);
+                lastId = Math.max(lastId, m.id);
+            }});
+            scrollToBottom();
+        }}
     }} catch(e) {{}}
 }}
 
@@ -7364,6 +7413,18 @@ def teacher_class_messages(class_id):
         return jsonify({"messages": []})
 
     after = int(request.args.get("after", 0))
+
+    # IDs the client currently has rendered on screen — used to detect
+    # messages that were deleted (by anyone) since the client's last poll.
+    visible_ids = []
+    raw_ids = request.args.get("ids", "")
+    if raw_ids:
+        for part in raw_ids.split(","):
+            part = part.strip()
+            if part.isdigit():
+                visible_ids.append(int(part))
+        visible_ids = visible_ids[:500]  # safety cap
+
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
@@ -7373,6 +7434,17 @@ def teacher_class_messages(class_id):
         ORDER BY created_at ASC LIMIT 30
     """, (class_id, school_id, after))
     rows = cur.fetchall()
+
+    removed_ids = []
+    if visible_ids:
+        placeholders = ",".join(["%s"] * len(visible_ids))
+        cur.execute(
+            f"SELECT id FROM class_comments WHERE class_id=%s AND school_id=%s AND id IN ({placeholders})",
+            [class_id, school_id] + visible_ids
+        )
+        still_exist = {r["id"] for r in cur.fetchall()}
+        removed_ids = [i for i in visible_ids if i not in still_exist]
+
     conn.close()
 
     from datetime import date as _date
@@ -7396,7 +7468,7 @@ def teacher_class_messages(class_id):
             "file_name": r.get("file_name") or "",
             "file_thumb_url": r.get("file_thumb_url") or "",
         })
-    return jsonify({"messages": result})
+    return jsonify({"messages": result, "removed_ids": removed_ids})
 
 
 # =========================================================
@@ -7785,8 +7857,21 @@ async function deleteDM(id) {{
 
 async function pollMessages() {{
     try {{
-        const res = await fetch('/student/dm/{classmate_db_id}/poll?since=' + lastId);
-        const msgs = await res.json();
+        const visibleIds = Array.from(chatBox.querySelectorAll('[id^="dm-"]'))
+            .map(el => el.id.slice(3))
+            .filter(id => /^\d+$/.test(id));
+        const url = '/student/dm/{classmate_db_id}/poll?since=' + lastId +
+            (visibleIds.length ? '&ids=' + visibleIds.join(',') : '');
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.removed_ids && data.removed_ids.length) {{
+            data.removed_ids.forEach(id => {{
+                document.getElementById('dm-' + id)?.remove();
+            }});
+        }}
+
+        const msgs = data.messages || [];
         for (const m of msgs) {{
             if (document.getElementById('dm-' + m.id)) continue;
             lastId = Math.max(lastId, m.id);
@@ -7874,10 +7959,22 @@ def student_dm_send(classmate_db_id):
 def student_dm_poll(classmate_db_id):
     protect = student_required()
     if protect:
-        return jsonify([])
+        return jsonify({"messages": [], "removed_ids": []})
     student_db_id = get_logged_student_db_id()
     school_id = get_current_school_id()
     since = int(request.args.get("since", 0))
+
+    # IDs the client currently has rendered on screen — used to detect
+    # messages that were deleted (by either party) since the last poll.
+    visible_ids = []
+    raw_ids = request.args.get("ids", "")
+    if raw_ids:
+        for part in raw_ids.split(","):
+            part = part.strip()
+            if part.isdigit():
+                visible_ids.append(int(part))
+        visible_ids = visible_ids[:500]  # safety cap
+
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
@@ -7889,6 +7986,20 @@ def student_dm_poll(classmate_db_id):
         ORDER BY created_at ASC LIMIT 50
     """, (school_id, student_db_id, classmate_db_id, classmate_db_id, student_db_id, since))
     rows = cur.fetchall()
+
+    removed_ids = []
+    if visible_ids:
+        placeholders = ",".join(["%s"] * len(visible_ids))
+        cur.execute(
+            f"""SELECT id FROM direct_messages
+                WHERE school_id=%s
+                  AND ((sender_db_id=%s AND receiver_db_id=%s) OR (sender_db_id=%s AND receiver_db_id=%s))
+                  AND id IN ({placeholders})""",
+            [school_id, student_db_id, classmate_db_id, classmate_db_id, student_db_id] + visible_ids
+        )
+        still_exist = {r["id"] for r in cur.fetchall()}
+        removed_ids = [i for i in visible_ids if i not in still_exist]
+
     # Mark as read
     cur.execute("""
         UPDATE direct_messages SET is_read=TRUE
@@ -7927,7 +8038,7 @@ def student_dm_poll(classmate_db_id):
                 </div>
             </div>"""
         result.append({"id": mid, "html": html})
-    return jsonify(result)
+    return jsonify({"messages": result, "removed_ids": removed_ids})
 
 
 @app.route("/teacher/class/<int:class_id>/comment", methods=["POST"])
