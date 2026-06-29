@@ -1342,6 +1342,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             <div class="sb-nav-label">MAIN</div>
             <a href="/teacher" class="sb-link"><span class="sb-icon">📋</span> My Classes</a>
             <div class="sb-nav-label" style="margin-top:16px;">ACCOUNT</div>
+            <a href="/teacher/edit-profile" class="sb-link"><span class="sb-icon">✏️</span> Edit Profile</a>
             <a href="/settings" class="sb-link"><span class="sb-icon">⚙️</span> Update Password</a>
             <a href="/" class="sb-link sb-link-muted"><span class="sb-icon">🏠</span> Main Site</a>
             <form method="POST" action="/teacher-logout" style="margin-top:8px;">
@@ -2263,6 +2264,7 @@ def teacher_login():
         session["teacher_logged_in"] = True
         session["teacher_id"] = teacher["id"]
         session["teacher_name"] = teacher["teacher_name"]
+        session["teacher_photo"] = teacher.get("photo_path") or ""
         session["school_id"] = school["id"]
         session["school_name"] = school["name"]
         # Issue a new device token — invalidates any other active session
@@ -3693,8 +3695,9 @@ def teacher_dashboard():
                 <h1 class="text-3xl font-extrabold tracking-tight">Welcome Back, {teacher_name}!</h1>
                 <p class="text-blue-100 text-sm mt-1">{f'🏫 {school_name} · ' if school_name else ''}Manage active classrooms, launch live face-recognition streams, or complete fast manual manual ticking sheets.</p>
             </div>
-            <div class="bg-white/10 px-4 py-2 rounded-xl text-xs font-mono backdrop-blur-sm">
+            <div class="bg-white/10 px-4 py-2 rounded-xl text-xs font-mono backdrop-blur-sm flex items-center gap-3">
                 System Session Verified ✓
+                <a href="/teacher/edit-profile" class="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-lg font-sans font-semibold no-underline text-white text-xs transition">✏️ Edit Profile</a>
             </div>
         </div>
 
@@ -3711,7 +3714,10 @@ def teacher_dashboard():
                             <span class="text-xs font-bold uppercase tracking-wider bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full">{c["department"] or "General"}</span>
                             <span class="text-xs font-mono text-slate-400">#CLS-{c["id"]}</span>
                         </div>
-                        <h3 class="text-xl font-bold text-slate-800 mb-1">{c["class_name"]}</h3>
+                        <h3 class="text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
+                            {c["class_name"]}
+                            <a href="/teacher/class/{c["id"]}/edit-name" title="Rename class" class="text-slate-300 hover:text-blue-600 text-sm transition"><i class="fas fa-pen"></i></a>
+                        </h3>
                         <p class="text-sm font-medium text-slate-600 mb-2">{c["subject_name"] or "No Topic Component Attached"}</p>
                         <div class="text-xs text-slate-400 space-y-1">
                             <div><i class="fas fa-layer-group w-4 text-slate-300"></i> <b>Section Block:</b> {c["section_name"] or "N/A"}</div>
@@ -3783,6 +3789,153 @@ def teacher_dashboard():
     </div>
     """
     return page_wrapper("Teacher Dashboard", body, is_teacher=True, teacher_name=teacher_name)
+
+
+# =========================================================
+# TEACHER — EDIT MY PROFILE (name + photo)
+# =========================================================
+@app.route("/teacher/edit-profile", methods=["GET", "POST"])
+def teacher_edit_profile():
+    protect = teacher_required()
+    if protect:
+        return protect
+
+    teacher_id = get_logged_teacher_id()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
+    teacher = cur.fetchone()
+    if not teacher:
+        conn.close()
+        return redirect("/teacher-logout")
+
+    error = ""
+    if request.method == "POST":
+        teacher_name = request.form.get("teacher_name", "").strip()
+        if not teacher_name:
+            conn.close()
+            error = "Name cannot be empty."
+            if is_ajax(): return ajax_err(error)
+        else:
+            new_photo = teacher.get("photo_path") or ""
+            photo_file = request.files.get("photo")
+            if photo_file and photo_file.filename:
+                safe_name = sanitize_filename(teacher_name)
+                ext = photo_file.filename.rsplit(".", 1)[-1].lower() if "." in photo_file.filename else "jpg"
+                new_filename = f"teacher_{teacher_id}_{safe_name}.{ext}"
+                img_bytes = photo_file.read()
+                public_url = supabase_upload(new_filename, img_bytes)
+                if public_url:
+                    old_img = teacher.get("photo_path") or ""
+                    if old_img and old_img.startswith("http"):
+                        supabase_delete(old_img.split("/")[-1])
+                    new_photo = public_url
+
+            cur.execute(
+                "UPDATE teachers SET teacher_name=%s, photo_path=%s WHERE id=%s",
+                (teacher_name, new_photo, teacher_id)
+            )
+            # Keep class displays in sync with the teacher's current name
+            cur.execute("UPDATE classes SET teacher_display_name=%s WHERE teacher_id=%s", (teacher_name, teacher_id))
+            conn.commit()
+            conn.close()
+            session["teacher_name"] = teacher_name
+            session["teacher_photo"] = new_photo
+            if is_ajax(): return ajax_ok("Profile updated successfully!", redirect_url="/teacher")
+            return "<script>alert('Profile updated successfully!');window.location.href='/teacher';</script>"
+    else:
+        conn.close()
+
+    photo_url = supabase_public_url(teacher.get("photo_path") or "") if teacher.get("photo_path") else ""
+    avatar_html = (f'<img id="photoPreview" src="{photo_url}" class="w-20 h-20 rounded-full object-cover border-2 border-indigo-400 shadow">'
+                   if photo_url else
+                   '<div id="photoPreview" class="w-20 h-20 rounded-full bg-indigo-500 text-white flex items-center justify-center text-2xl font-bold border-2 border-indigo-400 shadow">'
+                   f'{(teacher["teacher_name"] or "?")[0].upper()}</div>')
+
+    body = f"""
+    <div class="max-w-lg mx-auto">
+        <h1 class="text-2xl font-bold text-slate-800 mb-1">Edit My Profile</h1>
+        <p class="text-sm text-slate-500 mb-5">Update your display name or profile photo.</p>
+        {'<div class="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm font-semibold">' + error + '</div>' if error else ''}
+
+        <div class="flex items-center gap-4 mb-6 p-4 bg-slate-50 rounded-xl border">
+            {avatar_html}
+            <div>
+                <p class="font-semibold text-slate-700">{teacher["teacher_name"]}</p>
+                <p class="text-xs text-slate-400 font-mono">Username: {teacher["username"]}</p>
+            </div>
+        </div>
+
+        <form method="POST" enctype="multipart/form-data" class="space-y-4" data-ajax>
+            <div>
+                <label class="block text-sm font-semibold text-slate-700 mb-1">Display Name</label>
+                <input type="text" name="teacher_name" value="{teacher["teacher_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
+            </div>
+            <div class="border rounded-xl p-4 space-y-3 bg-slate-50">
+                <p class="text-sm font-semibold text-slate-700">Profile Photo</p>
+                <label class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg cursor-pointer text-sm">
+                    📁 Upload Photo
+                    <input type="file" name="photo" accept="image/*" class="hidden" onchange="if(this.files&&this.files[0]){{document.getElementById('photoPreview').src=URL.createObjectURL(this.files[0]);}}">
+                </label>
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="bg-blue-600 text-white font-bold py-2 px-5 rounded-lg hover:bg-blue-700">Save Changes</button>
+                <a href="/teacher" class="inline-block bg-slate-100 text-slate-700 font-bold py-2 px-5 rounded-lg hover:bg-slate-200">Cancel</a>
+            </div>
+        </form>
+    </div>
+    """
+    return page_wrapper("Edit My Profile", body, is_teacher=True, teacher_name=teacher["teacher_name"])
+
+
+# =========================================================
+# TEACHER — RENAME MY OWN CLASS
+# =========================================================
+@app.route("/teacher/class/<int:class_id>/edit-name", methods=["GET", "POST"])
+def teacher_edit_class_name(class_id):
+    protect = teacher_required()
+    if protect:
+        return protect
+
+    teacher_id = get_logged_teacher_id()
+    class_row = get_class_by_id(class_id)
+    if not class_row or class_row["teacher_id"] != teacher_id:
+        if is_ajax(): return ajax_err("Not authorized for this class.")
+        return "<script>alert('Not authorized for this class.');window.location.href='/teacher';</script>"
+
+    error = ""
+    if request.method == "POST":
+        class_name = request.form.get("class_name", "").strip()
+        if not class_name:
+            error = "Class name cannot be empty."
+            if is_ajax(): return ajax_err(error)
+        else:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("UPDATE classes SET class_name=%s WHERE id=%s AND teacher_id=%s", (class_name, class_id, teacher_id))
+            conn.commit()
+            conn.close()
+            if is_ajax(): return ajax_ok("Class name updated!", redirect_url="/teacher")
+            return "<script>alert('Class name updated!');window.location.href='/teacher';</script>"
+
+    body = f"""
+    <div class="max-w-md mx-auto">
+        <h1 class="text-2xl font-bold text-slate-800 mb-1">Rename Class</h1>
+        <p class="text-sm text-slate-500 mb-5">Update the display name for this classroom.</p>
+        {'<div class="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm font-semibold">' + error + '</div>' if error else ''}
+        <form method="POST" class="space-y-4" data-ajax>
+            <div>
+                <label class="block text-sm font-semibold text-slate-700 mb-1">Class Name</label>
+                <input type="text" name="class_name" value="{class_row['class_name']}" class="w-full px-3 py-2 border rounded-lg" required autofocus>
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="bg-blue-600 text-white font-bold py-2 px-5 rounded-lg hover:bg-blue-700">Save</button>
+                <a href="/teacher" class="inline-block bg-slate-100 text-slate-700 font-bold py-2 px-5 rounded-lg hover:bg-slate-200">Cancel</a>
+            </div>
+        </form>
+    </div>
+    """
+    return page_wrapper("Rename Class", body, is_teacher=True, teacher_name=session.get("teacher_name"))
 
 
 # =========================================================
