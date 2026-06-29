@@ -6099,7 +6099,9 @@ def student_class_feed(class_id):
         txt_html = f'<div class="tg-bubble-text">{txt}</div>' if txt else ''
         if is_me and not is_teacher:
             return (f'<div class="tg-msg-row tg-mine" id="msg-{mid}">' +
-                    f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}" onclick="toggleMsgSelect(event,this)">' +
+                    f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}" ' +
+                    'onmousedown="startLongPress(event,this)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" ' +
+                    'ontouchstart="startLongPress(event,this)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()" ontouchmove="markPressMoved()">' +
                     f'{txt_html}{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str} ✓✓</div>' +
                     f'<button onclick="event.stopPropagation();deleteMsg({mid})" class="chat-del-btn">✕</button>' +
@@ -6492,7 +6494,7 @@ function renderMsg(m) {{
 
     if (isMe) {{
         return `<div class="tg-msg-row tg-mine" id="msg-${{m.id}}">
-            <div class="tg-bubble tg-bubble-mine" style="position:relative;" onclick="toggleMsgSelect(event,this)">
+            <div class="tg-bubble tg-bubble-mine" style="position:relative;" onmousedown="startLongPress(event,this)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" ontouchstart="startLongPress(event,this)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()" ontouchmove="markPressMoved()">
                 ${{txtHtml}}${{fHtml}}
                 <div class="tg-bubble-ts">${{ts}} ✓✓</div>
                 <button onclick="event.stopPropagation();deleteMsg(${{m.id}})" class="chat-del-btn">✕</button>
@@ -6680,12 +6682,26 @@ async function deleteMsg(msgId) {{
     }} catch(e) {{ alert('Error deleting message.'); }}
 }}
 
-// ── Tap-to-select a message bubble to reveal its delete button (mobile-friendly) ──
-function toggleMsgSelect(evt, bubbleEl) {{
-    evt.stopPropagation();
-    const wasSelected = bubbleEl.classList.contains('selected');
-    document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
-    if (!wasSelected) bubbleEl.classList.add('selected');
+// ── Long-press a message bubble to select it and reveal its delete button (mobile-friendly) ──
+let _pressTimer = null;
+let _pressMoved = false;
+function startLongPress(evt, bubbleEl) {{
+    _pressMoved = false;
+    clearTimeout(_pressTimer);
+    _pressTimer = setTimeout(() => {{
+        if (_pressMoved) return;
+        const wasSelected = bubbleEl.classList.contains('selected');
+        document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+        if (!wasSelected) bubbleEl.classList.add('selected');
+        if (navigator.vibrate) navigator.vibrate(15);
+    }}, 500);
+}}
+function cancelLongPress() {{
+    clearTimeout(_pressTimer);
+}}
+function markPressMoved() {{
+    _pressMoved = true;
+    clearTimeout(_pressTimer);
 }}
 document.addEventListener('click', () => {{
     document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
@@ -6992,7 +7008,9 @@ def teacher_class_feed(class_id):
         del_btn = f'<button onclick="event.stopPropagation();deleteMsg({mid})" style="position:absolute;top:4px;right:26px;background:none;border:none;cursor:pointer;font-size:11px;color:#f87171;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="Delete">✕</button>'
         if is_me:
             return (f'<div class="tg-msg-row tg-mine" id="msg-{mid}">' +
-                    f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}" onclick="toggleMsgSelect(event,this)">' +
+                    f'<div class="tg-bubble tg-bubble-mine" style="position:relative;{pring}" ' +
+                    'onmousedown="startLongPress(event,this)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" ' +
+                    'ontouchstart="startLongPress(event,this)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()" ontouchmove="markPressMoved()">' +
                     f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str} ✓✓</div>{priority_btn}{del_btn}</div></div>')
         else:
@@ -7004,7 +7022,9 @@ def teacher_class_feed(class_id):
             return (f'<div class="tg-msg-row tg-theirs" id="msg-{mid}">' +
                     f'<div class="tg-av-wrap"><a href="/teacher/class/{class_id}/student-profile/{sid}" style="display:contents;">{av}</a></div>' +
                     f'<div><div class="tg-sender-name" style="color:{nc};">{name}</div>' +
-                    f'<div class="tg-bubble tg-bubble-theirs" style="position:relative;{pring}" onclick="toggleMsgSelect(event,this)">' +
+                    f'<div class="tg-bubble tg-bubble-theirs" style="position:relative;{pring}" ' +
+                    'onmousedown="startLongPress(event,this)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" ' +
+                    'ontouchstart="startLongPress(event,this)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()" ontouchmove="markPressMoved()">' +
                     f'<div class="tg-bubble-text">{txt}{pin_lbl}</div>{fhtml}' +
                     f'<div class="tg-bubble-ts">{ts_str}</div>{priority_btn}{del_btn}</div></div></div>')
 
@@ -7215,7 +7235,7 @@ function renderMsg(m) {{
 
     if (isMe) {{
         return `<div class="tg-msg-row tg-mine" id="msg-${{m.id}}">
-            <div class="tg-bubble tg-bubble-mine" style="position:relative;" onclick="toggleMsgSelect(event,this)">
+            <div class="tg-bubble tg-bubble-mine" style="position:relative;" onmousedown="startLongPress(event,this)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" ontouchstart="startLongPress(event,this)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()" ontouchmove="markPressMoved()">
                 ${{txtHtml}}${{fHtml}}
                 <div class="tg-bubble-ts">${{ts}} ✓✓</div>
                 <button onclick="event.stopPropagation();deleteMsg(${{m.id}})" style="position:absolute;top:4px;right:4px;background:none;border:none;cursor:pointer;font-size:11px;color:#f87171;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="Delete">✕</button>
@@ -7231,7 +7251,7 @@ function renderMsg(m) {{
             <div class="tg-av-wrap"><a href="/teacher/class/{class_id}/student-profile/${{m.student_db_id}}" style="display:contents;">${{avStyle}}</a></div>
             <div>
                 <div class="tg-sender-name" style="color:${{nc}};">${{m.student_name}}</div>
-                <div class="tg-bubble tg-bubble-theirs" style="position:relative;" onclick="toggleMsgSelect(event,this)">
+                <div class="tg-bubble tg-bubble-theirs" style="position:relative;" onmousedown="startLongPress(event,this)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" ontouchstart="startLongPress(event,this)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()" ontouchmove="markPressMoved()">
                     ${{txtHtml}}${{fHtml}}
                     <div class="tg-bubble-ts">${{ts}}</div>
                     <button onclick="event.stopPropagation();deleteMsg(${{m.id}})" style="position:absolute;top:4px;right:4px;background:none;border:none;cursor:pointer;font-size:11px;color:#f87171;opacity:0;transition:opacity 0.15s;" class="t-pin-btn" title="Delete">✕</button>
@@ -7402,12 +7422,26 @@ async function deleteMsg(msgId) {{
     }} catch(e) {{ alert('Error.'); }}
 }}
 
-// ── Tap-to-select a message bubble to reveal its delete/priority buttons (mobile-friendly) ──
-function toggleMsgSelect(evt, bubbleEl) {{
-    evt.stopPropagation();
-    const wasSelected = bubbleEl.classList.contains('selected');
-    document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
-    if (!wasSelected) bubbleEl.classList.add('selected');
+// ── Long-press a message bubble to select it and reveal its delete/priority buttons (mobile-friendly) ──
+let _pressTimer = null;
+let _pressMoved = false;
+function startLongPress(evt, bubbleEl) {{
+    _pressMoved = false;
+    clearTimeout(_pressTimer);
+    _pressTimer = setTimeout(() => {{
+        if (_pressMoved) return;
+        const wasSelected = bubbleEl.classList.contains('selected');
+        document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+        if (!wasSelected) bubbleEl.classList.add('selected');
+        if (navigator.vibrate) navigator.vibrate(15);
+    }}, 500);
+}}
+function cancelLongPress() {{
+    clearTimeout(_pressTimer);
+}}
+function markPressMoved() {{
+    _pressMoved = true;
+    clearTimeout(_pressTimer);
 }}
 
 document.addEventListener('click', e => {{
@@ -7727,7 +7761,7 @@ def student_dm_page(classmate_db_id):
         txt_html = f'<div class="tg-bubble-text">{txt}</div>' if txt else ''
         if is_me:
             return f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
-                <div class="tg-bubble tg-bubble-mine" style="position:relative;" onclick="toggleMsgSelect(event,this)">
+                <div class="tg-bubble tg-bubble-mine" style="position:relative;" onmousedown="startLongPress(event,this)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" ontouchstart="startLongPress(event,this)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()" ontouchmove="markPressMoved()">
                     {txt_html}{fhtml}
                     <div class="tg-bubble-ts">{ts_str} ✓✓</div>
                     <button onclick="event.stopPropagation();deleteDM({mid})" class="del-btn" title="Delete">✕</button>
@@ -7866,7 +7900,7 @@ async function sendMsg() {{
             const txtHtml = txt ? `<div class="tg-bubble-text">${{txt}}</div>` : '';
             const div = document.createElement('div');
             div.innerHTML = `<div class="tg-msg-row tg-mine" id="dm-${{data.id}}">
-                <div class="tg-bubble tg-bubble-mine" style="position:relative;" onclick="toggleMsgSelect(event,this)">
+                <div class="tg-bubble tg-bubble-mine" style="position:relative;" onmousedown="startLongPress(event,this)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" ontouchstart="startLongPress(event,this)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()" ontouchmove="markPressMoved()">
                     ${{txtHtml}}
                     <div class="tg-bubble-ts">${{ts}} ✓✓</div>
                     <button onclick="event.stopPropagation();deleteDM(${{data.id}})" class="del-btn" title="Delete">✕</button>
@@ -7886,12 +7920,26 @@ async function deleteDM(id) {{
     if (data.ok) document.getElementById('dm-' + id)?.remove();
 }}
 
-// ── Tap-to-select a message bubble to reveal its delete button (mobile-friendly) ──
-function toggleMsgSelect(evt, bubbleEl) {{
-    evt.stopPropagation();
-    const wasSelected = bubbleEl.classList.contains('selected');
-    document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
-    if (!wasSelected) bubbleEl.classList.add('selected');
+// ── Long-press a message bubble to select it and reveal its delete button (mobile-friendly) ──
+let _pressTimer = null;
+let _pressMoved = false;
+function startLongPress(evt, bubbleEl) {{
+    _pressMoved = false;
+    clearTimeout(_pressTimer);
+    _pressTimer = setTimeout(() => {{
+        if (_pressMoved) return;
+        const wasSelected = bubbleEl.classList.contains('selected');
+        document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
+        if (!wasSelected) bubbleEl.classList.add('selected');
+        if (navigator.vibrate) navigator.vibrate(15);
+    }}, 500);
+}}
+function cancelLongPress() {{
+    clearTimeout(_pressTimer);
+}}
+function markPressMoved() {{
+    _pressMoved = true;
+    clearTimeout(_pressTimer);
 }}
 document.addEventListener('click', () => {{
     document.querySelectorAll('.tg-bubble.selected').forEach(b => b.classList.remove('selected'));
@@ -8060,7 +8108,7 @@ def student_dm_poll(classmate_db_id):
         fhtml = render_file_html(m.get("file_url"), m.get("file_name"), m.get("file_thumb_url"))
         if is_me:
             html = f"""<div class="tg-msg-row tg-mine" id="dm-{mid}">
-                <div class="tg-bubble tg-bubble-mine" style="position:relative;" onclick="toggleMsgSelect(event,this)">
+                <div class="tg-bubble tg-bubble-mine" style="position:relative;" onmousedown="startLongPress(event,this)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" ontouchstart="startLongPress(event,this)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()" ontouchmove="markPressMoved()">
                     {'<div class="tg-bubble-text">' + txt + '</div>' if txt else ''}
                     {fhtml}
                     <div class="tg-bubble-ts">{ts_str} ✓✓</div>
