@@ -5613,7 +5613,11 @@ def student_classes_hub():
         preview = ""
         ts_badge = ""
         if last:
-            preview = f"{last['student_name'].split()[0]}: {last['comment'][:40]}{'…' if len(last['comment'])>40 else ''}"
+            comment_text = last['comment'] or ''
+            if comment_text:
+                preview = f"{last['student_name'].split()[0]}: {comment_text[:40]}{'…' if len(comment_text)>40 else ''}"
+            else:
+                preview = f"{last['student_name'].split()[0]}: 📎 File"
             ts = last["created_at"]
             if hasattr(ts, "strftime"):
                 from datetime import date as _date
@@ -7160,7 +7164,7 @@ def student_dm_page(classmate_db_id):
 
     # Fetch conversation
     cur.execute("""
-        SELECT id, sender_db_id, sender_name, sender_image, message, created_at, is_read
+        SELECT id, sender_db_id, sender_name, sender_image, message, created_at, is_read, file_url, file_name
         FROM direct_messages
         WHERE school_id=%s
           AND ((sender_db_id=%s AND receiver_db_id=%s) OR (sender_db_id=%s AND receiver_db_id=%s))
@@ -7749,6 +7753,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
                 <span style="width:7px;height:7px;background:#52c97f;border-radius:50%;display:inline-block;"></span>
                 Active Student
             </div>
+            {(f'<div style="margin-top:16px;"><a href="/student/dm/{classmate_db_id}" style="display:inline-flex;align-items:center;gap:8px;background:#2b5278;color:#e4e7eb;font-size:14px;font-weight:700;padding:10px 24px;border-radius:50px;text-decoration:none;transition:background 0.15s;" onmouseover="this.style.background=\'#3a6a96\'" onmouseout="this.style.background=\'#2b5278\'">💬 Send Message</a></div>') if not is_me else ''}
         </div>
     </div>
 
