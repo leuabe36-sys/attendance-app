@@ -6295,7 +6295,17 @@ async function sendMessage() {{
         }});
         const data = await res.json();
         if (!data.ok) {{ showToast(data.error || 'Could not send'); input.value = text; }}
-        else {{ pollMessages(); }}
+        else {{
+            if (data.msg && !document.getElementById('msg-' + data.msg.id)) {{
+                const bg = document.getElementById('chatBg');
+                const end = document.getElementById('messagesEnd');
+                const div = document.createElement('div');
+                div.innerHTML = renderMsg(data.msg);
+                bg.insertBefore(div.firstElementChild, end);
+                lastId = Math.max(lastId, data.msg.id);
+                scrollToBottom();
+            }}
+        }}
     }} catch(e) {{
         showToast('Network error');
         input.value = text;
@@ -6332,7 +6342,7 @@ function scrollToBottom() {{
 // ── Init ──
 scrollToBottom();
 pollMessages();
-pollTimer = setInterval(pollMessages, 3000);
+pollTimer = setInterval(pollMessages, 1000);
 
 // Poll for priority message changes every 8s
 async function pollPriority() {{
@@ -6526,13 +6536,30 @@ def student_post_comment(class_id):
             VALUES (%s, %s, %s, %s, %s, %s, 'student', %s, %s)
         """, (school_id, class_id, student_db_id, student_row["full_name"], student_row["image_file"], comment, file_url, file_name))
         conn.commit()
+        cur.execute("SELECT id, created_at FROM class_comments WHERE school_id=%s AND class_id=%s AND student_db_id=%s ORDER BY id DESC LIMIT 1", (school_id, class_id, student_db_id))
+        new_row = cur.fetchone()
     except Exception as e:
         conn.rollback()
         conn.close()
         print("student_post_comment DB error:", repr(e), flush=True)
         return ajax_err("Failed to post message. Please try again.")
     conn.close()
-    return ajax_ok("Comment posted!")
+    from datetime import date as _date
+    new_id = new_row["id"] if new_row else 0
+    ts = new_row["created_at"] if new_row else datetime.now()
+    ts_display = ts.strftime("%I:%M %p") if hasattr(ts, "strftime") else ""
+    return jsonify({"ok": True, "msg": {
+        "id": new_id,
+        "student_db_id": student_db_id,
+        "student_name": student_row["full_name"],
+        "student_image": supabase_public_url(student_row["image_file"] or ""),
+        "comment": comment,
+        "ts_display": ts_display,
+        "poster_type": "student",
+        "file_url": file_url or "",
+        "file_name": file_name or "",
+        "is_priority": False,
+    }})
 
 
 
@@ -6891,7 +6918,17 @@ async function sendMessage() {{
         }});
         const data = await res.json();
         if (!data.ok) {{ input.value = text; }}
-        else {{ pollMessages(); }}
+        else {{
+            if (data.msg && !document.getElementById('msg-' + data.msg.id)) {{
+                const bg = document.getElementById('chatBg');
+                const end = document.getElementById('messagesEnd');
+                const div = document.createElement('div');
+                div.innerHTML = renderMsg(data.msg);
+                bg.insertBefore(div.firstElementChild, end);
+                lastId = Math.max(lastId, data.msg.id);
+                scrollToBottom();
+            }}
+        }}
     }} catch(e) {{ input.value = text; }}
     finally {{ btn.disabled = false; input.focus(); }}
 }}
@@ -6921,7 +6958,7 @@ function scrollToBottom() {{
 
 scrollToBottom();
 pollMessages();
-pollTimer = setInterval(pollMessages, 3000);
+pollTimer = setInterval(pollMessages, 1000);
 
 async function toggleStudentPriority(studentId, priority, btn) {{
     try {{
@@ -7411,7 +7448,26 @@ async function sendMsg() {{
             body: fd
         }});
         const data = await res.json();
-        if (data.ok) pollMessages();
+        if (data.ok) {{
+            // Instantly show the sent message without waiting for poll
+            const now = new Date();
+            const hh = now.getHours() % 12 || 12;
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            const ampm = now.getHours() >= 12 ? 'PM' : 'AM';
+            const ts = `${{hh}}:${{mm}} ${{ampm}}`;
+            const txt = msg ? msg.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
+            const txtHtml = txt ? `<div class="tg-bubble-text">${{txt}}</div>` : '';
+            const div = document.createElement('div');
+            div.innerHTML = `<div class="tg-msg-row tg-mine" id="dm-${{data.id}}">
+                <div class="tg-bubble tg-bubble-mine" style="position:relative;">
+                    ${{txtHtml}}
+                    <div class="tg-bubble-ts">${{ts}} ✓✓</div>
+                </div>
+            </div>`;
+            chatBox.appendChild(div.firstElementChild);
+            chatBox.scrollTop = chatBox.scrollHeight;
+            lastId = Math.max(lastId, data.id);
+        }}
     }} catch(e) {{}}
 }}
 
@@ -7437,7 +7493,7 @@ async function pollMessages() {{
     }} catch(e) {{}}
 }}
 
-setInterval(pollMessages, 3000);
+setInterval(pollMessages, 1000);
 </script>
 </body>
 </html>"""
@@ -7622,13 +7678,29 @@ def teacher_post_comment(class_id):
             VALUES (%s, %s, %s, %s, %s, %s, 'teacher', %s, %s, %s)
         """, (school_id, class_id, 0, teacher_name, teacher_photo, comment, teacher_id, file_url, file_name))
         conn.commit()
+        cur.execute("SELECT id, created_at FROM class_comments WHERE school_id=%s AND class_id=%s AND teacher_id_fk=%s ORDER BY id DESC LIMIT 1", (school_id, class_id, teacher_id))
+        new_row = cur.fetchone()
     except Exception as e:
         conn.rollback()
         conn.close()
         print("teacher_post_comment DB error:", repr(e), flush=True)
         return ajax_err("Failed to post message. Please try again.")
     conn.close()
-    return ajax_ok("Comment posted!")
+    new_id = new_row["id"] if new_row else 0
+    ts = new_row["created_at"] if new_row else datetime.now()
+    ts_display = ts.strftime("%I:%M %p") if hasattr(ts, "strftime") else ""
+    return jsonify({"ok": True, "msg": {
+        "id": new_id,
+        "student_db_id": 0,
+        "student_name": teacher_name,
+        "student_image": supabase_public_url(teacher_photo or ""),
+        "comment": comment,
+        "ts_display": ts_display,
+        "poster_type": "teacher",
+        "file_url": file_url or "",
+        "file_name": file_name or "",
+        "is_priority": False,
+    }})
 
 
 @app.route("/teacher/class/<int:class_id>/student-profile/<int:student_db_id>")
