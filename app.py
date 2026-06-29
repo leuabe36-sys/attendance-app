@@ -1341,6 +1341,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
         <nav class="sb-nav">
             <div class="sb-nav-label">MAIN</div>
             <a href="/teacher" class="sb-link"><span class="sb-icon">📋</span> My Classes</a>
+            <a href="/teacher/inbox" class="sb-link"><span class="sb-icon">💬</span> Student Inbox</a>
             <div class="sb-nav-label" style="margin-top:16px;">ACCOUNT</div>
             <a href="/teacher/edit-profile" class="sb-link"><span class="sb-icon">✏️</span> Edit Profile</a>
             <a href="/settings" class="sb-link"><span class="sb-icon">⚙️</span> Update Password</a>
@@ -6107,9 +6108,10 @@ def student_class_feed(class_id):
                     f'<button onclick="event.stopPropagation();deleteMsg({mid})" class="chat-del-btn">✕</button>' +
                     f'</div></div>')
         elif is_teacher:
+            t_profile_href = f"/student/teacher-profile/{m['teacher_id_fk']}" if m.get('teacher_id_fk') else "javascript:void(0)"
             return (f'<div class="tg-msg-row tg-theirs" id="msg-{mid}">' +
-                    f'<div class="tg-av-wrap"><div class="tg-letter-av" style="width:34px;height:34px;background:#7c3aed;">&#128104;&#8205;&#127979;</div></div>' +
-                    f'<div><div class="tg-sender-name" style="color:#a78bfa;">{m["student_name"]} ' +
+                    f'<div class="tg-av-wrap"><a href="{t_profile_href}" style="display:contents;"><div class="tg-letter-av" style="width:34px;height:34px;background:#7c3aed;cursor:pointer;">&#128104;&#8205;&#127979;</div></a></div>' +
+                    f'<div><div class="tg-sender-name" style="color:#a78bfa;"><a href="{t_profile_href}" style="color:inherit;text-decoration:none;">{m["student_name"]}</a> ' +
                     f'<span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;margin-left:4px;">Teacher</span></div>' +
                     f'<div class="tg-bubble" style="max-width:min(420px,72vw);padding:8px 12px 4px;border-radius:4px 16px 16px 16px;background:#2d1b69;border:1px solid #4c1d95;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,0.25);{pring}">' +
                     f'{txt_html}{fhtml}' +
@@ -6501,12 +6503,18 @@ function renderMsg(m) {{
             </div>
         </div>`;
     }} else if (m.poster_type === 'teacher') {{
+        const teacherProfileUrl = m.teacher_id_fk ? `/student/teacher-profile/${{m.teacher_id_fk}}` : 'javascript:void(0)';
         return `<div class="tg-msg-row tg-theirs" id="msg-${{m.id}}">
             <div class="tg-av-wrap">
-                <div class="tg-letter-av" style="width:34px;height:34px;background:#7c3aed;">👨‍🏫</div>
+                <a href="${{teacherProfileUrl}}" style="display:contents;">
+                    <div class="tg-letter-av" style="width:34px;height:34px;background:#7c3aed;cursor:pointer;">👨‍🏫</div>
+                </a>
             </div>
             <div>
-                <div class="tg-sender-name" style="color:#a78bfa;">${{m.student_name}} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;margin-left:4px;">Teacher</span></div>
+                <div class="tg-sender-name" style="color:#a78bfa;">
+                    <a href="${{teacherProfileUrl}}" style="color:inherit;text-decoration:none;">${{m.student_name}}</a>
+                    <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;margin-left:4px;">Teacher</span>
+                </div>
                 <div class="tg-bubble" style="max-width:min(420px,72vw);padding:8px 12px 4px;border-radius:4px 16px 16px 16px;background:#2d1b69;border:1px solid #4c1d95;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,0.25);">
                     ${{txtHtml}}${{fHtml}}
                     <div class="tg-bubble-ts">${{ts}}</div>
@@ -9881,8 +9889,832 @@ def super_admin_logout():
     session.pop("super_admin_logged_in", None)
     return redirect("/super-admin-login")
 
+
+# =========================================================
+# TEACHER–STUDENT DIRECT MESSAGES (teacher inbox + reply)
+# =========================================================
+# We use a separate table so teacher IDs (teachers.id) and student IDs (students.id)
+# don't collide with the student–student direct_messages table.
+#
+# Schema (created lazily via init_db extension below):
+#   teacher_student_messages(id, school_id, class_id,
+#       sender_type  TEXT  -- 'student' | 'teacher'
+#       student_db_id INTEGER, teacher_db_id INTEGER,
+#       sender_name TEXT, sender_image TEXT,
+#       message TEXT, file_url TEXT, file_name TEXT,
+#       is_read_by_teacher BOOL, is_read_by_student BOOL,
+#       created_at TIMESTAMP)
+
+def _ensure_teacher_msg_table():
+    """Create the teacher–student DM table if it doesn't exist yet."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS teacher_student_messages (
+                id SERIAL PRIMARY KEY,
+                school_id INTEGER NOT NULL DEFAULT 1,
+                class_id INTEGER NOT NULL,
+                sender_type TEXT NOT NULL,
+                student_db_id INTEGER NOT NULL,
+                teacher_db_id INTEGER NOT NULL,
+                sender_name TEXT NOT NULL,
+                sender_image TEXT,
+                message TEXT NOT NULL,
+                file_url TEXT,
+                file_name TEXT,
+                is_read_by_teacher BOOLEAN NOT NULL DEFAULT FALSE,
+                is_read_by_student BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_tsm_teacher ON teacher_student_messages(teacher_db_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_tsm_student ON teacher_student_messages(student_db_id)")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("_ensure_teacher_msg_table error:", e)
+
+
+# ── STUDENT: view teacher profile page ──────────────────────────────────────
+@app.route("/student/teacher-profile/<int:teacher_db_id>")
+def student_view_teacher_profile(teacher_db_id):
+    protect = student_required()
+    if protect:
+        return protect
+
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    student_ctx = get_student_row_by_db_id(student_db_id)
+
+    # Fetch teacher row
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM teachers WHERE id=%s AND school_id=%s", (teacher_db_id, school_id))
+    teacher = cur.fetchone()
+    conn.close()
+
+    if not teacher:
+        return "<script>alert('Teacher not found.');window.location.href='/student/classes';</script>"
+
+    # Check student shares at least one class with this teacher
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1 FROM student_classes sc
+        INNER JOIN classes c ON c.id = sc.class_id_fk
+        WHERE sc.student_id_fk=%s AND c.teacher_id=%s AND c.school_id=%s
+        LIMIT 1
+    """, (student_db_id, teacher_db_id, school_id))
+    shared = cur.fetchone()
+
+    # Classes this teacher teaches that the student is in
+    cur.execute("""
+        SELECT c.* FROM classes c
+        INNER JOIN student_classes sc ON sc.class_id_fk = c.id
+        WHERE sc.student_id_fk=%s AND c.teacher_id=%s AND c.school_id=%s
+        ORDER BY c.class_name
+    """, (student_db_id, teacher_db_id, school_id))
+    shared_classes = cur.fetchall()
+    conn.close()
+
+    if not shared:
+        return "<script>alert('You can only view teachers of your classes.');window.location.href='/student/classes';</script>"
+
+    photo_url = supabase_public_url(teacher.get("photo_path") or "") if teacher.get("photo_path") else ""
+    letter = (teacher["teacher_name"] or "T")[0].upper()
+
+    if photo_url:
+        av_html = f'<img src="{photo_url}" style="width:90px;height:90px;border-radius:50%;object-fit:cover;flex-shrink:0;">'
+    else:
+        av_html = f'<div style="width:90px;height:90px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#4f46e5);display:flex;align-items:center;justify-content:center;font-size:36px;font-weight:700;color:#fff;">{letter}</div>'
+
+    shared_html = "".join(f"""
+    <a href="/student/class/{sc['id']}/feed" style="display:flex;align-items:center;gap:10px;padding:10px 16px;
+        background:#1a2635;border-radius:12px;text-decoration:none;transition:background 0.15s;"
+        onmouseover="this.style.background='#1e3048'" onmouseout="this.style.background='#1a2635'">
+        <span style="font-size:20px;">📚</span>
+        <div>
+            <div style="font-weight:600;color:#c8d8e8;font-size:14px;">{sc['class_name']}</div>
+            <div style="font-size:12px;color:#4a6a8a;">{sc.get('subject_name') or ''}</div>
+        </div>
+        <svg style="margin-left:auto;color:#4a6a8a;" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+    </a>""" for sc in shared_classes)
+
+    # Pick any shared class for DM context (use the first one)
+    first_class_id = shared_classes[0]["id"] if shared_classes else 0
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{teacher['teacher_name']}</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;color:#e4e7eb;min-height:100vh;}}
+</style>
+</head>
+<body>
+<div style="max-width:480px;margin:0 auto;padding:20px 16px;">
+    <a href="javascript:history.back()" style="display:inline-flex;align-items:center;gap:6px;color:#5b9bd9;font-size:14px;font-weight:600;text-decoration:none;margin-bottom:20px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+        Back
+    </a>
+
+    <!-- Profile card -->
+    <div style="background:#17212b;border-radius:20px;overflow:hidden;margin-bottom:16px;">
+        <div style="height:80px;background:linear-gradient(135deg,#2d1b69,#4c1d95);"></div>
+        <div style="display:flex;justify-content:center;margin-top:-45px;margin-bottom:12px;">
+            <div style="border:4px solid #17212b;border-radius:50%;">{av_html}</div>
+        </div>
+        <div style="text-align:center;padding:0 20px 24px;">
+            <h2 style="font-size:20px;font-weight:700;color:#e4e7eb;">{teacher['teacher_name']}</h2>
+            <div style="display:inline-flex;align-items:center;gap:6px;background:#2d1b69;color:#a78bfa;font-size:12px;font-weight:700;padding:4px 14px;border-radius:20px;margin-top:8px;border:1px solid #4c1d95;">
+                👨‍🏫 Instructor
+            </div>
+            <div style="margin-top:16px;">
+                <a href="/student/teacher-dm/{teacher_db_id}?class_id={first_class_id}"
+                   style="display:inline-flex;align-items:center;gap:8px;background:#7c3aed;color:#fff;
+                   font-size:14px;font-weight:700;padding:10px 28px;border-radius:50px;text-decoration:none;
+                   box-shadow:0 4px 14px rgba(124,58,237,0.4);">
+                    ✉️ Message
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Classes taught to this student -->
+    <div style="background:#17212b;border-radius:16px;overflow:hidden;margin-bottom:16px;">
+        <div style="padding:14px 16px;border-bottom:1px solid #0f1923;font-size:12px;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:0.06em;">
+            Your Classes with {teacher['teacher_name']} ({len(shared_classes)})
+        </div>
+        <div style="padding:10px;display:flex;flex-direction:column;gap:6px;">
+            {shared_html if shared_html else '<p style="text-align:center;color:#3a4a5a;padding:20px;font-size:13px;">No shared classes</p>'}
+        </div>
+    </div>
+</div>
+</body>
+</html>"""
+    return html
+
+
+# ── STUDENT: DM page with teacher ──────────────────────────────────────────
+@app.route("/student/teacher-dm/<int:teacher_db_id>")
+def student_teacher_dm_page(teacher_db_id):
+    protect = student_required()
+    if protect:
+        return protect
+
+    _ensure_teacher_msg_table()
+
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    student_ctx = get_student_row_by_db_id(student_db_id)
+    if not student_ctx:
+        return redirect("/student-logout")
+
+    # resolve class_id (from query param or first shared class)
+    class_id = request.args.get("class_id", type=int) or 0
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM teachers WHERE id=%s AND school_id=%s", (teacher_db_id, school_id))
+    teacher = cur.fetchone()
+    if not teacher:
+        conn.close()
+        return "<script>alert('Teacher not found.');window.location.href='/student/classes';</script>"
+
+    if not class_id:
+        cur.execute("""
+            SELECT c.id FROM classes c
+            INNER JOIN student_classes sc ON sc.class_id_fk = c.id
+            WHERE sc.student_id_fk=%s AND c.teacher_id=%s AND c.school_id=%s
+            ORDER BY c.id LIMIT 1
+        """, (student_db_id, teacher_db_id, school_id))
+        row = cur.fetchone()
+        class_id = row["id"] if row else 0
+
+    # Mark teacher's messages as read
+    cur.execute("""
+        UPDATE teacher_student_messages SET is_read_by_student=TRUE
+        WHERE student_db_id=%s AND teacher_db_id=%s AND school_id=%s AND sender_type='teacher'
+    """, (student_db_id, teacher_db_id, school_id))
+    conn.commit()
+
+    # Fetch conversation
+    cur.execute("""
+        SELECT id, sender_type, sender_name, sender_image, message, created_at
+        FROM teacher_student_messages
+        WHERE student_db_id=%s AND teacher_db_id=%s AND school_id=%s
+        ORDER BY created_at ASC LIMIT 100
+    """, (student_db_id, teacher_db_id, school_id))
+    msgs = cur.fetchall()
+    conn.close()
+
+    def _ts(dt):
+        if hasattr(dt, "strftime"):
+            from datetime import date as _date
+            if dt.date() == __import__("datetime").date.today():
+                return dt.strftime("%I:%M %p")
+            return dt.strftime("%b %d, %I:%M %p")
+        return str(dt)[:16]
+
+    msgs_html = ""
+    for m in msgs:
+        is_me = m["sender_type"] == "student"
+        ts = _ts(m["created_at"])
+        txt = (m["message"] or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+        mid = m["id"]
+        if is_me:
+            msgs_html += f"""<div class="tg-msg-row tg-mine" id="tsm-{mid}">
+    <div class="tg-bubble tg-bubble-mine">
+        <div class="tg-bubble-text">{txt}</div>
+        <div class="tg-bubble-ts">{ts} ✓✓</div>
+    </div></div>"""
+        else:
+            t_letter = (teacher["teacher_name"] or "T")[0].upper()
+            t_photo = supabase_public_url(teacher.get("photo_path") or "") if teacher.get("photo_path") else ""
+            av = f'<img src="{t_photo}" style="width:34px;height:34px;border-radius:50%;object-fit:cover;">' if t_photo else f'<div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#4f46e5);display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:14px;">{t_letter}</div>'
+            msgs_html += f"""<div class="tg-msg-row tg-theirs" id="tsm-{mid}">
+    <div class="tg-av-wrap">{av}</div>
+    <div>
+        <div class="tg-sender-name" style="color:#a78bfa;">{teacher['teacher_name']} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;">Teacher</span></div>
+        <div class="tg-bubble tg-bubble-theirs" style="background:#2d1b69;border:1px solid #4c1d95;">
+            <div class="tg-bubble-text">{txt}</div>
+            <div class="tg-bubble-ts">{ts}</div>
+        </div>
+    </div></div>"""
+
+    last_id = msgs[-1]["id"] if msgs else 0
+    t_photo_url = supabase_public_url(teacher.get("photo_path") or "") if teacher.get("photo_path") else ""
+    t_letter_big = (teacher["teacher_name"] or "T")[0].upper()
+    topbar_av = f'<img src="{t_photo_url}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;">' if t_photo_url else f'<div style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#4f46e5);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;">{t_letter_big}</div>'
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Chat with {teacher['teacher_name']}</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+html{{height:100%;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden;color:#e4e7eb;}}
+.tg-topbar{{height:56px;background:#17212b;border-bottom:1px solid #0f1923;display:flex;align-items:center;padding:0 12px;gap:10px;flex-shrink:0;box-shadow:0 1px 8px rgba(0,0,0,0.3);}}
+.tg-topbar-info{{flex:1;min-width:0;}}
+.tg-topbar-title{{font-weight:700;font-size:15px;color:#e4e7eb;}}
+.tg-topbar-sub{{font-size:12px;color:#5a8ebd;}}
+.tg-back{{color:#5b9bd9;font-size:14px;font-weight:600;text-decoration:none;padding:6px;}}
+.tg-msgs{{flex:1;overflow-y:auto;padding:12px 12px 8px;display:flex;flex-direction:column;gap:6px;background:linear-gradient(180deg,#0e1621 0%,#111d2c 100%);}}
+.tg-msg-row{{display:flex;align-items:flex-end;gap:6px;}}
+.tg-mine{{justify-content:flex-end;}}
+.tg-theirs{{justify-content:flex-start;}}
+.tg-av-wrap{{flex-shrink:0;width:34px;display:flex;align-items:flex-end;}}
+.tg-bubble{{max-width:min(360px,72vw);padding:8px 12px 4px;border-radius:16px;word-break:break-word;position:relative;}}
+.tg-bubble-mine{{background:#2b5278;border-radius:16px 16px 4px 16px;box-shadow:0 1px 4px rgba(0,0,0,0.25);}}
+.tg-bubble-theirs{{border-radius:4px 16px 16px 16px;background:#1e2d3d;box-shadow:0 1px 4px rgba(0,0,0,0.25);}}
+.tg-bubble-text{{font-size:14px;color:#e4e7eb;line-height:1.5;}}
+.tg-bubble-ts{{font-size:10px;color:#5a7a9a;text-align:right;margin-top:3px;}}
+.tg-sender-name{{font-size:12px;font-weight:700;margin-bottom:3px;}}
+.tg-input-bar{{background:#17212b;border-top:1px solid #0f1923;padding:10px 12px;display:flex;align-items:center;gap:8px;flex-shrink:0;padding-bottom:max(10px,env(safe-area-inset-bottom));}}
+.tg-input{{flex:1;background:#242f3d;border:none;border-radius:20px;padding:10px 16px;color:#e4e7eb;font-size:14px;outline:none;resize:none;max-height:100px;line-height:1.4;font-family:inherit;}}
+.tg-input::placeholder{{color:#5a6a7a;}}
+.tg-send-btn{{width:40px;height:40px;border-radius:50%;background:#2b5278;border:none;color:#5b9bd9;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background 0.15s;flex-shrink:0;}}
+.tg-send-btn:hover{{background:#3a6a96;}}
+::-webkit-scrollbar{{width:4px;}}::-webkit-scrollbar-thumb{{background:#2b3c4e;border-radius:4px;}}
+</style>
+</head>
+<body>
+<div class="tg-topbar">
+    <a href="/student/teacher-profile/{teacher_db_id}" class="tg-back">←</a>
+    <a href="/student/teacher-profile/{teacher_db_id}" style="display:contents;text-decoration:none;">
+        {topbar_av}
+        <div class="tg-topbar-info">
+            <div class="tg-topbar-title">{teacher['teacher_name']}</div>
+            <div class="tg-topbar-sub">👨‍🏫 Instructor</div>
+        </div>
+    </a>
+</div>
+<div class="tg-msgs" id="msgList">{msgs_html}</div>
+<div class="tg-input-bar">
+    <textarea class="tg-input" id="msgInput" placeholder="Message {teacher['teacher_name']}…" rows="1"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendMsg();}}"></textarea>
+    <button class="tg-send-btn" onclick="sendMsg()">➤</button>
+</div>
+<script>
+const msgList = document.getElementById('msgList');
+msgList.scrollTop = msgList.scrollHeight;
+let lastId = {last_id};
+const STUDENT_DB_ID = {student_db_id};
+const TEACHER_DB_ID = {teacher_db_id};
+
+async function sendMsg() {{
+    const input = document.getElementById('msgInput');
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    input.style.height = '';
+    const res = await fetch('/student/teacher-dm/{teacher_db_id}/send', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{message: text, class_id: {class_id}}})
+    }});
+    const data = await res.json();
+    if (data.ok && data.msg) appendMsg(data.msg, true);
+}}
+
+function appendMsg(m, isMe) {{
+    const div = document.createElement('div');
+    div.id = 'tsm-' + m.id;
+    div.className = 'tg-msg-row ' + (isMe ? 'tg-mine' : 'tg-theirs');
+    const txt = (m.message || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const ts = m.ts || '';
+    if (isMe) {{
+        div.innerHTML = `<div class="tg-bubble tg-bubble-mine"><div class="tg-bubble-text">${{txt}}</div><div class="tg-bubble-ts">${{ts}} ✓✓</div></div>`;
+    }} else {{
+        const avHtml = '{t_photo_url}' ? `<img src="{t_photo_url}" style="width:34px;height:34px;border-radius:50%;object-fit:cover;">` : `<div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#4f46e5);display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:14px;">{t_letter_big}</div>`;
+        div.innerHTML = `<div class="tg-av-wrap">${{avHtml}}</div><div><div class="tg-sender-name" style="color:#a78bfa;">{teacher['teacher_name']} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;">Teacher</span></div><div class="tg-bubble tg-bubble-theirs" style="background:#2d1b69;border:1px solid #4c1d95;"><div class="tg-bubble-text">${{txt}}</div><div class="tg-bubble-ts">${{ts}}</div></div></div>`;
+    }}
+    msgList.appendChild(div);
+    if (m.id > lastId) lastId = m.id;
+    msgList.scrollTop = msgList.scrollHeight;
+}}
+
+async function pollMsgs() {{
+    try {{
+        const res = await fetch(`/student/teacher-dm/{teacher_db_id}/poll?since=${{lastId}}`);
+        const data = await res.json();
+        if (data.msgs) data.msgs.forEach(m => {{
+            if (!document.getElementById('tsm-' + m.id)) appendMsg(m, m.sender_type === 'student');
+        }});
+    }} catch(e) {{}}
+    setTimeout(pollMsgs, 3000);
+}}
+pollMsgs();
+
+// Auto-resize textarea
+document.getElementById('msgInput').addEventListener('input', function() {{
+    this.style.height = '';
+    this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+}});
+</script>
+</body>
+</html>"""
+    return html
+
+
+@app.route("/student/teacher-dm/<int:teacher_db_id>/send", methods=["POST"])
+def student_teacher_dm_send(teacher_db_id):
+    protect = student_required()
+    if protect:
+        return jsonify({"ok": False, "error": "Not logged in."})
+
+    _ensure_teacher_msg_table()
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    student_row = get_student_row_by_db_id(student_db_id)
+
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    class_id = data.get("class_id") or 0
+    if not message:
+        return jsonify({"ok": False, "error": "Message cannot be empty."})
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM teachers WHERE id=%s AND school_id=%s", (teacher_db_id, school_id))
+        if not cur.fetchone():
+            conn.close()
+            return jsonify({"ok": False, "error": "Teacher not found."})
+
+        cur.execute("""
+            INSERT INTO teacher_student_messages
+                (school_id, class_id, sender_type, student_db_id, teacher_db_id, sender_name, sender_image, message, is_read_by_teacher, is_read_by_student)
+            VALUES (%s, %s, 'student', %s, %s, %s, %s, %s, FALSE, TRUE)
+            RETURNING id, created_at
+        """, (school_id, class_id, student_db_id, teacher_db_id,
+              student_row["full_name"], student_row.get("image_file") or "",
+              message))
+        row = cur.fetchone()
+        conn.commit()
+        conn.close()
+        ts = row["created_at"].strftime("%I:%M %p") if hasattr(row["created_at"], "strftime") else str(row["created_at"])[:16]
+        return jsonify({"ok": True, "msg": {"id": row["id"], "sender_type": "student", "message": message, "ts": ts}})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/student/teacher-dm/<int:teacher_db_id>/poll")
+def student_teacher_dm_poll(teacher_db_id):
+    protect = student_required()
+    if protect:
+        return jsonify({"msgs": []})
+
+    _ensure_teacher_msg_table()
+    student_db_id = get_logged_student_db_id()
+    school_id = get_current_school_id()
+    since = request.args.get("since", 0, type=int)
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, sender_type, sender_name, message, created_at
+            FROM teacher_student_messages
+            WHERE student_db_id=%s AND teacher_db_id=%s AND school_id=%s AND id > %s
+            ORDER BY id ASC LIMIT 30
+        """, (student_db_id, teacher_db_id, school_id, since))
+        rows = cur.fetchall()
+        # Mark teacher messages as read
+        if any(r["sender_type"] == "teacher" for r in rows):
+            cur.execute("""
+                UPDATE teacher_student_messages SET is_read_by_student=TRUE
+                WHERE student_db_id=%s AND teacher_db_id=%s AND school_id=%s AND sender_type='teacher' AND id > %s
+            """, (student_db_id, teacher_db_id, school_id, since))
+            conn.commit()
+        conn.close()
+
+        def _ts(dt):
+            if hasattr(dt, "strftime"):
+                from datetime import date as _d
+                if dt.date() == __import__("datetime").date.today():
+                    return dt.strftime("%I:%M %p")
+                return dt.strftime("%b %d, %I:%M %p")
+            return str(dt)[:16]
+
+        return jsonify({"msgs": [{"id": r["id"], "sender_type": r["sender_type"],
+                                   "message": r["message"], "ts": _ts(r["created_at"])} for r in rows]})
+    except Exception as e:
+        return jsonify({"msgs": [], "error": str(e)})
+
+
+# ── TEACHER: inbox (conversations with students) ──────────────────────────
+@app.route("/teacher/inbox")
+def teacher_inbox():
+    protect = teacher_required()
+    if protect:
+        return protect
+
+    _ensure_teacher_msg_table()
+    teacher_id = get_logged_teacher_id()
+    school_id = get_current_school_id()
+    teacher_name = session.get("teacher_name", "Teacher")
+
+    conn = get_db()
+    cur = conn.cursor()
+    # One row per student conversation: latest message + unread count
+    cur.execute("""
+        SELECT DISTINCT ON (student_db_id)
+            student_db_id,
+            sender_name,
+            sender_image,
+            message,
+            created_at,
+            sender_type,
+            SUM(CASE WHEN is_read_by_teacher=FALSE AND sender_type='student' THEN 1 ELSE 0 END)
+                OVER (PARTITION BY student_db_id) AS unread_cnt
+        FROM teacher_student_messages
+        WHERE teacher_db_id=%s AND school_id=%s
+        ORDER BY student_db_id, created_at DESC
+    """, (teacher_id, school_id))
+    conversations = cur.fetchall()
+    conn.close()
+
+    if not conversations:
+        convs_html = """
+        <div style="text-align:center;padding:60px 20px;color:#4a6a8a;">
+            <div style="font-size:56px;margin-bottom:12px;">📭</div>
+            <div style="font-weight:600;font-size:16px;">No messages yet</div>
+            <div style="font-size:13px;margin-top:6px;">Students can message you from the class chat feed</div>
+        </div>"""
+    else:
+        convs_html = ""
+        for conv in conversations:
+            sid = conv["student_db_id"]
+            student_row = get_student_row_by_db_id(sid)
+            name = student_row["full_name"] if student_row else conv["sender_name"]
+            img = supabase_public_url(student_row.get("image_file") or "") if student_row else ""
+            letter = (name or "?")[0].upper()
+            colors = ["#2196F3","#E91E63","#9C27B0","#FF9800","#4CAF50","#00BCD4","#F44336","#3F51B5"]
+            color = colors[sum(ord(c) for c in name) % len(colors)]
+            av = f'<img src="{img}" style="width:48px;height:48px;border-radius:50%;object-fit:cover;flex-shrink:0;">' if img else f'<div style="width:48px;height:48px;border-radius:50%;background:{color};display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:#fff;flex-shrink:0;">{letter}</div>'
+            preview = (conv["message"] or "")[:50]
+            if conv["sender_type"] == "teacher":
+                preview = "You: " + preview
+            unread = int(conv["unread_cnt"] or 0)
+            unread_badge = f'<span style="background:#ef4444;color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:20px;flex-shrink:0;">{unread}</span>' if unread else ""
+            ts_raw = conv["created_at"]
+            if hasattr(ts_raw, "strftime"):
+                from datetime import date as _d
+                ts_str = ts_raw.strftime("%I:%M %p") if ts_raw.date() == __import__("datetime").date.today() else ts_raw.strftime("%b %d")
+            else:
+                ts_str = str(ts_raw)[:10]
+            convs_html += f"""
+            <a href="/teacher/inbox/{sid}" style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid #1b2633;text-decoration:none;transition:background 0.12s;" onmouseover="this.style.background='#1e2d3d'" onmouseout="this.style.background=''">
+                {av}
+                <div style="flex:1;min-width:0;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <span style="font-weight:600;color:#e4e7eb;font-size:14px;">{name}</span>
+                        <span style="font-size:11px;color:#5a6a7a;flex-shrink:0;">{ts_str}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+                        <span style="font-size:13px;color:#7a8a9a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;">{preview}</span>
+                        {unread_badge}
+                    </div>
+                </div>
+            </a>"""
+
+    body = f"""
+    <div style="max-width:600px;">
+        <h1 style="font-size:22px;font-weight:800;color:#e4e7eb;margin-bottom:4px;">💬 Student Messages</h1>
+        <p style="font-size:13px;color:#5a8ebd;margin-bottom:20px;">Private conversations with students across your classes.</p>
+        <div style="background:#17212b;border-radius:16px;overflow:hidden;border:1px solid #1b2633;">
+            {convs_html}
+        </div>
+    </div>
+    """
+    return page_wrapper("Inbox", body, is_teacher=True, teacher_name=teacher_name)
+
+
+# ── TEACHER: individual DM thread with a student ──────────────────────────
+@app.route("/teacher/inbox/<int:student_db_id>")
+def teacher_inbox_thread(student_db_id):
+    protect = teacher_required()
+    if protect:
+        return protect
+
+    _ensure_teacher_msg_table()
+    teacher_id = get_logged_teacher_id()
+    school_id = get_current_school_id()
+    teacher_name_str = session.get("teacher_name", "Teacher")
+    teacher_photo = session.get("teacher_photo", "")
+
+    student_row = get_student_row_by_db_id(student_db_id)
+    if not student_row or student_row.get("school_id", school_id) != school_id:
+        return "<script>alert('Student not found.');window.location.href='/teacher/inbox';</script>"
+
+    conn = get_db()
+    cur = conn.cursor()
+    # Get a shared class
+    cur.execute("""
+        SELECT c.id FROM classes c
+        INNER JOIN student_classes sc ON sc.class_id_fk = c.id
+        WHERE sc.student_id_fk=%s AND c.teacher_id=%s AND c.school_id=%s
+        ORDER BY c.id LIMIT 1
+    """, (student_db_id, teacher_id, school_id))
+    row = cur.fetchone()
+    class_id = row["id"] if row else 0
+
+    # Mark student messages as read
+    cur.execute("""
+        UPDATE teacher_student_messages SET is_read_by_teacher=TRUE
+        WHERE student_db_id=%s AND teacher_db_id=%s AND school_id=%s AND sender_type='student'
+    """, (student_db_id, teacher_id, school_id))
+    conn.commit()
+
+    cur.execute("""
+        SELECT id, sender_type, sender_name, message, created_at
+        FROM teacher_student_messages
+        WHERE student_db_id=%s AND teacher_db_id=%s AND school_id=%s
+        ORDER BY created_at ASC LIMIT 100
+    """, (student_db_id, teacher_id, school_id))
+    msgs = cur.fetchall()
+    conn.close()
+
+    def _ts(dt):
+        if hasattr(dt, "strftime"):
+            from datetime import date as _d
+            if dt.date() == __import__("datetime").date.today():
+                return dt.strftime("%I:%M %p")
+            return dt.strftime("%b %d, %I:%M %p")
+        return str(dt)[:16]
+
+    msgs_html = ""
+    for m in msgs:
+        is_me = m["sender_type"] == "teacher"
+        ts = _ts(m["created_at"])
+        txt = (m["message"] or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+        mid = m["id"]
+        if is_me:
+            msgs_html += f"""<div class="tg-msg-row tg-mine" id="tsm-{mid}">
+<div class="tg-bubble tg-bubble-mine"><div class="tg-bubble-text">{txt}</div><div class="tg-bubble-ts">{ts} ✓✓</div></div></div>"""
+        else:
+            s_img = supabase_public_url(student_row.get("image_file") or "") if student_row.get("image_file") else ""
+            s_letter = (student_row["full_name"] or "?")[0].upper()
+            colors2 = ["#2196F3","#E91E63","#9C27B0","#FF9800","#4CAF50","#00BCD4","#F44336","#3F51B5"]
+            s_color = colors2[sum(ord(c) for c in student_row["full_name"]) % len(colors2)]
+            av = f'<img src="{s_img}" style="width:34px;height:34px;border-radius:50%;object-fit:cover;">' if s_img else f'<div style="width:34px;height:34px;border-radius:50%;background:{s_color};display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:14px;">{s_letter}</div>'
+            msgs_html += f"""<div class="tg-msg-row tg-theirs" id="tsm-{mid}">
+<div class="tg-av-wrap">{av}</div>
+<div>
+    <div class="tg-sender-name" style="color:#5b9bd9;">{student_row['full_name']}</div>
+    <div class="tg-bubble tg-bubble-theirs"><div class="tg-bubble-text">{txt}</div><div class="tg-bubble-ts">{ts}</div></div>
+</div></div>"""
+
+    last_id = msgs[-1]["id"] if msgs else 0
+    t_photo_url = supabase_public_url(teacher_photo) if teacher_photo else ""
+    t_letter_big = (teacher_name_str or "T")[0].upper()
+    s_name = student_row["full_name"]
+    s_img_url = supabase_public_url(student_row.get("image_file") or "") if student_row.get("image_file") else ""
+    s_letter_big = (s_name or "?")[0].upper()
+    topbar_av = f'<img src="{s_img_url}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;">' if s_img_url else f'<div style="width:40px;height:40px;border-radius:50%;background:#2b5278;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;">{s_letter_big}</div>'
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Chat with {s_name}</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+html{{height:100%;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden;color:#e4e7eb;}}
+.tg-topbar{{height:56px;background:#17212b;border-bottom:1px solid #0f1923;display:flex;align-items:center;padding:0 12px;gap:10px;flex-shrink:0;box-shadow:0 1px 8px rgba(0,0,0,0.3);}}
+.tg-topbar-info{{flex:1;min-width:0;}}
+.tg-topbar-title{{font-weight:700;font-size:15px;color:#e4e7eb;}}
+.tg-topbar-sub{{font-size:12px;color:#5a8ebd;}}
+.tg-back{{color:#5b9bd9;font-size:14px;font-weight:600;text-decoration:none;padding:6px;}}
+.tg-msgs{{flex:1;overflow-y:auto;padding:12px 12px 8px;display:flex;flex-direction:column;gap:6px;background:linear-gradient(180deg,#0e1621 0%,#111d2c 100%);}}
+.tg-msg-row{{display:flex;align-items:flex-end;gap:6px;}}
+.tg-mine{{justify-content:flex-end;}}
+.tg-theirs{{justify-content:flex-start;}}
+.tg-av-wrap{{flex-shrink:0;width:34px;display:flex;align-items:flex-end;}}
+.tg-bubble{{max-width:min(360px,72vw);padding:8px 12px 4px;border-radius:16px;word-break:break-word;}}
+.tg-bubble-mine{{background:#7c3aed;border-radius:16px 16px 4px 16px;box-shadow:0 1px 4px rgba(0,0,0,0.25);}}
+.tg-bubble-theirs{{border-radius:4px 16px 16px 16px;background:#1e2d3d;box-shadow:0 1px 4px rgba(0,0,0,0.25);}}
+.tg-bubble-text{{font-size:14px;color:#e4e7eb;line-height:1.5;}}
+.tg-bubble-ts{{font-size:10px;color:#a0a8b8;text-align:right;margin-top:3px;}}
+.tg-sender-name{{font-size:12px;font-weight:700;margin-bottom:3px;}}
+.tg-input-bar{{background:#17212b;border-top:1px solid #0f1923;padding:10px 12px;display:flex;align-items:center;gap:8px;flex-shrink:0;padding-bottom:max(10px,env(safe-area-inset-bottom));}}
+.tg-input{{flex:1;background:#242f3d;border:none;border-radius:20px;padding:10px 16px;color:#e4e7eb;font-size:14px;outline:none;resize:none;max-height:100px;line-height:1.4;font-family:inherit;}}
+.tg-input::placeholder{{color:#5a6a7a;}}
+.tg-send-btn{{width:40px;height:40px;border-radius:50%;background:#7c3aed;border:none;color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background 0.15s;flex-shrink:0;}}
+.tg-send-btn:hover{{background:#6d28d9;}}
+::-webkit-scrollbar{{width:4px;}}::-webkit-scrollbar-thumb{{background:#2b3c4e;border-radius:4px;}}
+</style>
+</head>
+<body>
+<div class="tg-topbar">
+    <a href="/teacher/inbox" class="tg-back">←</a>
+    {topbar_av}
+    <div class="tg-topbar-info">
+        <div class="tg-topbar-title">{s_name}</div>
+        <div class="tg-topbar-sub">Student · ID: {student_row['student_id']}</div>
+    </div>
+</div>
+<div class="tg-msgs" id="msgList">{msgs_html}</div>
+<div class="tg-input-bar">
+    <textarea class="tg-input" id="msgInput" placeholder="Reply to {s_name}…" rows="1"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendMsg();}}"></textarea>
+    <button class="tg-send-btn" onclick="sendMsg()">➤</button>
+</div>
+<script>
+const msgList = document.getElementById('msgList');
+msgList.scrollTop = msgList.scrollHeight;
+let lastId = {last_id};
+const T_PHOTO = '{t_photo_url}';
+const T_LETTER = '{t_letter_big}';
+const S_IMG = '{s_img_url}';
+const S_LETTER = '{s_letter_big}';
+const S_NAME = '{s_name.replace("'", "\\'")}';
+
+async function sendMsg() {{
+    const input = document.getElementById('msgInput');
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    input.style.height = '';
+    const res = await fetch('/teacher/inbox/{student_db_id}/send', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{message: text, class_id: {class_id}}})
+    }});
+    const data = await res.json();
+    if (data.ok && data.msg) appendMsg(data.msg, true);
+}}
+
+function appendMsg(m, isMe) {{
+    const div = document.createElement('div');
+    div.id = 'tsm-' + m.id;
+    div.className = 'tg-msg-row ' + (isMe ? 'tg-mine' : 'tg-theirs');
+    const txt = (m.message||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const ts = m.ts || '';
+    if (isMe) {{
+        div.innerHTML = `<div class="tg-bubble tg-bubble-mine"><div class="tg-bubble-text">${{txt}}</div><div class="tg-bubble-ts">${{ts}} ✓✓</div></div>`;
+    }} else {{
+        const avHtml = S_IMG ? `<img src="${{S_IMG}}" style="width:34px;height:34px;border-radius:50%;object-fit:cover;">` : `<div style="width:34px;height:34px;border-radius:50%;background:#2b5278;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:14px;">${{S_LETTER}}</div>`;
+        div.innerHTML = `<div class="tg-av-wrap">${{avHtml}}</div><div><div class="tg-sender-name" style="color:#5b9bd9;">${{S_NAME}}</div><div class="tg-bubble tg-bubble-theirs"><div class="tg-bubble-text">${{txt}}</div><div class="tg-bubble-ts">${{ts}}</div></div></div>`;
+    }}
+    msgList.appendChild(div);
+    if (m.id > lastId) lastId = m.id;
+    msgList.scrollTop = msgList.scrollHeight;
+}}
+
+async function pollMsgs() {{
+    try {{
+        const res = await fetch(`/teacher/inbox/{student_db_id}/poll?since=${{lastId}}`);
+        const data = await res.json();
+        if (data.msgs) data.msgs.forEach(m => {{
+            if (!document.getElementById('tsm-' + m.id)) appendMsg(m, m.sender_type === 'teacher');
+        }});
+    }} catch(e) {{}}
+    setTimeout(pollMsgs, 3000);
+}}
+pollMsgs();
+
+document.getElementById('msgInput').addEventListener('input', function() {{
+    this.style.height = '';
+    this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+}});
+</script>
+</body>
+</html>"""
+    return html
+
+
+@app.route("/teacher/inbox/<int:student_db_id>/send", methods=["POST"])
+def teacher_inbox_send(student_db_id):
+    protect = teacher_required()
+    if protect:
+        return jsonify({"ok": False, "error": "Not logged in."})
+
+    _ensure_teacher_msg_table()
+    teacher_id = get_logged_teacher_id()
+    school_id = get_current_school_id()
+    teacher_name_str = session.get("teacher_name", "Teacher")
+    teacher_photo = session.get("teacher_photo", "")
+
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    class_id = data.get("class_id") or 0
+    if not message:
+        return jsonify({"ok": False, "error": "Message cannot be empty."})
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO teacher_student_messages
+                (school_id, class_id, sender_type, student_db_id, teacher_db_id, sender_name, sender_image, message, is_read_by_teacher, is_read_by_student)
+            VALUES (%s, %s, 'teacher', %s, %s, %s, %s, %s, TRUE, FALSE)
+            RETURNING id, created_at
+        """, (school_id, class_id, student_db_id, teacher_id, teacher_name_str, teacher_photo or "", message))
+        row = cur.fetchone()
+        conn.commit()
+        conn.close()
+        ts = row["created_at"].strftime("%I:%M %p") if hasattr(row["created_at"], "strftime") else str(row["created_at"])[:16]
+        return jsonify({"ok": True, "msg": {"id": row["id"], "sender_type": "teacher", "message": message, "ts": ts}})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/teacher/inbox/<int:student_db_id>/poll")
+def teacher_inbox_poll(student_db_id):
+    protect = teacher_required()
+    if protect:
+        return jsonify({"msgs": []})
+
+    _ensure_teacher_msg_table()
+    teacher_id = get_logged_teacher_id()
+    school_id = get_current_school_id()
+    since = request.args.get("since", 0, type=int)
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, sender_type, sender_name, message, created_at
+            FROM teacher_student_messages
+            WHERE student_db_id=%s AND teacher_db_id=%s AND school_id=%s AND id > %s
+            ORDER BY id ASC LIMIT 30
+        """, (student_db_id, teacher_id, school_id, since))
+        rows = cur.fetchall()
+        if any(r["sender_type"] == "student" for r in rows):
+            cur.execute("""
+                UPDATE teacher_student_messages SET is_read_by_teacher=TRUE
+                WHERE student_db_id=%s AND teacher_db_id=%s AND school_id=%s AND sender_type='student' AND id > %s
+            """, (student_db_id, teacher_id, school_id, since))
+            conn.commit()
+        conn.close()
+
+        def _ts(dt):
+            if hasattr(dt, "strftime"):
+                from datetime import date as _d
+                if dt.date() == __import__("datetime").date.today():
+                    return dt.strftime("%I:%M %p")
+                return dt.strftime("%b %d, %I:%M %p")
+            return str(dt)[:16]
+
+        return jsonify({"msgs": [{"id": r["id"], "sender_type": r["sender_type"],
+                                   "message": r["message"], "ts": _ts(r["created_at"])} for r in rows]})
+    except Exception as e:
+        return jsonify({"msgs": [], "error": str(e)})
+
+
 if __name__ == '__main__':
     init_db()
     init_super_admin_table()
+    _ensure_teacher_msg_table()
     load_known_faces()
     app.run(host='0.0.0.0', port=5000, debug=True)
