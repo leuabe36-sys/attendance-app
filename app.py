@@ -51,7 +51,9 @@ def send_email(to_email, subject, body):
         print("Email send failed:", repr(e), flush=True)
         return False, str(e)
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres.qsiedryjuusemdwkvcyf:Attendance%40School2026!@aws-0-eu-west-1.pooler.supabase.com:6543/postgres")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is not set. Set it in Render's Environment tab.")
 
 # =========================================================
 # SUPABASE STORAGE CONFIG
@@ -207,10 +209,12 @@ def _compare_embeddings(known_embedding, unknown_embedding, tolerance=0.6):
     return dist < tolerance, dist
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "school_attendance_v4_secret_key")
+app.secret_key = os.environ.get("SECRET_KEY")
+if not app.secret_key:
+    raise RuntimeError("SECRET_KEY environment variable is not set. Set it in Render's Environment tab.")
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = False  # works on both HTTP and HTTPS deployments
+app.config["SESSION_COOKIE_SECURE"] = True  # app is served over HTTPS on Render
 
 DB_FILE = "attendance.db"
 IMAGE_DIR = "student_images"
@@ -11113,4 +11117,4 @@ if __name__ == '__main__':
     init_super_admin_table()
     _ensure_teacher_msg_table()
     load_known_faces()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
