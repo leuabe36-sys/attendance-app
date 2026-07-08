@@ -217,7 +217,175 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = True  # app is served over HTTPS on Render
 
+# =========================================================
+# CSRF PROTECTION
+# =========================================================
+# Lightweight, dependency-free CSRF protection: a random per-session token
+# is embedded in every state-changing form/AJAX call and verified on the
+# server before any create/update/delete action is executed.
+def get_csrf_token():
+    if "_csrf_token" not in session:
+        session["_csrf_token"] = secrets.token_hex(32)
+    return session["_csrf_token"]
+
+def verify_csrf():
+    """Call at the top of every state-changing (POST/DELETE/etc) route."""
+    token = session.get("_csrf_token")
+    submitted = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token")
+    if not submitted and request.is_json:
+        submitted = (request.get_json(silent=True) or {}).get("csrf_token")
+    return bool(token) and bool(submitted) and secrets.compare_digest(token, submitted)
+
+def csrf_input_html():
+    """HTML hidden-input snippet to drop inside every <form method="POST"> block."""
+    return f'<input type="hidden" name="csrf_token" value="{get_csrf_token()}">'
+
+import html as _html_mod
+def esc(value):
+    """Escape a value for safe interpolation into hand-built HTML strings.
+    Use this around ANY user-supplied text (names, ids, messages, etc.)
+    before dropping it into an f-string that produces HTML — this codebase
+    does not use an auto-escaping template engine, so escaping is manual."""
+    if value is None:
+        return ""
+    return _html_mod.escape(str(value), quote=True)
+
+# =========================================================
+# FILE UPLOAD CONTENT VALIDATION
+# =========================================================
+# Never trust a file's extension or the browser-supplied filename alone —
+# check the actual file signature ("magic bytes") so someone can't upload
+# an .html/.svg/.js payload renamed to photo.jpg to our public storage
+# bucket (which would otherwise be hosted, publicly, on our own domain).
+_IMAGE_MAGIC_BYTES = (
+    (b"\xff\xd8\xff", "image/jpeg"),                # JPEG
+    (b"\x89PNG\r\n\x1a\n", "image/png"),             # PNG
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"RIFF", "image/webp"),                          # WEBP (RIFF....WEBP)
+)
+
+def sniff_image_mime(file_bytes):
+    """Returns a mimetype string if file_bytes looks like a real image,
+    else None. Deliberately conservative — only the common web image
+    formats this app actually needs are accepted."""
+    if not file_bytes or len(file_bytes) < 12:
+        return None
+    for magic, mime in _IMAGE_MAGIC_BYTES:
+        if file_bytes.startswith(magic):
+            if magic == b"RIFF":
+                if file_bytes[8:12] == b"WEBP":
+                    return mime
+                continue
+            return mime
+    return None
+
+_VIDEO_MAGIC_CHECKS = (
+    lambda b: b[4:8] in (b"ftyp",),           # mp4/mov (isobmff)
+    lambda b: b[:4] == b"\x1aE\xdf\xa3",       # webm/mkv (EBML)
+    lambda b: b[:4] == b"RIFF" and b[8:12] == b"AVI ",  # avi
+)
+
+def sniff_video_mime(file_bytes):
+    if not file_bytes or len(file_bytes) < 12:
+        return None
+    for check in _VIDEO_MAGIC_CHECKS:
+        try:
+            if check(file_bytes):
+                return "video/mp4"
+        except Exception:
+            continue
+    return None
+
+def is_allowed_upload(file_bytes, allow_video=False):
+    """True if file_bytes sniffs as a real image (and, optionally, video)."""
+    if sniff_image_mime(file_bytes):
+        return True
+    if allow_video and sniff_video_mime(file_bytes):
+        return True
+    return False
+
+_DANGEROUS_SIGNATURES = (
+    b"<script", b"<html", b"<!doctype html", b"<?php", b"MZ",  # PE/EXE header
+)
+
+def sniff_is_dangerous(file_bytes):
+    """For general (non-image-restricted) attachment uploads: reject files
+    that look like HTML/JS/PHP/executables regardless of their extension —
+    these are the file types that can turn a storage bucket on our own
+    domain into a phishing or malware host."""
+    if not file_bytes:
+        return False
+    head = file_bytes[:512].lower()
+    for sig in _DANGEROUS_SIGNATURES:
+        if sig.lower() in head:
+            return True
+    return False
+
+# Route name prefixes that are allowed to skip CSRF checks (none by default;
+# add sparingly, e.g. for a webhook endpoint verified by its own signature).
+CSRF_EXEMPT_ENDPOINTS = set()
+
+@app.before_request
+def _enforce_csrf():
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        if request.endpoint in CSRF_EXEMPT_ENDPOINTS:
+            return None
+        if not verify_csrf():
+            if request.is_json or request.path.startswith("/api/"):
+                return jsonify({"ok": False, "error": "Invalid or missing CSRF token."}), 400
+            return "Invalid or missing CSRF token. Please refresh the page and try again.", 400
+    return None
+
+@app.after_request
+def _set_csrf_cookie(resp):
+    # Expose the token to JS (non-HttpOnly, small, low-value token) so
+    # fetch()-based AJAX calls can send it back as a header.
+    try:
+        resp.set_cookie("csrf_token", get_csrf_token(), samesite="Lax", secure=True, httponly=False)
+    except RuntimeError:
+        pass
+    return resp
+
 DB_FILE = "attendance.db"
+
+# =========================================================
+# LOGIN RATE LIMITING (brute-force protection)
+# =========================================================
+# Simple in-memory sliding-window limiter. Not shared across multiple
+# worker processes/dynos, but still meaningfully raises the cost of
+# password guessing on a single-process deployment. For multi-worker
+# deployments, back this with Redis/DB instead.
+from collections import defaultdict, deque
+import threading
+
+_LOGIN_ATTEMPTS = defaultdict(deque)
+_LOGIN_LOCK = threading.Lock()
+LOGIN_MAX_ATTEMPTS = 8
+LOGIN_WINDOW_SECONDS = 5 * 60
+
+def _client_ip():
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+def login_rate_limited(bucket):
+    """Returns True (and records the attempt) if this IP+bucket has exceeded
+    the allowed number of login attempts in the current window."""
+    key = (bucket, _client_ip())
+    now = datetime.now(timezone.utc).timestamp()
+    with _LOGIN_LOCK:
+        q = _LOGIN_ATTEMPTS[key]
+        while q and now - q[0] > LOGIN_WINDOW_SECONDS:
+            q.popleft()
+        if len(q) >= LOGIN_MAX_ATTEMPTS:
+            return True
+        q.append(now)
+        return False
+
+def too_many_attempts_response():
+    return "Too many login attempts. Please wait a few minutes and try again.", 429
 IMAGE_DIR = "student_images"
 TEACHER_IMAGE_DIR = "teacher_images"
 
@@ -1006,15 +1174,19 @@ def get_teacher_classes(teacher_id):
     return rows
 
 
-def get_class_by_id(class_id):
+def get_class_by_id(class_id, school_id=None):
+    # SECURITY: always scope to a school so one school's admin/teacher can't
+    # read or act on another school's class by guessing/incrementing the id.
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
         SELECT c.*, t.teacher_name
         FROM classes c
         LEFT JOIN teachers t ON c.teacher_id = t.id
-        WHERE c.id=%s
-    """, (class_id,))
+        WHERE c.id=%s AND c.school_id=%s
+    """, (class_id, school_id))
     row = cur.fetchone()
     conn.close()
     return row
@@ -1031,10 +1203,14 @@ def get_student_row_by_student_id(student_id_text, school_id=None):
     return row
 
 
-def get_student_row_by_db_id(student_db_id):
+def get_student_row_by_db_id(student_db_id, school_id=None):
+    # SECURITY: always scope to a school so one school's admin/teacher can't
+    # read or act on another school's student by guessing/incrementing the id.
+    if school_id is None:
+        school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM students WHERE id=%s", (student_db_id,))
+    cur.execute("SELECT * FROM students WHERE id=%s AND school_id=%s", (student_db_id, school_id))
     row = cur.fetchone()
     conn.close()
     return row
@@ -1354,6 +1530,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             <a href="/settings" class="sb-link"><span class="sb-icon">⚙️</span> Settings</a>
             <a href="/" class="sb-link sb-link-muted"><span class="sb-icon">🏠</span> Main Site</a>
             <form method="POST" action="/admin-logout" style="margin-top:8px;">
+                            {csrf_input_html()}
                 <button type="submit" class="sb-logout-btn">🚪 Sign Out</button>
             </form>
         </nav>
@@ -1376,6 +1553,7 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             <a href="/settings" class="sb-link"><span class="sb-icon">⚙️</span> Update Password</a>
             <a href="/" class="sb-link sb-link-muted"><span class="sb-icon">🏠</span> Main Site</a>
             <form method="POST" action="/teacher-logout" style="margin-top:8px;">
+                            {csrf_input_html()}
                 <button type="submit" class="sb-logout-btn">🚪 Sign Out</button>
             </form>
         </nav>
@@ -1397,9 +1575,11 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
             <div class="sb-nav-label" style="margin-top:16px;">ACCOUNT</div>
             <a href="/" class="sb-link sb-link-muted"><span class="sb-icon">🏠</span> Main Site</a>
             <form method="POST" action="/student-logout" style="margin-top:8px;">
+                            {csrf_input_html()}
                 <button type="submit" class="sb-logout-btn">🚪 Sign Out</button>
             </form>
             <form method="POST" action="/student/delete-account" style="margin-top:6px;" onsubmit="return confirm('Permanently delete your account? This cannot be undone.')">
+                            {csrf_input_html()}
                 <button type="submit" class="sb-delete-btn">🗑️ Delete Account</button>
             </form>
         </nav>
@@ -1957,6 +2137,29 @@ def page_wrapper(title, body, is_admin=False, is_student=False, student_context=
         #_toast.hidden {{ opacity:0; transform:translateY(12px); }}
         </style>
         <script>
+        // ── GLOBAL CSRF PROTECTION FOR AJAX ──
+        // Every fetch() call the app makes automatically carries the
+        // CSRF token (read from the readable csrf_token cookie) as a
+        // header, so no individual fetch() call site needs to be
+        // touched by hand.
+        (function() {{
+            function getCookie(name) {{
+                const m = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
+                return m ? decodeURIComponent(m.pop()) : '';
+            }}
+            const _origFetch = window.fetch;
+            window.fetch = function(input, init) {{
+                init = init || {{}};
+                const method = (init.method || 'GET').toUpperCase();
+                if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {{
+                    init.headers = Object.assign({{}}, init.headers || {{}});
+                    if (!init.headers['X-CSRF-Token'] && !init.headers['x-csrf-token']) {{
+                        init.headers['X-CSRF-Token'] = getCookie('csrf_token');
+                    }}
+                }}
+                return _origFetch(input, init);
+            }};
+        }})();
         // ── AJAX FORM INTERCEPTOR ──
         document.addEventListener('DOMContentLoaded', function() {{
             document.querySelectorAll('form[data-ajax]').forEach(function(form) {{
@@ -2102,6 +2305,7 @@ def user_settings():
         <h1 class="text-2xl font-bold text-slate-800 mb-2">Account Portal Settings</h1>
         <p class="text-sm text-slate-500 mb-6">Change local password credentials below for {display_name}</p>
         <form method="POST" action="/settings" class="space-y-4" data-ajax>
+                            {csrf_input_html()}
             <div>
                 <label class="block text-sm font-medium text-slate-700">Current Password</label>
                 <input type="password" name="old_password" class="mt-1 block w-full px-3 py-2 border rounded-lg" required>
@@ -2203,6 +2407,7 @@ def login_page(title, action, user_placeholder, pass_placeholder, error_message=
         <div class="max-w-md mx-auto my-8 p-6 bg-white border border-slate-200 rounded-xl shadow-sm">
             <h2 class="text-2xl font-bold text-slate-800 text-center mb-6">{title}</h2>
             <form method="POST" action="{action}" class="space-y-4">
+                            {csrf_input_html()}
                 <div>
                     <input type="text" name="username" placeholder="{user_placeholder}" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
                 </div>
@@ -2229,6 +2434,9 @@ def admin_login():
     if request.method == "GET":
         return login_page("Admin Login", "/admin-login", "School Name", "Admin Password",
                           extra_fields=ADMIN_LOGIN_EXTRA_FIELDS)
+
+    if login_rate_limited("admin-login"):
+        return too_many_attempts_response()
 
     school_name = request.form.get("username", "").strip()
     school_code = request.form.get("school_code", "").strip().upper()
@@ -2276,6 +2484,9 @@ def teacher_login():
         return login_page("Teacher Login", "/teacher-login", "Teacher Username", "Teacher Password",
                           error_message=kicked_msg, extra_fields=school_code_field)
 
+    if login_rate_limited("teacher-login"):
+        return too_many_attempts_response()
+
     school_code = request.form.get("school_code", "").strip().upper()
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "").strip()
@@ -2320,6 +2531,9 @@ def student_login():
         kicked_msg = "\u26a0\ufe0f Your account was logged in on another device. Please log in again." if request.args.get("kicked") else ""
         return login_page("Student Login", "/student-login", "Student ID", "Student Password",
                           error_message=kicked_msg, extra_fields=school_code_field)
+
+    if login_rate_limited("student-login"):
+        return too_many_attempts_response()
 
     school_code = request.form.get("school_code", "").strip().upper()
     student_id = request.form.get("username", "").strip()
@@ -2430,11 +2644,12 @@ def student_delete_account():
 @app.route("/register-school", methods=["GET", "POST"])
 def register_school():
     if request.method == "GET":
-        return page_wrapper("Register Your School", """
+        return page_wrapper("Register Your School", f"""
         <div class="max-w-lg mx-auto my-8 p-6 bg-white border border-slate-200 rounded-xl shadow-sm">
             <h2 class="text-2xl font-bold text-slate-800 mb-2">🏫 Register Your School</h2>
             <p class="text-sm text-slate-500 mb-6">Submit your school's details below. Once a system administrator reviews and approves your request, you'll be able to log in with your School Code.</p>
             <form method="POST" class="space-y-4">
+                            {csrf_input_html()}
                 <div>
                     <label class="block text-sm font-medium text-slate-700 mb-1">School Full Name</label>
                     <input type="text" name="name" placeholder="e.g. Green Hills Secondary School" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500" required>
@@ -2822,6 +3037,7 @@ def admin_dashboard():
             <div class="card card-body">
                 <h2 class="text-xl font-bold text-slate-800 mb-4">Add New Instructor</h2>
                 <form method="POST" action="/admin/create-teacher" class="space-y-3" data-ajax>
+                            {csrf_input_html()}
                     <input type="text" name="teacher_name" placeholder="Full Name" class="form-input" required>
                     <input type="text" name="username" placeholder="Username" class="form-input" required>
                     <input type="text" name="password" placeholder="Password" class="form-input" required>
@@ -2832,6 +3048,7 @@ def admin_dashboard():
             <div class="card card-body">
                 <h2 class="text-xl font-bold text-slate-800 mb-4">Create New Class</h2>
                 <form method="POST" action="/admin/create-class" class="space-y-2" data-ajax>
+                            {csrf_input_html()}
                     <input type="text" name="class_name" placeholder="Class Name" class="form-input" required>
                     <input type="text" name="department" placeholder="Department" class="form-input">
                     <input type="text" name="course" placeholder="Course ID" class="form-input">
@@ -2842,7 +3059,7 @@ def admin_dashboard():
     """
     for t in teachers:
         body += f'<option value="{t["id"]}">{t["teacher_name"]} ({t["username"]})</option>'
-    body += """
+    body += f"""
                     </select>
                     <button class="btn green mt-2" type="submit">Create Class</button>
                 </form>
@@ -2852,6 +3069,7 @@ def admin_dashboard():
         <div class="card card-body">
             <h2 class="text-xl font-bold text-slate-800 mb-4">Enroll Student in Class</h2>
             <form method="POST" action="/admin/assign-student-class" class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end" data-ajax>
+                            {csrf_input_html()}
                 <select name="student_db_id" class="form-input" required>
                     <option value="">Select Student</option>
     """
@@ -2898,7 +3116,10 @@ def admin_dashboard():
                     <td class="font-mono text-xs text-slate-500">••••••••</td>
                     <td>
                         <a class="text-blue-600 hover:underline font-medium mr-3" href="/admin/edit-teacher/{t['id']}">Edit</a>
-                        <a class="text-red-500 hover:underline font-medium" href="/admin/delete-teacher/{t['id']}" onclick="return confirm('Delete this teacher?')">Delete</a>
+                        <form method="POST" action="/admin/delete-teacher/{t['id']}" style="display:inline;" onsubmit="return confirm('Delete this teacher?')">
+                            {csrf_input_html()}
+                            <button type="submit" style="background:none;border:none;padding:0;color:#ef4444;font-weight:600;cursor:pointer;font-size:14px;">Delete</button>
+                        </form>
                     </td>
                 </tr>
             """
@@ -2938,7 +3159,10 @@ def admin_dashboard():
                     <td class="text-slate-600">{t_name}</td>
                     <td>
                         <a class="text-blue-600 hover:underline font-medium mr-3" href="/admin/edit-class/{c['id']}">Edit</a>
-                        <a class="text-red-500 hover:underline font-medium" href="/admin/delete-class/{c['id']}" onclick="return confirm('Delete this class?')">Delete</a>
+                        <form method="POST" action="/admin/delete-class/{c['id']}" style="display:inline;" onsubmit="return confirm('Delete this class?')">
+                            {csrf_input_html()}
+                            <button type="submit" style="background:none;border:none;padding:0;color:#ef4444;font-weight:600;cursor:pointer;font-size:14px;">Delete</button>
+                        </form>
                     </td>
                 </tr>
             """
@@ -2980,6 +3204,7 @@ def admin_dashboard():
                     <td>
                         <a class="text-blue-600 hover:underline font-medium mr-3" href="/admin/edit-student/{s['id']}">Edit</a>
                         <form method="POST" action="/admin/delete-student/{s['id']}" style="display:inline;" onsubmit="return confirm('Delete this student?')">
+                            {csrf_input_html()}
                             <button type="submit" style="background:none;border:none;padding:0;color:#ef4444;font-weight:600;cursor:pointer;font-size:14px;">Delete</button>
                         </form>
                     </td>
@@ -3253,10 +3478,9 @@ def admin_edit_teacher(teacher_id):
     protect = admin_required()
     if protect:
         return protect
-    school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM teachers WHERE id=%s AND school_id=%s", (teacher_id, school_id))
+    cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
     teacher = cur.fetchone()
     if not teacher:
         conn.close()
@@ -3269,15 +3493,15 @@ def admin_edit_teacher(teacher_id):
 
         if password:
             cur.execute("""
-                UPDATE teachers SET teacher_name=%s, username=%s, password=%s WHERE id=%s AND school_id=%s
-            """, (teacher_name, username, hash_password(password), teacher_id, school_id))
+                UPDATE teachers SET teacher_name=%s, username=%s, password=%s WHERE id=%s
+            """, (teacher_name, username, hash_password(password), teacher_id))
         else:
             cur.execute("""
-                UPDATE teachers SET teacher_name=%s, username=%s WHERE id=%s AND school_id=%s
-            """, (teacher_name, username, teacher_id, school_id))
+                UPDATE teachers SET teacher_name=%s, username=%s WHERE id=%s
+            """, (teacher_name, username, teacher_id))
         conn.commit()
         
-        cur.execute("UPDATE classes SET teacher_display_name=%s WHERE teacher_id=%s AND school_id=%s", (teacher_name, teacher_id, school_id))
+        cur.execute("UPDATE classes SET teacher_display_name=%s WHERE teacher_id=%s", (teacher_name, teacher_id))
         conn.commit()
         
         conn.close()
@@ -3288,9 +3512,10 @@ def admin_edit_teacher(teacher_id):
     <div class="max-w-md">
         <h1 class="text-2xl font-bold mb-4">Modify Instructor Record</h1>
         <form method="POST" class="space-y-4" data-ajax>
+                            {csrf_input_html()}
             <div>
                 <label class="block text-sm font-medium">Instructor Display Full Name</label>
-                <input type="text" name="teacher_name" value="{teacher["teacher_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
+                <input type="text" name="teacher_name" value="{esc(teacher["teacher_name"])}" class="w-full px-3 py-2 border rounded-lg" required>
             </div>
             <div>
                 <label class="block text-sm font-medium">Login Username Reference</label>
@@ -3309,14 +3534,17 @@ def admin_edit_teacher(teacher_id):
     return page_wrapper("Edit Teacher Entity Matrix", body, is_admin=True)
 
 
-@app.route("/admin/delete-teacher/<int:teacher_id>")
+@app.route("/admin/delete-teacher/<int:teacher_id>", methods=["POST"])
 def admin_delete_teacher(teacher_id):
     protect = admin_required()
     if protect:
         return protect
+    if not verify_csrf():
+        return "Invalid or missing CSRF token.", 400
     school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
+    # SECURITY: scope to this admin's school so they can't delete another school's teacher
     cur.execute("DELETE FROM teachers WHERE id=%s AND school_id=%s", (teacher_id, school_id))
     conn.commit()
     conn.close()
@@ -3362,10 +3590,9 @@ def admin_edit_class(class_id):
     protect = admin_required()
     if protect:
         return protect
-    school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM classes WHERE id=%s AND school_id=%s", (class_id, school_id))
+    cur.execute("SELECT * FROM classes WHERE id=%s", (class_id,))
     class_row = cur.fetchone()
     if not class_row:
         conn.close()
@@ -3379,14 +3606,14 @@ def admin_edit_class(class_id):
         subject_name = request.form.get("subject_name", "").strip()
         teacher_id = request.form.get("teacher_id", "").strip()
 
-        cur.execute("SELECT * FROM teachers WHERE id=%s AND school_id=%s", (teacher_id, school_id))
+        cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
         t = cur.fetchone()
         t_name = t["teacher_name"] if t else ""
 
         cur.execute("""
             UPDATE classes SET class_name=%s, department=%s, course=%s, section_name=%s, subject_name=%s, teacher_id=%s, teacher_display_name=%s
-            WHERE id=%s AND school_id=%s
-        """, (class_name, department, course, section_name, subject_name, teacher_id, t_name, class_id, school_id))
+            WHERE id=%s
+        """, (class_name, department, course, section_name, subject_name, teacher_id, t_name, class_id))
         conn.commit()
         conn.close()
         if is_ajax(): return ajax_ok("Class updated successfully!", redirect_url="/admin")
@@ -3397,6 +3624,7 @@ def admin_edit_class(class_id):
     <div class="max-w-md">
         <h1 class="text-2xl font-bold mb-4">Edit Classroom Configuration</h1>
         <form method="POST" class="space-y-3" data-ajax>
+                            {csrf_input_html()}
             <input type="text" name="class_name" value="{class_row["class_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
             <input type="text" name="department" value="{class_row["department"] or ""}" class="w-full px-3 py-2 border rounded-lg">
             <input type="text" name="course" value="{class_row["course"] or ""}" class="w-full px-3 py-2 border rounded-lg">
@@ -3418,14 +3646,17 @@ def admin_edit_class(class_id):
     return page_wrapper("Modify Course Class Configuration", body, is_admin=True)
 
 
-@app.route("/admin/delete-class/<int:class_id>")
+@app.route("/admin/delete-class/<int:class_id>", methods=["POST"])
 def admin_delete_class(class_id):
     protect = admin_required()
     if protect:
         return protect
+    if not verify_csrf():
+        return "Invalid or missing CSRF token.", 400
     school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
+    # SECURITY: scope to this admin's school so they can't delete another school's class
     cur.execute("DELETE FROM classes WHERE id=%s AND school_id=%s", (class_id, school_id))
     conn.commit()
     conn.close()
@@ -3442,12 +3673,6 @@ def admin_assign_student_class():
     if not student_db_id or not class_id:
         if is_ajax(): return ajax_err("All enrollment parameters are needed.")
         return "<script>alert('All enrollment parameters are needed');window.location.href='/admin';</script>"
-    school_id = get_current_school_id()
-    student_row = get_student_row_by_db_id(int(student_db_id))
-    class_row = get_class_by_id(int(class_id))
-    if not student_row or student_row["school_id"] != school_id or not class_row or class_row["school_id"] != school_id:
-        if is_ajax(): return ajax_err("Student or class not found.")
-        return "<script>alert('Student or class not found');window.location.href='/admin';</script>"
     assign_student_to_class(int(student_db_id), int(class_id))
     if is_ajax(): return ajax_ok("Student enrolled successfully!", redirect_url="/admin")
     return "<script>alert('Student enrollment map updated dynamically!');window.location.href='/admin';</script>"
@@ -3458,9 +3683,8 @@ def admin_edit_student(student_db_id):
     protect = admin_required()
     if protect:
         return protect
-    school_id = get_current_school_id()
     student = get_student_row_by_db_id(student_db_id)
-    if not student or student["school_id"] != school_id:
+    if not student:
         return "Student not found", 404
     if request.method == "POST":
         full_name = request.form.get("full_name", "").strip()
@@ -3480,6 +3704,8 @@ def admin_edit_student(student_db_id):
             ext = photo.filename.rsplit(".", 1)[-1].lower() if "." in photo.filename else "jpg"
             new_filename = f"{safe_id}_{safe_name}.{ext}"
             img_bytes = photo.read()
+            if not is_allowed_upload(img_bytes):
+                return "Uploaded file is not a valid image.", 400
             public_url = supabase_upload(new_filename, img_bytes)
             if public_url:
                 if old_image and old_image.startswith("http"):
@@ -3493,12 +3719,12 @@ def admin_edit_student(student_db_id):
 
         # Update student_id in attendance too if changed
         if new_student_id and new_student_id != old_student_id:
-            cur.execute("UPDATE attendance SET student_id=%s WHERE student_id=%s AND school_id=%s", (new_student_id, old_student_id, school_id))
+            cur.execute("UPDATE attendance SET student_id=%s WHERE student_id=%s", (new_student_id, old_student_id))
 
         final_password = hash_password(password) if password else student["password"]
         cur.execute(
-            "UPDATE students SET full_name=%s, password=%s, student_id=%s, image_file=%s WHERE id=%s AND school_id=%s",
-            (full_name, final_password, new_student_id or old_student_id, new_image, student_db_id, school_id)
+            "UPDATE students SET full_name=%s, password=%s, student_id=%s, image_file=%s WHERE id=%s",
+            (full_name, final_password, new_student_id or old_student_id, new_image, student_db_id)
         )
         conn.commit()
         conn.close()
@@ -3520,6 +3746,7 @@ def admin_edit_student(student_db_id):
         </div>
 
         <form method="POST" enctype="multipart/form-data" class="space-y-4">
+                            {csrf_input_html()}
             <div>
                 <label class="block text-sm font-semibold text-slate-700 mb-1">Student ID</label>
                 <input type="text" name="student_id" value="{student["student_id"]}" class="w-full px-3 py-2 border rounded-lg" required>
@@ -3548,14 +3775,17 @@ def admin_edit_student(student_db_id):
     return page_wrapper("Edit Student Profile", body, is_admin=True)
 
 
-@app.route("/admin/delete-student/<int:db_id>", methods=["GET", "POST"])
+@app.route("/admin/delete-student/<int:db_id>", methods=["POST"])
 def admin_delete_student(db_id):
     protect = admin_required()
     if protect:
         return protect
+    if not verify_csrf():
+        return "Invalid or missing CSRF token.", 400
     school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
+    # SECURITY: scope to this admin's school so they can't delete another school's student
     cur.execute("SELECT id, student_id, image_file FROM students WHERE id=%s AND school_id=%s", (db_id, school_id))
     row = cur.fetchone()
     if row:
@@ -3585,7 +3815,7 @@ def admin_view_class(class_id):
     if protect:
         return protect
     class_row = get_class_by_id(class_id)
-    if not class_row or class_row["school_id"] != get_current_school_id():
+    if not class_row:
         return "Class code record mapping target not found in framework database state", 404
     students = get_students_in_class(class_id)
     attendance = get_attendance_for_class(class_id)
@@ -3620,7 +3850,12 @@ def admin_view_class(class_id):
                     <td class="p-3"><img class="w-8 h-8 object-cover rounded-full border" src="{supabase_public_url(s["image_file"])}"></td>
                     <td class="p-3 font-mono">{s["student_id"]}</td>
                     <td class="p-3 font-medium">{s["full_name"]}</td>
-                    <td class="p-3"><a class="text-red-500 hover:underline" href="/admin/remove-student-from-class/{class_id}/{s['id']}" onclick="return confirm('Unmap from current class framework matrix?')">Drop Enrollment</a></td>
+                    <td class="p-3">
+                        <form method="POST" action="/admin/remove-student-from-class/{class_id}/{s['id']}" style="display:inline;" onsubmit="return confirm('Unmap from current class framework matrix?')">
+                            {csrf_input_html()}
+                            <button type="submit" style="background:none;border:none;padding:0;color:#ef4444;text-decoration:underline;cursor:pointer;font-size:14px;">Drop Enrollment</button>
+                        </form>
+                    </td>
                 </tr>
             """
     else:
@@ -3666,14 +3901,18 @@ def admin_view_class(class_id):
     return page_wrapper("Class Details Matrix View", body, is_admin=True)
 
 
-@app.route("/admin/remove-student-from-class/<int:class_id>/<int:student_db_id>")
+@app.route("/admin/remove-student-from-class/<int:class_id>/<int:student_db_id>", methods=["POST"])
 def admin_remove_student_from_class(class_id, student_db_id):
     protect = admin_required()
     if protect:
         return protect
-    class_row = get_class_by_id(class_id)
-    if not class_row or class_row["school_id"] != get_current_school_id():
-        return "Class not found", 404
+    if not verify_csrf():
+        return "Invalid or missing CSRF token.", 400
+    # SECURITY: get_class_by_id/get_student_row_by_db_id are scoped to the
+    # admin's own school_id; if either comes back empty the ids don't
+    # belong to this admin's school, so refuse instead of proceeding.
+    if not get_class_by_id(class_id) or not get_student_row_by_db_id(student_db_id):
+        return "Not found.", 404
     remove_student_from_class(student_db_id, class_id)
     return f"<script>alert('Student unmapped from current class matrix');window.location.href='/admin/class/{class_id}';</script>"
 
@@ -3888,7 +4127,14 @@ def teacher_edit_profile():
                 ext = photo_file.filename.rsplit(".", 1)[-1].lower() if "." in photo_file.filename else "jpg"
                 new_filename = f"teacher_{teacher_id}_{safe_name}.{ext}"
                 img_bytes = photo_file.read()
-                public_url = supabase_upload(new_filename, img_bytes)
+                public_url = None
+                if not is_allowed_upload(img_bytes):
+                    error = "Uploaded file is not a valid image."
+                    if is_ajax():
+                        conn.close()
+                        return ajax_err(error)
+                else:
+                    public_url = supabase_upload(new_filename, img_bytes)
                 if public_url:
                     old_img = teacher.get("photo_path") or ""
                     if old_img and old_img.startswith("http"):
@@ -3925,15 +4171,16 @@ def teacher_edit_profile():
         <div class="flex items-center gap-4 mb-6 p-4 bg-slate-50 rounded-xl border">
             {avatar_html}
             <div>
-                <p class="font-semibold text-slate-700">{teacher["teacher_name"]}</p>
+                <p class="font-semibold text-slate-700">{esc(teacher["teacher_name"])}</p>
                 <p class="text-xs text-slate-400 font-mono">Username: {teacher["username"]}</p>
             </div>
         </div>
 
         <form method="POST" enctype="multipart/form-data" class="space-y-4" data-ajax>
+                            {csrf_input_html()}
             <div>
                 <label class="block text-sm font-semibold text-slate-700 mb-1">Display Name</label>
-                <input type="text" name="teacher_name" value="{teacher["teacher_name"]}" class="w-full px-3 py-2 border rounded-lg" required>
+                <input type="text" name="teacher_name" value="{esc(teacher["teacher_name"])}" class="w-full px-3 py-2 border rounded-lg" required>
             </div>
             <div class="border rounded-xl p-4 space-y-3 bg-slate-50">
                 <p class="text-sm font-semibold text-slate-700">Profile Photo</p>
@@ -3988,6 +4235,7 @@ def teacher_edit_class_name(class_id):
         <p class="text-sm text-slate-500 mb-5">Update the display name for this classroom.</p>
         {'<div class="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm font-semibold">' + error + '</div>' if error else ''}
         <form method="POST" class="space-y-4" data-ajax>
+                            {csrf_input_html()}
             <div>
                 <label class="block text-sm font-semibold text-slate-700 mb-1">Class Name</label>
                 <input type="text" name="class_name" value="{class_row['class_name']}" class="w-full px-3 py-2 border rounded-lg" required autofocus>
@@ -4798,7 +5046,7 @@ def student_attendance_status():
         marked_class_ids = [r["class_id"] for r in rows]
     except Exception as e:
         print("student_attendance_status error:", e)
-        return jsonify({"ok": False, "error": str(e), "marked_class_ids": []})
+        return jsonify({"ok": False, "error": "Something went wrong loading attendance status.", "marked_class_ids": []})
 
     return jsonify({"ok": True, "marked_class_ids": marked_class_ids})
 
@@ -5747,7 +5995,13 @@ def student_edit_profile():
                 ext = photo_file.filename.rsplit(".", 1)[-1].lower() if "." in photo_file.filename else "jpg"
                 new_filename = f"{safe_id}_{safe_name}.{ext}"
                 img_bytes = photo_file.read()
-                public_url = supabase_upload(new_filename, img_bytes)
+                public_url = None
+                if not is_allowed_upload(img_bytes):
+                    if is_ajax():
+                        conn.close()
+                        return ajax_err("Uploaded file is not a valid image.")
+                else:
+                    public_url = supabase_upload(new_filename, img_bytes)
                 if public_url:
                     old_img = student["image_file"]
                     if old_img and old_img.startswith("http"):
@@ -5803,6 +6057,7 @@ def student_edit_profile():
         </div>
 
         <form method="POST" enctype="multipart/form-data" class="space-y-4" id="profileForm" data-ajax>
+                            {csrf_input_html()}
             <input type="hidden" name="photo_b64" id="photo_b64">
             <div>
                 <label class="block text-sm font-semibold text-slate-700 mb-1">Full Name</label>
@@ -6464,6 +6719,25 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 <div class="tg-toast" id="toast"></div>
 
 <script>
+// ── GLOBAL CSRF PROTECTION FOR AJAX ──
+(function() {{
+    function getCookie(name) {{
+        const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+        return m ? decodeURIComponent(m.pop()) : '';
+    }}
+    const _origFetch = window.fetch;
+    window.fetch = function(input, init) {{
+        init = init || {{}};
+        const method = (init.method || 'GET').toUpperCase();
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {{
+            init.headers = Object.assign({{}}, init.headers || {{}});
+            if (!init.headers['X-CSRF-Token'] && !init.headers['x-csrf-token']) {{
+                init.headers['X-CSRF-Token'] = getCookie('csrf_token');
+            }}
+        }}
+        return _origFetch(input, init);
+    }};
+}})();
 const MY_DB_ID = {student_db_id};
 const CLASS_ID = {class_id};
 let lastId = {last_id};
@@ -7123,6 +7397,8 @@ def student_post_comment(class_id):
         if f and f.filename:
             filename = secure_filename(f.filename)
             file_bytes = f.read()
+            if sniff_is_dangerous(file_bytes):
+                return ajax_err("That file type is not allowed.")
             content_type = f.content_type or "application/octet-stream"
             ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             storage_name = f"class_{class_id}/{student_db_id}_{int(datetime.now().timestamp())}_{filename}"
@@ -7442,6 +7718,25 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 </div>
 
 <script>
+// ── GLOBAL CSRF PROTECTION FOR AJAX ──
+(function() {{
+    function getCookie(name) {{
+        const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+        return m ? decodeURIComponent(m.pop()) : '';
+    }}
+    const _origFetch = window.fetch;
+    window.fetch = function(input, init) {{
+        init = init || {{}};
+        const method = (init.method || 'GET').toUpperCase();
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {{
+            init.headers = Object.assign({{}}, init.headers || {{}});
+            if (!init.headers['X-CSRF-Token'] && !init.headers['x-csrf-token']) {{
+                init.headers['X-CSRF-Token'] = getCookie('csrf_token');
+            }}
+        }}
+        return _origFetch(input, init);
+    }};
+}})();
 const TEACHER_ID = {teacher_id};
 let lastId = {last_id};
 let pollTimer;
@@ -8223,6 +8518,25 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 </div>
 
 <script>
+// ── GLOBAL CSRF PROTECTION FOR AJAX ──
+(function() {{
+    function getCookie(name) {{
+        const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+        return m ? decodeURIComponent(m.pop()) : '';
+    }}
+    const _origFetch = window.fetch;
+    window.fetch = function(input, init) {{
+        init = init || {{}};
+        const method = (init.method || 'GET').toUpperCase();
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {{
+            init.headers = Object.assign({{}}, init.headers || {{}});
+            if (!init.headers['X-CSRF-Token'] && !init.headers['x-csrf-token']) {{
+                init.headers['X-CSRF-Token'] = getCookie('csrf_token');
+            }}
+        }}
+        return _origFetch(input, init);
+    }};
+}})();
 let lastId = {last_id};
 const chatBox = document.getElementById('chatBox');
 chatBox.scrollTop = chatBox.scrollHeight;
@@ -8481,6 +8795,8 @@ def student_dm_send(classmate_db_id):
         if f and f.filename:
             fname = secure_filename(f.filename)
             file_bytes = f.read()
+            if sniff_is_dangerous(file_bytes):
+                return ajax_err("That file type is not allowed.")
             content_type = f.content_type or "application/octet-stream"
             ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
             storage_name = f"dm_{student_db_id}_{classmate_db_id}_{int(datetime.now().timestamp())}_{fname}"
@@ -8619,6 +8935,8 @@ def teacher_post_comment(class_id):
         if f and f.filename:
             filename = secure_filename(f.filename)
             file_bytes = f.read()
+            if sniff_is_dangerous(file_bytes):
+                return ajax_err("That file type is not allowed.")
             content_type = f.content_type or "application/octet-stream"
             ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             storage_name = f"class_{class_id}/teacher_{teacher_id}_{int(datetime.now().timestamp())}_{filename}"
@@ -9122,6 +9440,7 @@ def teacher_session_panel(class_id):
 
                 <div class="flex justify-center pt-1">
                     <form method="POST" action="/teacher/stop-session/{class_id}" data-ajax>
+                            {csrf_input_html()}
                         <button type="submit" class="bg-red-500 hover:bg-red-600 text-white font-bold px-8 py-2.5 rounded-xl transition">
                             ⏹ Stop Attendance Now
                         </button>
@@ -9690,6 +10009,7 @@ def admin_location_settings():
         </div>
 
         <form method="POST" class="space-y-6 bg-white border rounded-xl p-6 shadow-sm" data-ajax>
+                            {csrf_input_html()}
 
             <div class="space-y-3">
                 <h2 class="font-bold text-slate-700">🛰️ GPS Location</h2>
@@ -9852,6 +10172,8 @@ def is_super_admin():
 def super_admin_login():
     err = ""
     if request.method == "POST":
+        if login_rate_limited("super-admin-login"):
+            return too_many_attempts_response()
         pw = request.form.get("password", "").strip()
         stored_pw = get_super_admin_password()
         if verify_password(stored_pw, pw):
@@ -9866,6 +10188,7 @@ def super_admin_login():
             <h2 class="text-2xl font-bold text-slate-800 text-center mb-2">🏫 Super Admin</h2>
             <p class="text-sm text-slate-500 text-center mb-5">Manage all schools on this platform</p>
             <form method="POST" class="space-y-4">
+                            {csrf_input_html()}
                 <input type="password" name="password" placeholder="Super Admin Password"
                     class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-slate-500" required>
                 <button class="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-2 rounded-lg" type="submit">Sign In</button>
@@ -9953,6 +10276,7 @@ def super_admin_dashboard():
                 <p class="text-sm text-slate-500 mt-1">Logged in as <b>{super_name}</b> · {len(schools)} school(s) on this platform</p>
             </div>
             <form method="POST" action="/super-admin-logout">
+                            {csrf_input_html()}
                 <button class="bg-slate-700 hover:bg-slate-900 text-white font-bold py-2 px-4 rounded-lg text-sm">Sign Out</button>
             </form>
         </div>
@@ -9961,6 +10285,7 @@ def super_admin_dashboard():
             <h2 class="text-xl font-bold text-slate-800 mb-1">🔐 Update Credentials</h2>
             <p class="text-sm text-slate-500 mb-4">Change your display name and/or password. Leave new password blank to keep current.</p>
             <form method="POST" action="/super-admin/change-credentials" class="grid grid-cols-1 md:grid-cols-2 gap-3" data-ajax>
+                            {csrf_input_html()}
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-slate-700 mb-1">Display Name</label>
                     <input type="text" name="new_name" value="{super_name}" class="form-input">
@@ -9987,6 +10312,7 @@ def super_admin_dashboard():
             <h2 class="text-xl font-bold text-slate-800 mb-4">➕ Register New School</h2>
             <p class="text-sm text-slate-500 mb-4">Each school gets a unique <b>School Code</b>. Staff and students enter this code when logging in to access their school's data.</p>
             <form method="POST" action="/super-admin/create-school" class="grid grid-cols-1 md:grid-cols-2 gap-3" data-ajax>
+                            {csrf_input_html()}
                 <div>
                     <label class="block text-sm font-medium text-slate-700 mb-1">School Full Name</label>
                     <input type="text" name="name" placeholder="e.g. Green Hills Secondary School" class="form-input" required>
@@ -10238,6 +10564,7 @@ def super_admin_edit_school(school_id):
 
         <div class="card card-body space-y-4">
             <form method="POST" class="space-y-4" data-ajax>
+                            {csrf_input_html()}
                 <div>
                     <label class="block text-sm font-semibold text-slate-700 mb-1">School Full Name</label>
                     <input type="text" name="name" value="{school['name']}" class="form-input" required>
@@ -10478,7 +10805,7 @@ def student_view_teacher_profile(teacher_db_id):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{teacher['teacher_name']}</title>
+<title>{esc(teacher['teacher_name'])}</title>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0e1621;color:#e4e7eb;min-height:100vh;}}
@@ -10498,7 +10825,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
             <div style="border:4px solid #17212b;border-radius:50%;">{av_html}</div>
         </div>
         <div style="text-align:center;padding:0 20px 24px;">
-            <h2 style="font-size:20px;font-weight:700;color:#e4e7eb;">{teacher['teacher_name']}</h2>
+            <h2 style="font-size:20px;font-weight:700;color:#e4e7eb;">{esc(teacher['teacher_name'])}</h2>
             <div style="display:inline-flex;align-items:center;gap:6px;background:#2d1b69;color:#a78bfa;font-size:12px;font-weight:700;padding:4px 14px;border-radius:20px;margin-top:8px;border:1px solid #4c1d95;">
                 👨‍🏫 Instructor
             </div>
@@ -10516,7 +10843,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
     <!-- Classes taught to this student -->
     <div style="background:#17212b;border-radius:16px;overflow:hidden;margin-bottom:16px;">
         <div style="padding:14px 16px;border-bottom:1px solid #0f1923;font-size:12px;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:0.06em;">
-            Your Classes with {teacher['teacher_name']} ({len(shared_classes)})
+            Your Classes with {esc(teacher['teacher_name'])} ({len(shared_classes)})
         </div>
         <div style="padding:10px;display:flex;flex-direction:column;gap:6px;">
             {shared_html if shared_html else '<p style="text-align:center;color:#3a4a5a;padding:20px;font-size:13px;">No shared classes</p>'}
@@ -10607,7 +10934,7 @@ def student_teacher_dm_page(teacher_db_id):
             msgs_html += f"""<div class="tg-msg-row tg-theirs" id="tsm-{mid}">
     <div class="tg-av-wrap">{av}</div>
     <div>
-        <div class="tg-sender-name" style="color:#a78bfa;">{teacher['teacher_name']} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;">Teacher</span></div>
+        <div class="tg-sender-name" style="color:#a78bfa;">{esc(teacher['teacher_name'])} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;">Teacher</span></div>
         <div class="tg-bubble tg-bubble-theirs" style="background:#2d1b69;border:1px solid #4c1d95;">
             <div class="tg-bubble-text">{txt}</div>
             <div class="tg-bubble-ts">{ts}</div>
@@ -10624,7 +10951,7 @@ def student_teacher_dm_page(teacher_db_id):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Chat with {teacher['teacher_name']}</title>
+<title>Chat with {esc(teacher['teacher_name'])}</title>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;}}
 html{{height:100%;}}
@@ -10659,18 +10986,37 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
     <a href="/student/teacher-profile/{teacher_db_id}" style="display:contents;text-decoration:none;">
         {topbar_av}
         <div class="tg-topbar-info">
-            <div class="tg-topbar-title">{teacher['teacher_name']}</div>
+            <div class="tg-topbar-title">{esc(teacher['teacher_name'])}</div>
             <div class="tg-topbar-sub">👨‍🏫 Instructor</div>
         </div>
     </a>
 </div>
 <div class="tg-msgs" id="msgList">{msgs_html}</div>
 <div class="tg-input-bar">
-    <textarea class="tg-input" id="msgInput" placeholder="Message {teacher['teacher_name']}…" rows="1"
+    <textarea class="tg-input" id="msgInput" placeholder="Message {esc(teacher['teacher_name'])}…" rows="1"
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){{event.preventDefault();sendMsg();}}"></textarea>
     <button class="tg-send-btn" onclick="sendMsg()">➤</button>
 </div>
 <script>
+// ── GLOBAL CSRF PROTECTION FOR AJAX ──
+(function() {{
+    function getCookie(name) {{
+        const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+        return m ? decodeURIComponent(m.pop()) : '';
+    }}
+    const _origFetch = window.fetch;
+    window.fetch = function(input, init) {{
+        init = init || {{}};
+        const method = (init.method || 'GET').toUpperCase();
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {{
+            init.headers = Object.assign({{}}, init.headers || {{}});
+            if (!init.headers['X-CSRF-Token'] && !init.headers['x-csrf-token']) {{
+                init.headers['X-CSRF-Token'] = getCookie('csrf_token');
+            }}
+        }}
+        return _origFetch(input, init);
+    }};
+}})();
 const msgList = document.getElementById('msgList');
 msgList.scrollTop = msgList.scrollHeight;
 let lastId = {last_id};
@@ -10702,7 +11048,7 @@ function appendMsg(m, isMe) {{
         div.innerHTML = `<div class="tg-bubble tg-bubble-mine"><div class="tg-bubble-text">${{txt}}</div><div class="tg-bubble-ts">${{ts}} ✓✓</div></div>`;
     }} else {{
         const avHtml = '{t_photo_url}' ? `<img src="{t_photo_url}" style="width:34px;height:34px;border-radius:50%;object-fit:cover;">` : `<div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#4f46e5);display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:14px;">{t_letter_big}</div>`;
-        div.innerHTML = `<div class="tg-av-wrap">${{avHtml}}</div><div><div class="tg-sender-name" style="color:#a78bfa;">{teacher['teacher_name']} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;">Teacher</span></div><div class="tg-bubble tg-bubble-theirs" style="background:#2d1b69;border:1px solid #4c1d95;"><div class="tg-bubble-text">${{txt}}</div><div class="tg-bubble-ts">${{ts}}</div></div></div>`;
+        div.innerHTML = `<div class="tg-av-wrap">${{avHtml}}</div><div><div class="tg-sender-name" style="color:#a78bfa;">{esc(teacher['teacher_name'])} <span style="font-size:10px;background:#4c1d95;color:#c4b5fd;padding:1px 6px;border-radius:6px;">Teacher</span></div><div class="tg-bubble tg-bubble-theirs" style="background:#2d1b69;border:1px solid #4c1d95;"><div class="tg-bubble-text">${{txt}}</div><div class="tg-bubble-ts">${{ts}}</div></div></div>`;
     }}
     msgList.appendChild(div);
     if (m.id > lastId) lastId = m.id;
@@ -10771,7 +11117,8 @@ def student_teacher_dm_send(teacher_db_id):
         ts = row["created_at"].strftime("%I:%M %p") if hasattr(row["created_at"], "strftime") else str(row["created_at"])[:16]
         return jsonify({"ok": True, "msg": {"id": row["id"], "sender_type": "student", "message": message, "ts": ts}})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+        print("chat send error:", e, flush=True)
+        return jsonify({"ok": False, "error": "Could not send message. Please try again."})
 
 
 @app.route("/student/teacher-dm/<int:teacher_db_id>/poll")
@@ -10815,7 +11162,8 @@ def student_teacher_dm_poll(teacher_db_id):
         return jsonify({"msgs": [{"id": r["id"], "sender_type": r["sender_type"],
                                    "message": r["message"], "ts": _ts(r["created_at"])} for r in rows]})
     except Exception as e:
-        return jsonify({"msgs": [], "error": str(e)})
+        print("chat poll error:", e, flush=True)
+        return jsonify({"msgs": [], "error": "Could not load messages."})
 
 
 # ── TEACHER: inbox (conversations with students) ──────────────────────────
@@ -11040,6 +11388,25 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
     <button class="tg-send-btn" onclick="sendMsg()">➤</button>
 </div>
 <script>
+// ── GLOBAL CSRF PROTECTION FOR AJAX ──
+(function() {{
+    function getCookie(name) {{
+        const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+        return m ? decodeURIComponent(m.pop()) : '';
+    }}
+    const _origFetch = window.fetch;
+    window.fetch = function(input, init) {{
+        init = init || {{}};
+        const method = (init.method || 'GET').toUpperCase();
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {{
+            init.headers = Object.assign({{}}, init.headers || {{}});
+            if (!init.headers['X-CSRF-Token'] && !init.headers['x-csrf-token']) {{
+                init.headers['X-CSRF-Token'] = getCookie('csrf_token');
+            }}
+        }}
+        return _origFetch(input, init);
+    }};
+}})();
 const msgList = document.getElementById('msgList');
 msgList.scrollTop = msgList.scrollHeight;
 let lastId = {last_id};
@@ -11136,7 +11503,8 @@ def teacher_inbox_send(student_db_id):
         ts = row["created_at"].strftime("%I:%M %p") if hasattr(row["created_at"], "strftime") else str(row["created_at"])[:16]
         return jsonify({"ok": True, "msg": {"id": row["id"], "sender_type": "teacher", "message": message, "ts": ts}})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+        print("chat send error:", e, flush=True)
+        return jsonify({"ok": False, "error": "Could not send message. Please try again."})
 
 
 @app.route("/teacher/inbox/<int:student_db_id>/poll")
@@ -11179,7 +11547,8 @@ def teacher_inbox_poll(student_db_id):
         return jsonify({"msgs": [{"id": r["id"], "sender_type": r["sender_type"],
                                    "message": r["message"], "ts": _ts(r["created_at"])} for r in rows]})
     except Exception as e:
-        return jsonify({"msgs": [], "error": str(e)})
+        print("chat poll error:", e, flush=True)
+        return jsonify({"msgs": [], "error": "Could not load messages."})
 
 
 if __name__ == '__main__':
