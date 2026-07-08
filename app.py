@@ -4891,16 +4891,37 @@ def student_manual_checkin(class_id):
             <div id="checkinResult" class="hidden rounded-xl p-5 border-2 text-center space-y-1"></div>
         </div>
         <script>
+        // ── GPS capture: watch for a fix and keep the best one until accuracy is good ──
+        let _bestAcc = Infinity;
+        let _gpsWatchId = null;
+        const _GPS_GOOD_ENOUGH_M = 50;
+        const _GPS_MAX_WAIT_MS = 20000;
+
+        function _updateGpsStatus(acc) {{
+            const el = document.getElementById('gpsStatus');
+            if (!el) return;
+            el.innerText = '✅ GPS: ' + document.getElementById('lat').value + ', ' + document.getElementById('lng').value + ' (±' + Math.round(acc) + 'm)';
+            el.className = acc <= _GPS_GOOD_ENOUGH_M ? 'text-xs text-emerald-600 text-center font-semibold' : 'text-xs text-amber-500 text-center font-semibold';
+        }}
+
         if (navigator.geolocation) {{
-            navigator.geolocation.getCurrentPosition(function(pos) {{
-                document.getElementById('lat').value = pos.coords.latitude;
-                document.getElementById('lng').value = pos.coords.longitude;
-                document.getElementById('gpsStatus').innerText = '✅ GPS location captured (' + pos.coords.latitude.toFixed(4) + ', ' + pos.coords.longitude.toFixed(4) + ')';
-                document.getElementById('gpsStatus').className = 'text-xs text-emerald-600 text-center font-semibold';
+            document.getElementById('gpsStatus').innerText = '🔄 Acquiring GPS fix…';
+            _gpsWatchId = navigator.geolocation.watchPosition(function(pos) {{
+                const acc = pos.coords.accuracy;
+                if (acc < _bestAcc) {{
+                    _bestAcc = acc;
+                    document.getElementById('lat').value = pos.coords.latitude;
+                    document.getElementById('lng').value = pos.coords.longitude;
+                    _updateGpsStatus(acc);
+                    if (acc <= _GPS_GOOD_ENOUGH_M) {{
+                        navigator.geolocation.clearWatch(_gpsWatchId);
+                    }}
+                }}
             }}, function(err) {{
                 document.getElementById('gpsStatus').innerText = '⚠️ GPS unavailable — use session code or school WiFi.';
                 document.getElementById('gpsStatus').className = 'text-xs text-amber-600 text-center font-semibold';
-            }}, {{ enableHighAccuracy: true, timeout: 8000 }});
+            }}, {{ enableHighAccuracy: true, timeout: _GPS_MAX_WAIT_MS, maximumAge: 0 }});
+            setTimeout(function() {{ if (_gpsWatchId !== null) navigator.geolocation.clearWatch(_gpsWatchId); }}, _GPS_MAX_WAIT_MS);
         }} else {{
             document.getElementById('gpsStatus').innerText = '⚠️ GPS not supported on this device.';
         }}
@@ -5556,17 +5577,31 @@ let intervalId = null;
 let studentLat = null;
 let studentLng = null;
 
-// GPS detection
+// GPS detection — watch for a fix and keep the best one until accuracy is good
+let _bestAcc2 = Infinity;
+let _gpsWatchId2 = null;
+const _GPS_GOOD_ENOUGH_M2 = 50;
+const _GPS_MAX_WAIT_MS2 = 20000;
+
 if (navigator.geolocation) {{
-    navigator.geolocation.getCurrentPosition(function(pos) {{
-        studentLat = pos.coords.latitude;
-        studentLng = pos.coords.longitude;
-        document.getElementById('gpsStatus').innerText = '✅ GPS captured (' + studentLat.toFixed(4) + ', ' + studentLng.toFixed(4) + ')';
-        document.getElementById('gpsStatus').className = 'text-xs text-emerald-600 mt-1 font-semibold';
+    document.getElementById('gpsStatus').innerText = '🔄 Acquiring GPS fix…';
+    _gpsWatchId2 = navigator.geolocation.watchPosition(function(pos) {{
+        const acc = pos.coords.accuracy;
+        if (acc < _bestAcc2) {{
+            _bestAcc2 = acc;
+            studentLat = pos.coords.latitude;
+            studentLng = pos.coords.longitude;
+            document.getElementById('gpsStatus').innerText = '✅ GPS: ' + studentLat.toFixed(5) + ', ' + studentLng.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
+            document.getElementById('gpsStatus').className = acc <= _GPS_GOOD_ENOUGH_M2 ? 'text-xs text-emerald-600 mt-1 font-semibold' : 'text-xs text-amber-500 mt-1 font-semibold';
+            if (acc <= _GPS_GOOD_ENOUGH_M2) {{
+                navigator.geolocation.clearWatch(_gpsWatchId2);
+            }}
+        }}
     }}, function() {{
         document.getElementById('gpsStatus').innerText = '⚠️ GPS unavailable — use session code or school WiFi.';
         document.getElementById('gpsStatus').className = 'text-xs text-amber-600 mt-1 font-semibold';
-    }}, {{ enableHighAccuracy: true, timeout: 8000 }});
+    }}, {{ enableHighAccuracy: true, timeout: _GPS_MAX_WAIT_MS2, maximumAge: 0 }});
+    setTimeout(function() {{ if (_gpsWatchId2 !== null) navigator.geolocation.clearWatch(_gpsWatchId2); }}, _GPS_MAX_WAIT_MS2);
 }}
 
 async function startCamera() {{
@@ -9774,22 +9809,36 @@ let initialLastRotated = {f'new Date("{last_rotated_iso}")' if last_rotated_iso 
 let teacherLat = null;
 let teacherLng = null;
 
-// ── GPS capture on page load ──
+// ── GPS capture on page load — watch for a fix and keep the best one until accuracy is good ──
 const gpsStatusEl = document.getElementById('gpsStatus');
+let _teacherBestAcc = Infinity;
+let _teacherGpsWatchId = null;
+const _TEACHER_GPS_GOOD_ENOUGH_M = 50;
+const _TEACHER_GPS_MAX_WAIT_MS = 20000;
+
 if (navigator.geolocation) {{
-    navigator.geolocation.getCurrentPosition(function(pos) {{
-        teacherLat = pos.coords.latitude;
-        teacherLng = pos.coords.longitude;
-        if (gpsStatusEl) {{
-            gpsStatusEl.className = 'text-xs text-emerald-700 font-semibold bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2';
-            gpsStatusEl.innerText = '✅ GPS ready: ' + teacherLat.toFixed(5) + ', ' + teacherLng.toFixed(5);
+    if (gpsStatusEl) {{ gpsStatusEl.innerText = '🔄 Acquiring GPS fix…'; }}
+    _teacherGpsWatchId = navigator.geolocation.watchPosition(function(pos) {{
+        const acc = pos.coords.accuracy;
+        if (acc < _teacherBestAcc) {{
+            _teacherBestAcc = acc;
+            teacherLat = pos.coords.latitude;
+            teacherLng = pos.coords.longitude;
+            if (gpsStatusEl) {{
+                gpsStatusEl.className = acc <= _TEACHER_GPS_GOOD_ENOUGH_M ? 'text-xs text-emerald-700 font-semibold bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2' : 'text-xs text-amber-600 font-semibold bg-amber-50 border border-amber-200 rounded-lg px-3 py-2';
+                gpsStatusEl.innerText = '✅ GPS ready: ' + teacherLat.toFixed(5) + ', ' + teacherLng.toFixed(5) + ' (±' + Math.round(acc) + 'm)';
+            }}
+            if (acc <= _TEACHER_GPS_GOOD_ENOUGH_M) {{
+                navigator.geolocation.clearWatch(_teacherGpsWatchId);
+            }}
         }}
     }}, function(err) {{
         if (gpsStatusEl) {{
             gpsStatusEl.className = 'text-xs text-amber-600 font-semibold bg-amber-50 border border-amber-200 rounded-lg px-3 py-2';
             gpsStatusEl.innerText = '⚠️ GPS unavailable — WiFi/code check will still work. (' + err.message + ')';
         }}
-    }}, {{ enableHighAccuracy: true, timeout: 10000 }});
+    }}, {{ enableHighAccuracy: true, timeout: _TEACHER_GPS_MAX_WAIT_MS, maximumAge: 0 }});
+    setTimeout(function() {{ if (_teacherGpsWatchId !== null) navigator.geolocation.clearWatch(_teacherGpsWatchId); }}, _TEACHER_GPS_MAX_WAIT_MS);
 }} else {{
     if (gpsStatusEl) gpsStatusEl.innerText = '⚠️ GPS not supported on this device.';
 }}
