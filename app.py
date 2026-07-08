@@ -875,6 +875,12 @@ def get_active_session_for_class(class_id, school_id):
         return None
 
 
+def is_attendance_session_active(class_id, school_id):
+    """True only if the teacher has started (and not stopped/expired) an attendance session for this class.
+    Attendance can never be marked while this is False, regardless of GPS/WiFi/session-code checks."""
+    return get_active_session_for_class(class_id, school_id) is not None
+
+
 def run_location_checks(student_lat, student_lng, session_code, class_id, school_id, request_obj):
     """
     Flexible check: passes if ANY ONE of GPS / Session Code / WiFi passes.
@@ -4811,6 +4817,25 @@ def student_manual_checkin(class_id):
     if not student_row or not class_row:
         return "<script>alert('Error: Student or class not found.'); window.location.href='/student';</script>"
 
+    # Attendance can only be marked while the teacher has an active session running.
+    if not is_attendance_session_active(class_id, school_id):
+        if request.method == "POST" and is_ajax():
+            return jsonify({"ok": False, "message": "Attendance hasn't started yet. Wait for your teacher to start the session."})
+        body = f"""
+        <div class="max-w-md mx-auto space-y-5 text-center">
+            <div class="text-5xl">⏳</div>
+            <h1 class="text-2xl font-bold text-slate-800">Attendance Not Started</h1>
+            <p class="text-sm text-slate-500">
+                Your teacher hasn't started attendance for <strong>{class_row['class_name']}</strong> yet.
+                You can't mark attendance until they begin the session.
+            </p>
+            <a href="/student" class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-5 rounded-xl transition text-sm">
+                ← Back to Dashboard
+            </a>
+        </div>
+        """
+        return page_wrapper(f"Attendance Not Started — {class_row['class_name']}", body, is_student=True, student_context=student_row)
+
     # GET — show the check-in form (collect GPS + session code)
     if request.method == "GET":
         # Pre-fill code from QR scan (URL param or saved in session)
@@ -4974,6 +4999,9 @@ def student_checkin_api():
             return jsonify({"ok": False, "error": "QR code has expired or is invalid. Ask your teacher to refresh it."})
 
         class_id = row["class_id"]
+
+        if not is_attendance_session_active(class_id, school_id):
+            return jsonify({"ok": False, "error": "Attendance hasn't started yet. Ask your teacher to start the session."})
 
         if not student_belongs_to_class(student_db_id, class_id):
             return jsonify({"ok": False, "error": "You are not enrolled in this class."})
@@ -5668,7 +5696,13 @@ def student_scan_frame_matrix_lookup():
 
             any_passed = False
             already_marked_all = True
+            any_class_had_active_session = False
             for c in classes:
+                if not is_attendance_session_active(c["id"], school_id):
+                    # Teacher hasn't started attendance for this class — skip entirely,
+                    # don't mark Present or Absent.
+                    continue
+                any_class_had_active_session = True
                 passed, reason, dist_m = run_location_checks(lat_f, lng_f, session_code, c["id"], school_id, request)
                 if passed:
                     result = mark_attendance(student_row, c, "Present", student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
@@ -5681,6 +5715,12 @@ def student_scan_frame_matrix_lookup():
                     result = mark_attendance(student_row, c, "Absent", student_lat=lat_f, student_lng=lng_f, distance_meters=dist_m)
                     if not result.get('already_marked'):
                         already_marked_all = False
+
+            if not any_class_had_active_session:
+                return jsonify({
+                    "success": False,
+                    "message": "Attendance hasn't started yet for any of your classes. Wait for your teacher to start the session."
+                })
 
             # If every class was already marked Present, tell the student
             if already_marked_all and not any_passed:
@@ -5735,10 +5775,13 @@ def student_dashboard_portal():
     # so we can show a live "time left to scan" countdown for each — but only for
     # classes this student hasn't already checked into today.
     open_sessions = []
+    active_session_class_ids = set()
     for c in classes:
+        active_sess = get_active_session_for_class(c["id"], school_id)
+        if active_sess and active_sess.get("expires_at"):
+            active_session_class_ids.add(c["id"])
         if c["id"] in marked_present_today_class_ids:
             continue
-        active_sess = get_active_session_for_class(c["id"], school_id)
         if active_sess and active_sess.get("expires_at"):
             open_sessions.append({
                 "class_id": c["id"],
@@ -5825,6 +5868,14 @@ def student_dashboard_portal():
     if classes:
         for c in classes:
             pct = get_percentage(student_id, c["id"])
+            if c["id"] in active_session_class_ids:
+                checkin_action = f"""<a href="/student/checkin/manual/{c["id"]}" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-2.5 rounded text-[11px] transition inline-block">
+                            <i class="fas fa-check mr-1"></i> Mark Present
+                        </a>"""
+            else:
+                checkin_action = """<span class="bg-slate-100 text-slate-400 font-bold py-1 px-2.5 rounded text-[11px] inline-block cursor-not-allowed" title="Your teacher hasn't started attendance for this class yet">
+                            <i class="fas fa-lock mr-1"></i> Not Started
+                        </span>"""
             body += f"""
                 <tr class="border-b">
                     <td class="p-3 font-semibold text-slate-800">{c["class_name"]}</td>
@@ -5833,9 +5884,7 @@ def student_dashboard_portal():
                     <td class="p-3">{c["section_name"] or ""}</td>
                     <td class="p-3"><strong class="text-blue-600 font-extrabold">{pct}%</strong></td>
                     <td class="p-3 text-right">
-                        <a href="/student/checkin/manual/{c["id"]}" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-2.5 rounded text-[11px] transition inline-block">
-                            <i class="fas fa-check mr-1"></i> Mark Present
-                        </a>
+                        {checkin_action}
                     </td>
                 </tr>
             """
