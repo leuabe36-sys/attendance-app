@@ -3253,9 +3253,10 @@ def admin_edit_teacher(teacher_id):
     protect = admin_required()
     if protect:
         return protect
+    school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
+    cur.execute("SELECT * FROM teachers WHERE id=%s AND school_id=%s", (teacher_id, school_id))
     teacher = cur.fetchone()
     if not teacher:
         conn.close()
@@ -3268,15 +3269,15 @@ def admin_edit_teacher(teacher_id):
 
         if password:
             cur.execute("""
-                UPDATE teachers SET teacher_name=%s, username=%s, password=%s WHERE id=%s
-            """, (teacher_name, username, hash_password(password), teacher_id))
+                UPDATE teachers SET teacher_name=%s, username=%s, password=%s WHERE id=%s AND school_id=%s
+            """, (teacher_name, username, hash_password(password), teacher_id, school_id))
         else:
             cur.execute("""
-                UPDATE teachers SET teacher_name=%s, username=%s WHERE id=%s
-            """, (teacher_name, username, teacher_id))
+                UPDATE teachers SET teacher_name=%s, username=%s WHERE id=%s AND school_id=%s
+            """, (teacher_name, username, teacher_id, school_id))
         conn.commit()
         
-        cur.execute("UPDATE classes SET teacher_display_name=%s WHERE teacher_id=%s", (teacher_name, teacher_id))
+        cur.execute("UPDATE classes SET teacher_display_name=%s WHERE teacher_id=%s AND school_id=%s", (teacher_name, teacher_id, school_id))
         conn.commit()
         
         conn.close()
@@ -3313,9 +3314,10 @@ def admin_delete_teacher(teacher_id):
     protect = admin_required()
     if protect:
         return protect
+    school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM teachers WHERE id=%s", (teacher_id,))
+    cur.execute("DELETE FROM teachers WHERE id=%s AND school_id=%s", (teacher_id, school_id))
     conn.commit()
     conn.close()
     return "<script>alert('Teacher purged successfully');window.location.href='/admin';</script>"
@@ -3360,9 +3362,10 @@ def admin_edit_class(class_id):
     protect = admin_required()
     if protect:
         return protect
+    school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM classes WHERE id=%s", (class_id,))
+    cur.execute("SELECT * FROM classes WHERE id=%s AND school_id=%s", (class_id, school_id))
     class_row = cur.fetchone()
     if not class_row:
         conn.close()
@@ -3376,14 +3379,14 @@ def admin_edit_class(class_id):
         subject_name = request.form.get("subject_name", "").strip()
         teacher_id = request.form.get("teacher_id", "").strip()
 
-        cur.execute("SELECT * FROM teachers WHERE id=%s", (teacher_id,))
+        cur.execute("SELECT * FROM teachers WHERE id=%s AND school_id=%s", (teacher_id, school_id))
         t = cur.fetchone()
         t_name = t["teacher_name"] if t else ""
 
         cur.execute("""
             UPDATE classes SET class_name=%s, department=%s, course=%s, section_name=%s, subject_name=%s, teacher_id=%s, teacher_display_name=%s
-            WHERE id=%s
-        """, (class_name, department, course, section_name, subject_name, teacher_id, t_name, class_id))
+            WHERE id=%s AND school_id=%s
+        """, (class_name, department, course, section_name, subject_name, teacher_id, t_name, class_id, school_id))
         conn.commit()
         conn.close()
         if is_ajax(): return ajax_ok("Class updated successfully!", redirect_url="/admin")
@@ -3420,9 +3423,10 @@ def admin_delete_class(class_id):
     protect = admin_required()
     if protect:
         return protect
+    school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM classes WHERE id=%s", (class_id,))
+    cur.execute("DELETE FROM classes WHERE id=%s AND school_id=%s", (class_id, school_id))
     conn.commit()
     conn.close()
     return "<script>alert('Classroom record mapping purged successfully');window.location.href='/admin';</script>"
@@ -3438,6 +3442,12 @@ def admin_assign_student_class():
     if not student_db_id or not class_id:
         if is_ajax(): return ajax_err("All enrollment parameters are needed.")
         return "<script>alert('All enrollment parameters are needed');window.location.href='/admin';</script>"
+    school_id = get_current_school_id()
+    student_row = get_student_row_by_db_id(int(student_db_id))
+    class_row = get_class_by_id(int(class_id))
+    if not student_row or student_row["school_id"] != school_id or not class_row or class_row["school_id"] != school_id:
+        if is_ajax(): return ajax_err("Student or class not found.")
+        return "<script>alert('Student or class not found');window.location.href='/admin';</script>"
     assign_student_to_class(int(student_db_id), int(class_id))
     if is_ajax(): return ajax_ok("Student enrolled successfully!", redirect_url="/admin")
     return "<script>alert('Student enrollment map updated dynamically!');window.location.href='/admin';</script>"
@@ -3448,8 +3458,9 @@ def admin_edit_student(student_db_id):
     protect = admin_required()
     if protect:
         return protect
+    school_id = get_current_school_id()
     student = get_student_row_by_db_id(student_db_id)
-    if not student:
+    if not student or student["school_id"] != school_id:
         return "Student not found", 404
     if request.method == "POST":
         full_name = request.form.get("full_name", "").strip()
@@ -3482,12 +3493,12 @@ def admin_edit_student(student_db_id):
 
         # Update student_id in attendance too if changed
         if new_student_id and new_student_id != old_student_id:
-            cur.execute("UPDATE attendance SET student_id=%s WHERE student_id=%s", (new_student_id, old_student_id))
+            cur.execute("UPDATE attendance SET student_id=%s WHERE student_id=%s AND school_id=%s", (new_student_id, old_student_id, school_id))
 
         final_password = hash_password(password) if password else student["password"]
         cur.execute(
-            "UPDATE students SET full_name=%s, password=%s, student_id=%s, image_file=%s WHERE id=%s",
-            (full_name, final_password, new_student_id or old_student_id, new_image, student_db_id)
+            "UPDATE students SET full_name=%s, password=%s, student_id=%s, image_file=%s WHERE id=%s AND school_id=%s",
+            (full_name, final_password, new_student_id or old_student_id, new_image, student_db_id, school_id)
         )
         conn.commit()
         conn.close()
@@ -3542,16 +3553,17 @@ def admin_delete_student(db_id):
     protect = admin_required()
     if protect:
         return protect
+    school_id = get_current_school_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, student_id, image_file FROM students WHERE id=%s", (db_id,))
+    cur.execute("SELECT id, student_id, image_file FROM students WHERE id=%s AND school_id=%s", (db_id, school_id))
     row = cur.fetchone()
     if row:
         student_id = row["student_id"]
         img = row["image_file"]
-        cur.execute("DELETE FROM attendance WHERE student_id=%s", (student_id,))
+        cur.execute("DELETE FROM attendance WHERE student_id=%s AND school_id=%s", (student_id, school_id))
         cur.execute("DELETE FROM student_classes WHERE student_id_fk=%s", (db_id,))
-        cur.execute("DELETE FROM students WHERE id=%s", (db_id,))
+        cur.execute("DELETE FROM students WHERE id=%s AND school_id=%s", (db_id, school_id))
         conn.commit()
         try:
             if img and img.startswith('http'):
@@ -3573,7 +3585,7 @@ def admin_view_class(class_id):
     if protect:
         return protect
     class_row = get_class_by_id(class_id)
-    if not class_row:
+    if not class_row or class_row["school_id"] != get_current_school_id():
         return "Class code record mapping target not found in framework database state", 404
     students = get_students_in_class(class_id)
     attendance = get_attendance_for_class(class_id)
@@ -3659,6 +3671,9 @@ def admin_remove_student_from_class(class_id, student_db_id):
     protect = admin_required()
     if protect:
         return protect
+    class_row = get_class_by_id(class_id)
+    if not class_row or class_row["school_id"] != get_current_school_id():
+        return "Class not found", 404
     remove_student_from_class(student_db_id, class_id)
     return f"<script>alert('Student unmapped from current class matrix');window.location.href='/admin/class/{class_id}';</script>"
 
