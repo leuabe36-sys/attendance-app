@@ -5580,14 +5580,18 @@ def student_qr_scan_portal():
         qrStatus.className = "text-sm font-semibold text-blue-500";
 
         // Safety net: if the server hasn't responded in 10s, tell the student
-        // instead of leaving "Submitting attendance…" up indefinitely.
+        // instead of leaving "Submitting attendance…" up indefinitely. On the
+        // free hosting tier the server can be asleep and take 30-60s+ to wake
+        // up on the very first request after it's been idle, so the abort
+        // timer is deliberately generous (70s) rather than the old 20s, which
+        // was cutting off scans that would have succeeded a few seconds later.
         const qrSubmitTimeout = setTimeout(() => {{
-            qrStatus.innerText = "⏳ Still working — this is taking longer than usual…";
+            qrStatus.innerText = "⏳ Still working — the server may be waking up from being idle, this can take up to a minute…";
             qrStatus.className = "text-sm font-semibold text-amber-600";
         }}, 10000);
 
         const qrAbortController = new AbortController();
-        const qrAbortTimer = setTimeout(() => qrAbortController.abort(), 20000);
+        const qrAbortTimer = setTimeout(() => qrAbortController.abort(), 70000);
 
         fetch('/student/checkin/api', {{
             method: 'POST',
@@ -5655,7 +5659,7 @@ def student_qr_scan_portal():
             const timedOut = err && err.name === 'AbortError';
             const badJson = err && err.message === 'bad_json';
             let msg = 'Network error. Please check your connection.';
-            if (timedOut) msg = 'Request timed out. Please try again.';
+            if (timedOut) msg = 'Request timed out — the server may have been waking up from being idle. Please tap Try Again.';
             else if (badJson) msg = 'Server error while recording attendance. Please try again.';
             document.getElementById('qrResultBox').innerHTML = `
                 <div class="rounded-2xl border-2 bg-amber-50 border-amber-200 text-amber-800 text-center p-5">
