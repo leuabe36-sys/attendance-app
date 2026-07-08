@@ -9493,12 +9493,26 @@ def teacher_student_locations(class_id):
     teacher_lat = sess["teacher_lat"] if sess else None
     teacher_lng = sess["teacher_lng"] if sess else None
 
+    # LEFT JOIN every student enrolled in this class against today's attendance
+    # (rather than SELECT-ing only from the attendance table) so students who
+    # never checked in still show up as "Absent" and can be manually marked
+    # Present by the teacher — previously they were simply missing from this
+    # list entirely, which made the panel look like overrides weren't working.
     cur.execute("""
-        SELECT full_name, student_id, status, time, student_lat, student_lng, distance_meters
-        FROM attendance
-        WHERE class_id=%s AND date=%s AND school_id=%s
-        ORDER BY time DESC
-    """, (class_id, today, school_id))
+        SELECT s.id AS student_db_id, s.full_name, s.student_id,
+               a.status AS status, a.time AS time,
+               a.student_lat AS student_lat, a.student_lng AS student_lng,
+               a.distance_meters AS distance_meters
+        FROM students s
+        INNER JOIN student_classes sc ON sc.student_id_fk = s.id
+        LEFT JOIN attendance a
+               ON a.student_id = s.student_id
+              AND a.class_id = %s
+              AND a.date = %s
+              AND a.school_id = %s
+        WHERE sc.class_id_fk = %s AND s.school_id = %s
+        ORDER BY (a.time IS NULL) ASC, a.time DESC, s.full_name ASC
+    """, (class_id, today, school_id, class_id, school_id))
     rows = cur.fetchall()
     conn.close()
     students = []
@@ -9510,10 +9524,11 @@ def teacher_student_locations(class_id):
             except:
                 dist = None
         students.append({
+            "student_db_id": r["student_db_id"],
             "full_name": r["full_name"],
             "student_id": r["student_id"],
-            "status": r["status"],
-            "time": r["time"],
+            "status": r["status"] or "Absent",
+            "time": r["time"] or "—",
             "lat": r["student_lat"],
             "lng": r["student_lng"],
             "distance_meters": round(dist, 1) if dist is not None else None,
@@ -9523,6 +9538,39 @@ def teacher_student_locations(class_id):
         "teacher_lng": teacher_lng,
         "students": students
     })
+
+
+@app.route("/teacher/live-mark/<int:class_id>/<int:student_db_id>/<status>", methods=["POST"])
+def teacher_live_mark(class_id, student_db_id, status):
+    """AJAX-friendly Present/Absent override used by the Live Student
+    Check-ins panel — returns JSON and never redirects, so the panel can
+    update in place without a page reload (unlike the older
+    /teacher/manual-mark/... route, which is designed for full-page use)."""
+    protect = teacher_required()
+    if protect:
+        return jsonify({"ok": False, "error": "Not logged in."}), 401
+
+    if status not in ("Present", "Absent"):
+        return jsonify({"ok": False, "error": "Invalid status."}), 400
+
+    class_row = get_class_by_id(class_id)
+    if not class_row:
+        return jsonify({"ok": False, "error": "Class not found."}), 404
+    if class_row["teacher_id"] != get_logged_teacher_id():
+        return jsonify({"ok": False, "error": "Not authorized for this class."}), 403
+
+    student_row = get_student_row_by_db_id(student_db_id)
+    if not student_row:
+        return jsonify({"ok": False, "error": "Student not found."}), 404
+
+    # Confirm the student is actually enrolled in this class before allowing
+    # the teacher to write an attendance record for them.
+    enrolled = [s for s in get_students_in_class(class_id) if s["id"] == student_db_id]
+    if not enrolled:
+        return jsonify({"ok": False, "error": "Student is not enrolled in this class."}), 403
+
+    result = mark_attendance(student_row, class_row, status, force=True)
+    return jsonify({"ok": True, "status": result["status"], "student_db_id": student_db_id})
 
 
 @app.route("/teacher/session-panel/<int:class_id>")
@@ -9961,10 +10009,14 @@ async function refreshLocations() {{
                     : '—';
                 const distColor = (s.distance_meters !== null && s.distance_meters <= 200)
                     ? 'text-emerald-600 font-bold' : s.distance_meters !== null ? 'text-amber-600 font-semibold' : 'text-slate-400';
+                // Status is now a clickable toggle button (was a static <span> with
+                // no click handler at all, which is why teachers couldn't flip an
+                // Absent student to Present from this panel) — clicking flips the
+                // status via /teacher/live-mark/... and updates in place, no reload.
                 const badge = s.status === 'Present'
-                    ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">Present</span>'
-                    : '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-50 text-red-600 border border-red-200">Absent</span>';
-                return `<tr class="border-b border-slate-50">
+                    ? `<button type="button" class="live-status-btn px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 cursor-pointer transition" data-id="${{s.student_db_id}}" data-status="Present" onclick="toggleLiveStatus(this)" title="Click to mark Absent">Present</button>`
+                    : `<button type="button" class="live-status-btn px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 cursor-pointer transition" data-id="${{s.student_db_id}}" data-status="Absent" onclick="toggleLiveStatus(this)" title="Click to mark Present">Absent</button>`;
+                return `<tr class="border-b border-slate-50" data-student-row="${{s.student_db_id}}">
                     <td class="py-2 pr-3 font-semibold text-slate-800">${{s.full_name}}<br><span class="text-xs font-mono text-slate-400">${{s.student_id}}</span></td>
                     <td class="py-2 pr-3">${{badge}}</td>
                     <td class="py-2 pr-3 ${{distColor}}">${{distStr}}</td>
@@ -9975,6 +10027,54 @@ async function refreshLocations() {{
         const lastRefreshedEl = document.getElementById('lastRefreshed');
         if (lastRefreshedEl) lastRefreshedEl.innerText = 'Updated: ' + new Date().toLocaleTimeString();
     }} catch(err) {{ console.log('loc refresh error', err); }}
+}}
+
+// Flip a student's attendance status from the Live Student Check-ins panel.
+// Optimistically updates the button in place so it feels instant, then
+// confirms against the server and re-syncs the whole panel — no page
+// reload involved either way.
+async function toggleLiveStatus(btn) {{
+    const studentDbId = btn.getAttribute('data-id');
+    const currentStatus = btn.getAttribute('data-status');
+    const newStatus = currentStatus === 'Present' ? 'Absent' : 'Present';
+
+    btn.disabled = true;
+    const originalText = btn.innerText;
+    btn.innerText = '…';
+
+    try {{
+        const res = await fetch(`/teacher/live-mark/${{CLASS_ID}}/${{studentDbId}}/${{newStatus}}`, {{
+            method: 'POST'
+        }});
+        const data = await res.json();
+        if (data.ok) {{
+            // Re-render this row's button immediately instead of waiting for
+            // the next 10s poll.
+            if (data.status === 'Present') {{
+                btn.className = 'live-status-btn px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 cursor-pointer transition';
+                btn.title = 'Click to mark Absent';
+                btn.innerText = 'Present';
+                btn.setAttribute('data-status', 'Present');
+            }} else {{
+                btn.className = 'live-status-btn px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 cursor-pointer transition';
+                btn.title = 'Click to mark Present';
+                btn.innerText = 'Absent';
+                btn.setAttribute('data-status', 'Absent');
+            }}
+            btn.disabled = false;
+            // Pull a fresh snapshot (updates the time column, distance, etc.)
+            refreshLocations();
+        }} else {{
+            btn.innerText = originalText;
+            btn.disabled = false;
+            alert(data.error || 'Could not update attendance. Please try again.');
+        }}
+    }} catch(err) {{
+        console.log('toggleLiveStatus error', err);
+        btn.innerText = originalText;
+        btn.disabled = false;
+        alert('Network error updating attendance. Please try again.');
+    }}
 }}
 
 function startCountdown(expiresDate) {{
