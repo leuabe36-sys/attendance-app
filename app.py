@@ -5018,6 +5018,7 @@ def student_manual_checkin(class_id):
                 ⚠️ At least one verification must pass: <strong>GPS location</strong>, <strong>session code</strong>, or <strong>school WiFi</strong>.
             </div>
             <form id="checkinForm" method="POST" class="space-y-4 bg-white border rounded-xl p-5 shadow-sm">
+                {csrf_input_html()}
                 <input type="hidden" name="latitude" id="lat">
                 <input type="hidden" name="longitude" id="lng">
 
@@ -5350,6 +5351,15 @@ def student_qr_scan_portal():
          it's only published via jsDelivr (verified working URL below). -->
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script>
+    // ── CSRF helper: every POST in this app is checked against the
+    // per-session csrf_token by a global before_request hook. This page's
+    // /student/checkin/api call was missing that token, so the server was
+    // rejecting every submission with 400 "Invalid or missing CSRF token"
+    // before it ever reached the attendance logic. ──
+    function _qrGetCsrfCookie() {{
+        const m = document.cookie.match('(^|;)\\s*csrf_token\\s*=\\s*([^;]+)');
+        return m ? decodeURIComponent(m.pop()) : '';
+    }}
     const qrVideo = document.getElementById('qrVideo');
     const qrCanvas = document.getElementById('qrCanvas');
     const qrCtx = qrCanvas.getContext('2d', {{ willReadFrequently: true }});
@@ -5581,7 +5591,7 @@ def student_qr_scan_portal():
 
         fetch('/student/checkin/api', {{
             method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
+            headers: {{ 'Content-Type': 'application/json', 'X-CSRF-Token': _qrGetCsrfCookie() }},
             signal: qrAbortController.signal,
             body: JSON.stringify({{
                 session_code: code,
