@@ -431,7 +431,7 @@ def _get_pool():
             if _db_pool is None:
                 _db_pool = psycopg2.pool.ThreadedConnectionPool(
                     minconn=2,
-                    maxconn=20,
+                    maxconn=30,
                     dsn=DATABASE_URL,
                     cursor_factory=psycopg2.extras.RealDictCursor,
                     connect_timeout=10,
@@ -480,6 +480,17 @@ class _PooledConnection:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         return self._conn.__exit__(exc_type, exc_val, exc_tb)
+
+    def __del__(self):
+        # Safety net: if some code path forgets to call conn.close() (e.g. an
+        # unexpected exception skips past it), don't let that connection be
+        # lost forever — return it to the pool when this wrapper is garbage
+        # collected instead of silently shrinking the pool's capacity over
+        # time (which would eventually make every request queue/time out).
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def get_db():
@@ -11969,4 +11980,10 @@ if __name__ == '__main__':
     init_super_admin_table()
     _ensure_teacher_msg_table()
     load_known_faces()
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # threaded=True lets Flask's dev server handle multiple students scanning
+    # the QR at the same time concurrently instead of queueing requests one
+    # at a time. Without this, a class of students scanning within the same
+    # few seconds get serialized — each one waits for everyone ahead of them,
+    # which is what produces the "still working, this is taking longer than
+    # usual" message and eventual timeouts/failed check-ins.
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
