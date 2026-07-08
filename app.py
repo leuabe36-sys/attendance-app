@@ -5372,6 +5372,7 @@ def student_qr_scan_portal():
     let qrCurrentFacingMode = "environment";  // back camera by default
     let qrHandledCode = false;
     let qrStudentLat = null;
+    let qrAbortController = null;  // top-level so the inline Cancel button (onclick, global scope) can reach it
     let qrStudentLng = null;
 
     // ── Zoom state ──
@@ -5579,19 +5580,24 @@ def student_qr_scan_portal():
         qrStatus.innerText = "⏳ Submitting attendance…";
         qrStatus.className = "text-sm font-semibold text-blue-500";
 
-        // Safety net: if the server hasn't responded in 10s, tell the student
-        // instead of leaving "Submitting attendance…" up indefinitely. On the
-        // free hosting tier the server can be asleep and take 30-60s+ to wake
-        // up on the very first request after it's been idle, so the abort
-        // timer is deliberately generous (70s) rather than the old 20s, which
-        // was cutting off scans that would have succeeded a few seconds later.
+        // Safety net: give the student fast, honest feedback instead of a
+        // spinner that can sit there for over a minute. A 70s abort felt like
+        // "frozen" to students even though it was technically bounded — by
+        // 8s we tell them it's slow, by 25s we give up and show a real Retry
+        // button instead of making them wonder if the app is broken.
         const qrSubmitTimeout = setTimeout(() => {{
-            qrStatus.innerText = "⏳ Still working — the server may be waking up from being idle, this can take up to a minute…";
+            qrStatus.innerText = "⏳ Still working — hang tight a few more seconds…";
             qrStatus.className = "text-sm font-semibold text-amber-600";
-        }}, 10000);
+            // Give the student a way out instead of just watching a spinner —
+            // if they'd rather bail and try again (or enter the code by hand)
+            // than keep waiting, let them.
+            document.getElementById('qrResultBox').innerHTML =
+                '<button onclick="qrAbortController.abort(); retryQR();" ' +
+                'class="bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold px-4 py-2 rounded-xl text-xs">✕ Cancel &amp; Try Again</button>';
+        }}, 8000);
 
-        const qrAbortController = new AbortController();
-        const qrAbortTimer = setTimeout(() => qrAbortController.abort(), 70000);
+        qrAbortController = new AbortController();
+        const qrAbortTimer = setTimeout(() => qrAbortController.abort(), 25000);
 
         fetch('/student/checkin/api', {{
             method: 'POST',
