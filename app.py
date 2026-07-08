@@ -449,6 +449,29 @@ def _get_pool():
                         dsn=DATABASE_URL,
                         cursor_factory=psycopg2.extras.RealDictCursor,
                         connect_timeout=5,
+                        # connect_timeout above only bounds the initial TCP/auth
+                        # handshake. Without a statement_timeout, a query sent to
+                        # a DB that's mid-wakeup, stalled, or on a dead-but-not-
+                        # yet-detected connection can hang forever with no
+                        # exception ever raised — which is what produces a
+                        # "Submitting attendance…" spinner that never resolves,
+                        # even though the client-side fetch has its own abort
+                        # timer (that timer only helps once the server actually
+                        # responds; it can't unstick a hung server-side query).
+                        # 15s here is intentionally shorter than the client's
+                        # 20s AbortController so the student gets a real error
+                        # message ("Database error...") instead of silence.
+                        options="-c statement_timeout=15000",
+                        # TCP keepalives so a connection that's gone dead at the
+                        # network level (host went to sleep, NAT/proxy dropped
+                        # it, etc.) is detected within ~30-50s instead of the
+                        # OS default (which can be hours), so it gets recycled
+                        # by get_db()'s staleness check instead of handed out
+                        # as a zombie connection.
+                        keepalives=1,
+                        keepalives_idle=20,
+                        keepalives_interval=10,
+                        keepalives_count=3,
                     )
                     _db_pool_last_failure = 0.0
                 except Exception:
