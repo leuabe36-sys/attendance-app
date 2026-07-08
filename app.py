@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, Response, redirect, session, send_from_directory
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -228,9 +229,6 @@ def force_https():
     if request.headers.get("X-Forwarded-Proto", "https") == "http":
         return redirect(request.url.replace("http://", "https://", 1), code=301)
 
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin123"
-
 known_encodings = []
 known_students = []
 
@@ -393,9 +391,9 @@ def init_db():
     # Seed default admin password for school 1 if not already set
     cur.execute("""
         INSERT INTO admin_settings (school_id, key, value)
-        VALUES (1, 'admin_password', 'admin123')
+        VALUES (1, 'admin_password', %s)
         ON CONFLICT (school_id, key) DO NOTHING
-    """)
+    """, (hash_password("admin123"),))
 
     # ── CLASS SESSIONS TABLE (QR/Session code check-in) ──
     cur.execute("""
@@ -798,6 +796,31 @@ def sanitize_filename(text):
     return text.replace(" ", "_")
 
 
+# =========================================================
+# PASSWORD HASHING HELPERS
+# =========================================================
+# New passwords are always stored hashed (Werkzeug/pbkdf2). Older rows
+# created before hashing was added may still contain plaintext values —
+# verify_password() supports both so existing accounts keep working, and
+# every successful legacy login is transparently upgraded to a hash.
+def hash_password(plain_password):
+    return generate_password_hash(plain_password)
+
+def is_hashed_password(value):
+    return bool(value) and value.startswith(("pbkdf2:", "scrypt:"))
+
+def verify_password(stored_value, provided_password):
+    if not stored_value or provided_password is None:
+        return False
+    if is_hashed_password(stored_value):
+        try:
+            return check_password_hash(stored_value, provided_password)
+        except Exception:
+            return False
+    # Legacy plaintext row — compare directly (will be rehashed on success)
+    return stored_value == provided_password
+
+
 def get_admin_password():
     school_id = session.get("school_id", 1)
     try:
@@ -810,13 +833,15 @@ def get_admin_password():
     except:
         return "admin123"
 
-def set_admin_password(new_password):
-    school_id = session.get("school_id", 1)
+def set_admin_password(new_password, school_id=None):
+    if school_id is None:
+        school_id = session.get("school_id", 1)
+    hashed = hash_password(new_password)
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO admin_settings (school_id, key, value) VALUES (%s, 'admin_password', %s) ON CONFLICT (school_id, key) DO UPDATE SET value=%s",
-        (school_id, new_password, new_password)
+        (school_id, hashed, hashed)
     )
     conn.commit()
     conn.close()
@@ -2037,7 +2062,7 @@ def user_settings():
         cur = conn.cursor()
 
         if role == "admin":
-            if old_password != get_admin_password():
+            if not verify_password(get_admin_password(), old_password):
                 conn.close()
                 if is_ajax(): return ajax_err("Incorrect existing password.")
                 return page_wrapper("Settings", "<p class='text-red-500 font-bold'>Incorrect existing password.</p>")
@@ -2049,11 +2074,11 @@ def user_settings():
         elif role == "teacher":
             cur.execute("SELECT password FROM teachers WHERE id=%s", (user_id,))
             row = cur.fetchone()
-            if not row or row["password"] != old_password:
+            if not row or not verify_password(row["password"], old_password):
                 conn.close()
                 if is_ajax(): return ajax_err("Incorrect old password.")
                 return page_wrapper("Settings", "<p class='text-red-500 font-bold'>Incorrect old password.</p>", is_teacher=True, teacher_name=teacher_name_str)
-            cur.execute("UPDATE teachers SET password=%s WHERE id=%s", (new_password, user_id))
+            cur.execute("UPDATE teachers SET password=%s WHERE id=%s", (hash_password(new_password), user_id))
             conn.commit()
             conn.close()
             if is_ajax(): return ajax_ok("Teacher password updated successfully!", redirect_url="/teacher")
@@ -2062,11 +2087,11 @@ def user_settings():
         elif role == "student":
             cur.execute("SELECT password FROM students WHERE id=%s", (user_id,))
             row = cur.fetchone()
-            if not row or row["password"] != old_password:
+            if not row or not verify_password(row["password"], old_password):
                 conn.close()
                 if is_ajax(): return ajax_err("Incorrect old password.")
                 return page_wrapper("Settings", "<p class='text-red-500 font-bold'>Incorrect old password.</p>", is_student=True, student_context=student_ctx)
-            cur.execute("UPDATE students SET password=%s WHERE id=%s", (new_password, user_id))
+            cur.execute("UPDATE students SET password=%s WHERE id=%s", (hash_password(new_password), user_id))
             conn.commit()
             conn.close()
             if is_ajax(): return ajax_ok("Password updated successfully!", redirect_url="/student")
@@ -2228,10 +2253,13 @@ def admin_login():
     conn.close()
     stored_pw = row["value"] if row else school["admin_password"]
 
-    if password != stored_pw:
+    if not verify_password(stored_pw, password):
         return login_page("Admin Login", "/admin-login", "School Name", "Admin Password",
                           "Invalid password.",
                           extra_fields=ADMIN_LOGIN_EXTRA_FIELDS)
+
+    if not is_hashed_password(stored_pw):
+        set_admin_password(password, school_id=school["id"])
 
     session.clear()
     session["admin_logged_in"] = True
@@ -2259,9 +2287,14 @@ def teacher_login():
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM teachers WHERE username=%s AND password=%s AND school_id=%s",
-                (username, password, school["id"]))
+    cur.execute("SELECT * FROM teachers WHERE username=%s AND school_id=%s",
+                (username, school["id"]))
     teacher = cur.fetchone()
+    if teacher and not verify_password(teacher["password"], password):
+        teacher = None
+    elif teacher and not is_hashed_password(teacher["password"]):
+        cur.execute("UPDATE teachers SET password=%s WHERE id=%s", (hash_password(password), teacher["id"]))
+        conn.commit()
     conn.close()
 
     if teacher:
@@ -2299,9 +2332,14 @@ def student_login():
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM students WHERE student_id=%s AND password=%s AND school_id=%s",
-                (student_id, password, school["id"]))
+    cur.execute("SELECT * FROM students WHERE student_id=%s AND school_id=%s",
+                (student_id, school["id"]))
     student = cur.fetchone()
+    if student and not verify_password(student["password"], password):
+        student = None
+    elif student and not is_hashed_password(student["password"]):
+        cur.execute("UPDATE students SET password=%s WHERE id=%s", (hash_password(password), student["id"]))
+        conn.commit()
     conn.close()
 
     if student:
@@ -2455,7 +2493,7 @@ def register_school():
         cur.execute("""
             INSERT INTO pending_school_registrations (token, name, code, admin_username, admin_password, email, expires_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (token, name, code, admin_username, admin_password, "", expires_at))
+        """, (token, name, code, admin_username, hash_password(admin_password), "", expires_at))
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -2725,7 +2763,7 @@ def register_face():
         cur.execute("""
             INSERT INTO students (school_id, student_id, full_name, password, image_file, registered_at)
             VALUES (%s, %s, %s, %s, %s, %s)
-        """, (school_id, student_id, full_name, password, public_url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        """, (school_id, student_id, full_name, hash_password(password), public_url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         conn.close()
 
@@ -2857,7 +2895,7 @@ def admin_dashboard():
                     <td class="text-slate-400 text-xs font-mono">#{t["id"]}</td>
                     <td class="font-semibold">{t["teacher_name"]}</td>
                     <td class="text-slate-600">{t["username"]}</td>
-                    <td class="font-mono text-xs text-slate-500">{t["password"]}</td>
+                    <td class="font-mono text-xs text-slate-500">••••••••</td>
                     <td>
                         <a class="text-blue-600 hover:underline font-medium mr-3" href="/admin/edit-teacher/{t['id']}">Edit</a>
                         <a class="text-red-500 hover:underline font-medium" href="/admin/delete-teacher/{t['id']}" onclick="return confirm('Delete this teacher?')">Delete</a>
@@ -2937,7 +2975,7 @@ def admin_dashboard():
                     <td><img class="w-10 h-10 object-cover rounded-full border-2 border-slate-200" src="{supabase_public_url(s["image_file"])}"></td>
                     <td class="font-mono text-xs text-slate-500">{s["student_id"]}</td>
                     <td class="font-semibold">{s["full_name"]}</td>
-                    <td class="font-mono text-xs text-slate-400">{s["password"]}</td>
+                    <td class="font-mono text-xs text-slate-400">••••••••</td>
                     <td class="text-xs text-slate-400">{s["registered_at"]}</td>
                     <td>
                         <a class="text-blue-600 hover:underline font-medium mr-3" href="/admin/edit-student/{s['id']}">Edit</a>
@@ -3203,7 +3241,7 @@ def admin_create_teacher():
     cur.execute("""
         INSERT INTO teachers (school_id, teacher_name, username, password, created_at)
         VALUES (%s, %s, %s, %s, %s)
-    """, (school_id, teacher_name, username, password, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    """, (school_id, teacher_name, username, hash_password(password), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
     if is_ajax(): return ajax_ok("Instructor created successfully!", redirect_url="/admin")
@@ -3228,9 +3266,14 @@ def admin_edit_teacher(teacher_id):
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "").strip()
 
-        cur.execute("""
-            UPDATE teachers SET teacher_name=%s, username=%s, password=%s WHERE id=%s
-        """, (teacher_name, username, password, teacher_id))
+        if password:
+            cur.execute("""
+                UPDATE teachers SET teacher_name=%s, username=%s, password=%s WHERE id=%s
+            """, (teacher_name, username, hash_password(password), teacher_id))
+        else:
+            cur.execute("""
+                UPDATE teachers SET teacher_name=%s, username=%s WHERE id=%s
+            """, (teacher_name, username, teacher_id))
         conn.commit()
         
         cur.execute("UPDATE classes SET teacher_display_name=%s WHERE teacher_id=%s", (teacher_name, teacher_id))
@@ -3254,7 +3297,7 @@ def admin_edit_teacher(teacher_id):
             </div>
             <div>
                 <label class="block text-sm font-medium">Access Pass Key Token</label>
-                <input type="text" name="password" value="{teacher["password"]}" class="w-full px-3 py-2 border rounded-lg" required>
+                <input type="text" name="password" placeholder="Leave blank to keep current password" class="w-full px-3 py-2 border rounded-lg">
             </div>
             <button type="submit" class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700">Save Modifications</button>
             <a href="/admin" class="ml-2 inline-block bg-slate-100 text-slate-700 font-bold py-2 px-4 rounded-lg">Cancel</a>
@@ -3441,9 +3484,10 @@ def admin_edit_student(student_db_id):
         if new_student_id and new_student_id != old_student_id:
             cur.execute("UPDATE attendance SET student_id=%s WHERE student_id=%s", (new_student_id, old_student_id))
 
+        final_password = hash_password(password) if password else student["password"]
         cur.execute(
             "UPDATE students SET full_name=%s, password=%s, student_id=%s, image_file=%s WHERE id=%s",
-            (full_name, password, new_student_id or old_student_id, new_image, student_db_id)
+            (full_name, final_password, new_student_id or old_student_id, new_image, student_db_id)
         )
         conn.commit()
         conn.close()
@@ -3475,7 +3519,7 @@ def admin_edit_student(student_db_id):
             </div>
             <div>
                 <label class="block text-sm font-semibold text-slate-700 mb-1">Password</label>
-                <input type="text" name="password" value="{student["password"]}" class="w-full px-3 py-2 border rounded-lg" required>
+                <input type="text" name="password" placeholder="Leave blank to keep current password" class="w-full px-3 py-2 border rounded-lg">
             </div>
             <div>
                 <label class="block text-sm font-semibold text-slate-700 mb-1">Profile Photo (Upload from file)</label>
@@ -5672,7 +5716,7 @@ def student_edit_profile():
 
         if not full_name:
             error = "Full name cannot be empty."
-        elif current_password and student["password"] != current_password:
+        elif current_password and not verify_password(student["password"], current_password):
             error = "Current password is incorrect."
         else:
             conn = get_db()
@@ -5717,7 +5761,7 @@ def student_edit_profile():
                             supabase_delete(old_img.split("/")[-1])
                         new_image = public_url
 
-            final_password = new_password if new_password else student["password"]
+            final_password = hash_password(new_password) if new_password else student["password"]
             cur.execute(
                 "UPDATE students SET full_name=%s, password=%s, image_file=%s WHERE id=%s",
                 (full_name, final_password, new_image, student_db_id)
@@ -9764,7 +9808,7 @@ def get_super_admin_name():
     return get_super_admin_setting("name", "Super Admin")
 
 def set_super_admin_password(new_pw):
-    set_super_admin_setting("password", new_pw)
+    set_super_admin_setting("password", hash_password(new_pw))
 
 def init_super_admin_table():
     conn = get_db()
@@ -9776,9 +9820,9 @@ def init_super_admin_table():
         )
     """)
     cur.execute("""
-        INSERT INTO super_admin_settings (key, value) VALUES ('password', 'superadmin123')
+        INSERT INTO super_admin_settings (key, value) VALUES ('password', %s)
         ON CONFLICT (key) DO NOTHING
-    """)
+    """, (hash_password("superadmin123"),))
     cur.execute("""
         INSERT INTO super_admin_settings (key, value) VALUES ('name', 'Super Admin')
         ON CONFLICT (key) DO NOTHING
@@ -9794,7 +9838,10 @@ def super_admin_login():
     err = ""
     if request.method == "POST":
         pw = request.form.get("password", "").strip()
-        if pw == get_super_admin_password():
+        stored_pw = get_super_admin_password()
+        if verify_password(stored_pw, pw):
+            if not is_hashed_password(stored_pw):
+                set_super_admin_password(pw)
             session["super_admin_logged_in"] = True
             session["super_admin_name"] = get_super_admin_name()
             return redirect("/super-admin")
@@ -9820,7 +9867,7 @@ def super_admin_change_credentials():
     current = request.form.get("current_password", "").strip()
     new_pw = request.form.get("new_password", "").strip()
     confirm = request.form.get("confirm_password", "").strip()
-    if current != get_super_admin_password():
+    if not verify_password(get_super_admin_password(), current):
         if is_ajax(): return ajax_err("Incorrect current password.")
         return "<script>alert('Incorrect current password.');window.location.href='/super-admin';</script>"
     if new_name:
@@ -9874,7 +9921,7 @@ def super_admin_dashboard():
             <td class="p-3 font-semibold">{s['name']}</td>
             <td class="p-3 font-mono font-bold text-blue-700 text-lg">{s['code']}</td>
             <td class="p-3 text-slate-500 text-sm">{s['admin_username']}</td>
-            <td class="p-3 font-mono text-xs text-slate-400">{s['admin_password']}</td>
+            <td class="p-3 font-mono text-xs text-slate-400">••••••••</td>
             <td class="p-3 text-xs text-slate-400">{s['created_at']}</td>
             <td class="p-3 whitespace-nowrap">
                 <a class="text-blue-600 hover:underline text-sm font-medium mr-3"
@@ -10091,18 +10138,19 @@ def super_admin_create_school():
         return "<script>alert('All fields are required');window.location.href='/super-admin';</script>"
     conn = get_db()
     cur = conn.cursor()
+    hashed_admin_password = hash_password(admin_password)
     try:
         cur.execute("""
             INSERT INTO schools (name, code, admin_username, admin_password, created_at)
             VALUES (%s, %s, %s, %s, %s)
-        """, (name, code, admin_username, admin_password, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        """, (name, code, admin_username, hashed_admin_password, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         cur.execute("SELECT id FROM schools WHERE code=%s", (code,))
         new_school = cur.fetchone()
         if new_school:
             cur.execute("""
                 INSERT INTO admin_settings (school_id, key, value) VALUES (%s, 'admin_password', %s)
                 ON CONFLICT (school_id, key) DO UPDATE SET value=%s
-            """, (new_school["id"], admin_password, admin_password))
+            """, (new_school["id"], hashed_admin_password, hashed_admin_password))
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -10132,20 +10180,27 @@ def super_admin_edit_school(school_id):
         admin_username = request.form.get("admin_username", "").strip()
         admin_password = request.form.get("admin_password", "").strip()
 
-        if not name or not code or not admin_username or not admin_password:
+        if not name or not code or not admin_username:
             if is_ajax(): return ajax_err("All fields are required.")
             return "<script>alert('All fields are required');window.location.href='/super-admin';</script>"
 
         try:
-            cur.execute("""
-                UPDATE schools SET name=%s, code=%s, admin_username=%s, admin_password=%s
-                WHERE id=%s
-            """, (name, code, admin_username, admin_password, school_id))
-            # Also keep admin_settings in sync
-            cur.execute("""
-                INSERT INTO admin_settings (school_id, key, value) VALUES (%s, 'admin_password', %s)
-                ON CONFLICT (school_id, key) DO UPDATE SET value=%s
-            """, (school_id, admin_password, admin_password))
+            if admin_password:
+                hashed_admin_password = hash_password(admin_password)
+                cur.execute("""
+                    UPDATE schools SET name=%s, code=%s, admin_username=%s, admin_password=%s
+                    WHERE id=%s
+                """, (name, code, admin_username, hashed_admin_password, school_id))
+                # Also keep admin_settings in sync
+                cur.execute("""
+                    INSERT INTO admin_settings (school_id, key, value) VALUES (%s, 'admin_password', %s)
+                    ON CONFLICT (school_id, key) DO UPDATE SET value=%s
+                """, (school_id, hashed_admin_password, hashed_admin_password))
+            else:
+                cur.execute("""
+                    UPDATE schools SET name=%s, code=%s, admin_username=%s
+                    WHERE id=%s
+                """, (name, code, admin_username, school_id))
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -10183,7 +10238,7 @@ def super_admin_edit_school(school_id):
                 </div>
                 <div>
                     <label class="block text-sm font-semibold text-slate-700 mb-1">Admin Password</label>
-                    <input type="text" name="admin_password" value="{school['admin_password']}" class="form-input" required>
+                    <input type="text" name="admin_password" placeholder="Leave blank to keep current password" class="form-input">
                 </div>
                 <div class="pt-2 flex gap-3">
                     <button type="submit" class="btn green">Save Changes</button>
