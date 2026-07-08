@@ -16,6 +16,7 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 import requests as http_requests
 import smtplib
@@ -422,20 +423,37 @@ known_students = []
 # row dicts via RealDictCursor, etc.) behaves exactly as before.
 _db_pool = None
 _db_pool_lock = threading.Lock()
+_db_pool_last_failure = 0.0
+_DB_POOL_FAILURE_COOLDOWN = 15  # seconds — how long to fail fast before retrying pool creation
 
 
 def _get_pool():
-    global _db_pool
+    global _db_pool, _db_pool_last_failure
     if _db_pool is None:
+        # If we tried very recently and it failed (e.g. bad DATABASE_URL, DB
+        # unreachable), don't spend another 5-10s re-attempting on every
+        # single incoming request — fail immediately until the cooldown
+        # passes. This is what actually prevents the "stuck spinner": before
+        # this check, EVERY request during an outage independently paid the
+        # full connection-timeout cost.
+        if _db_pool_last_failure and (time.time() - _db_pool_last_failure) < _DB_POOL_FAILURE_COOLDOWN:
+            raise psycopg2.OperationalError(
+                "Database is currently unreachable (failing fast; will retry pool creation automatically)."
+            )
         with _db_pool_lock:
             if _db_pool is None:
-                _db_pool = psycopg2.pool.ThreadedConnectionPool(
-                    minconn=2,
-                    maxconn=30,
-                    dsn=DATABASE_URL,
-                    cursor_factory=psycopg2.extras.RealDictCursor,
-                    connect_timeout=10,
-                )
+                try:
+                    _db_pool = psycopg2.pool.ThreadedConnectionPool(
+                        minconn=2,
+                        maxconn=30,
+                        dsn=DATABASE_URL,
+                        cursor_factory=psycopg2.extras.RealDictCursor,
+                        connect_timeout=5,
+                    )
+                    _db_pool_last_failure = 0.0
+                except Exception:
+                    _db_pool_last_failure = time.time()
+                    raise
     return _db_pool
 
 
