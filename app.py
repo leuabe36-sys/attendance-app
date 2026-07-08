@@ -5051,16 +5051,20 @@ def student_checkin_api():
 @app.route("/student/attendance-status")
 def student_attendance_status():
     """
-    Lightweight JSON poll used by the student dashboard to know which classes
-    the student has already marked Present for today — so an open "time left
-    to scan" countdown can disappear live, without a full page reload, the
-    moment attendance is recorded (e.g. from another tab/device).
+    Lightweight JSON poll used by the student dashboard to know (a) which classes
+    the student has already marked Present for today, and (b) which classes
+    currently have a teacher-started session running — so both the "time left
+    to scan" countdown and the Mark Present / Not Started buttons can update
+    live, without a full page reload, the moment a teacher starts a session or
+    attendance is recorded elsewhere.
     """
     protect = student_required()
     if protect:
-        return jsonify({"ok": False, "error": "Not logged in.", "marked_class_ids": []})
+        return jsonify({"ok": False, "error": "Not logged in.", "marked_class_ids": [], "active_sessions": []})
 
+    student_db_id = get_logged_student_db_id()
     student_id = session.get("student_id")
+    school_id = get_current_school_id()
     today_str = datetime.now().strftime("%Y-%m-%d")
     try:
         conn = get_db()
@@ -5074,9 +5078,22 @@ def student_attendance_status():
         marked_class_ids = [r["class_id"] for r in rows]
     except Exception as e:
         print("student_attendance_status error:", e)
-        return jsonify({"ok": False, "error": "Something went wrong loading attendance status.", "marked_class_ids": []})
+        return jsonify({"ok": False, "error": "Something went wrong loading attendance status.", "marked_class_ids": [], "active_sessions": []})
 
-    return jsonify({"ok": True, "marked_class_ids": marked_class_ids})
+    active_sessions = []
+    try:
+        for c in get_classes_for_student(student_db_id):
+            active_sess = get_active_session_for_class(c["id"], school_id)
+            if active_sess and active_sess.get("expires_at"):
+                active_sessions.append({
+                    "class_id": c["id"],
+                    "class_name": c["class_name"],
+                    "expires_at": utc_iso(active_sess["expires_at"])
+                })
+    except Exception as e:
+        print("student_attendance_status active-session lookup error:", e)
+
+    return jsonify({"ok": True, "marked_class_ids": marked_class_ids, "active_sessions": active_sessions})
 
 
 @app.route("/student/qr-scan")
@@ -5824,7 +5841,7 @@ def student_dashboard_portal():
         """
 
     body = f"""
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6" id="dashboardGrid">
         {open_sessions_html}
         <div class="lg:col-span-1 space-y-6">
             <div class="bg-white border rounded-xl p-6 text-center shadow-sm">
@@ -5877,13 +5894,13 @@ def student_dashboard_portal():
                             <i class="fas fa-lock mr-1"></i> Not Started
                         </span>"""
             body += f"""
-                <tr class="border-b">
+                <tr class="border-b" data-class-id="{c["id"]}">
                     <td class="p-3 font-semibold text-slate-800">{c["class_name"]}</td>
                     <td class="p-3 text-slate-500">{c["department"] or ""}</td>
                     <td class="p-3 font-mono">{c["course"] or ""}</td>
                     <td class="p-3">{c["section_name"] or ""}</td>
                     <td class="p-3"><strong class="text-blue-600 font-extrabold">{pct}%</strong></td>
-                    <td class="p-3 text-right">
+                    <td class="p-3 text-right" data-role="checkin-cell" data-class-id="{c["id"]}">
                         {checkin_action}
                     </td>
                 </tr>
@@ -5935,75 +5952,155 @@ def student_dashboard_portal():
     </div>
     """
 
-    if open_sessions:
-        body += """
-        <script>
-        (function() {
-            function removeRow(classId) {
-                var row = document.querySelector('[data-role="session-row"][data-class-id="' + classId + '"]');
-                if (row) row.remove();
-                var rows = document.getElementById('openSessionsRows');
-                if (rows && rows.children.length === 0) {
-                    var banner = document.getElementById('openSessionsBanner');
-                    if (banner) banner.remove();
-                }
-            }
+    body += """
+    <script>
+    (function() {
+        function removeRow(classId) {
+            var row = document.querySelector('[data-role="session-row"][data-class-id="' + classId + '"]');
+            if (row) row.remove();
+            checkBannerEmpty();
+        }
 
-            function tick() {
-                document.querySelectorAll('[data-role="countdown"]').forEach(function(el) {
-                    var expires = new Date(el.getAttribute('data-expires'));
-                    var now = new Date();
-                    var diffMs = expires - now;
-                    if (diffMs <= 0) {
-                        el.innerText = "Closed";
-                        el.classList.remove('text-emerald-700');
-                        el.classList.add('text-rose-500');
-                        var row = el.closest('[data-role="session-row"]');
-                        if (row) {
-                            // Give the student a beat to see "Closed" before the row disappears
-                            setTimeout(function() { row.remove(); checkBannerEmpty(); }, 2000);
-                        }
-                        return;
+        function tick() {
+            document.querySelectorAll('[data-role="countdown"]').forEach(function(el) {
+                var expires = new Date(el.getAttribute('data-expires'));
+                var now = new Date();
+                var diffMs = expires - now;
+                if (diffMs <= 0) {
+                    el.innerText = "Closed";
+                    el.classList.remove('text-emerald-700');
+                    el.classList.add('text-rose-500');
+                    var row = el.closest('[data-role="session-row"]');
+                    if (row) {
+                        // Give the student a beat to see "Closed" before the row disappears
+                        setTimeout(function() { row.remove(); checkBannerEmpty(); }, 2000);
                     }
-                    var totalSecs = Math.floor(diffMs / 1000);
-                    var mins = Math.floor(totalSecs / 60);
-                    var secs = totalSecs % 60;
-                    el.innerText = mins + ":" + String(secs).padStart(2, "0");
-                    // Flip to an urgent color in the final 30 seconds
-                    if (totalSecs <= 30) {
-                        el.classList.remove('text-emerald-700');
-                        el.classList.add('text-rose-500');
-                    }
-                });
-            }
-
-            function checkBannerEmpty() {
-                var rows = document.getElementById('openSessionsRows');
-                if (rows && rows.children.length === 0) {
-                    var banner = document.getElementById('openSessionsBanner');
-                    if (banner) banner.remove();
+                    return;
                 }
-            }
+                var totalSecs = Math.floor(diffMs / 1000);
+                var mins = Math.floor(totalSecs / 60);
+                var secs = totalSecs % 60;
+                el.innerText = mins + ":" + String(secs).padStart(2, "0");
+                // Flip to an urgent color in the final 30 seconds
+                if (totalSecs <= 30) {
+                    el.classList.remove('text-emerald-700');
+                    el.classList.add('text-rose-500');
+                }
+            });
+        }
 
-            // Poll the server for attendance just marked in another tab/device,
-            // and immediately drop the timer for that class — no reload needed.
-            function pollAttendanceStatus() {
-                fetch('/student/attendance-status')
-                    .then(function(r) { return r.json(); })
-                    .then(function(data) {
-                        if (!data || !data.ok || !Array.isArray(data.marked_class_ids)) return;
-                        data.marked_class_ids.forEach(function(cid) { removeRow(cid); });
-                    })
-                    .catch(function() { /* silent — non-critical background poll */ });
+        function checkBannerEmpty() {
+            var rows = document.getElementById('openSessionsRows');
+            if (rows && rows.children.length === 0) {
+                var banner = document.getElementById('openSessionsBanner');
+                if (banner) banner.remove();
             }
+        }
 
-            tick();
-            setInterval(tick, 1000);
-            pollAttendanceStatus();
-            setInterval(pollAttendanceStatus, 8000);
-        })();
-        </script>
-        """
+        // Create the "Attendance Open" banner on the fly if it doesn't exist yet
+        // (e.g. the page loaded before the teacher had started any session).
+        function ensureBanner() {
+            var existingRows = document.getElementById('openSessionsRows');
+            if (existingRows) return existingRows;
+            var grid = document.getElementById('dashboardGrid');
+            if (!grid) return null;
+            var wrapper = document.createElement('div');
+            wrapper.id = 'openSessionsBanner';
+            wrapper.className = 'lg:col-span-3 bg-gradient-to-r from-emerald-50 to-teal-50 border-2 border-emerald-300 rounded-2xl p-4 space-y-2 shadow-sm';
+            wrapper.innerHTML = '<div class="flex items-center gap-2 px-1">' +
+                '<span class="text-emerald-700 font-extrabold text-sm uppercase tracking-wide">⏳ Attendance Open — Time Left to Scan</span>' +
+                '</div><div id="openSessionsRows" class="space-y-2"></div>';
+            grid.insertBefore(wrapper, grid.firstChild);
+            return document.getElementById('openSessionsRows');
+        }
+
+        function upsertSessionRow(classId, className, expiresAtIso) {
+            var existing = document.querySelector('[data-role="session-row"][data-class-id="' + classId + '"]');
+            if (existing) {
+                var cd = existing.querySelector('[data-role="countdown"]');
+                if (cd) {
+                    cd.setAttribute('data-expires', expiresAtIso);
+                    cd.classList.remove('text-rose-500');
+                    cd.classList.add('text-emerald-700');
+                }
+                return;
+            }
+            var rows = ensureBanner();
+            if (!rows) return;
+            var div = document.createElement('div');
+            div.className = 'flex items-center justify-between gap-3 bg-white/70 rounded-xl px-4 py-2.5';
+            div.setAttribute('data-class-id', classId);
+            div.setAttribute('data-role', 'session-row');
+            div.innerHTML = '<div class="flex items-center gap-2 min-w-0">' +
+                '<span class="relative flex h-2.5 w-2.5 flex-shrink-0">' +
+                '<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>' +
+                '<span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>' +
+                '</span><span class="font-bold text-slate-800 text-sm truncate">' + className + '</span></div>' +
+                '<div class="flex items-center gap-3 flex-shrink-0">' +
+                '<span class="font-mono font-black text-emerald-700 text-lg tabular-nums" data-expires="' + expiresAtIso + '" data-role="countdown">--:--</span>' +
+                '<a href="/student/qr-scan" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition whitespace-nowrap">' +
+                '<i class="fas fa-qrcode mr-1"></i> Scan Now</a></div>';
+            rows.appendChild(div);
+        }
+
+        // Flip a class row's action cell between "Mark Present" and "Not Started"
+        // based on whether the teacher currently has a live session running.
+        function setRowButtonState(classId, isActive) {
+            var cell = document.querySelector('[data-role="checkin-cell"][data-class-id="' + classId + '"]');
+            if (!cell) return;
+            if (isActive) {
+                cell.innerHTML = '<a href="/student/checkin/manual/' + classId + '" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-2.5 rounded text-[11px] transition inline-block">' +
+                    '<i class="fas fa-check mr-1"></i> Mark Present</a>';
+            } else {
+                cell.innerHTML = '<span class="bg-slate-100 text-slate-400 font-bold py-1 px-2.5 rounded text-[11px] inline-block cursor-not-allowed" title="Your teacher hasn\\'t started attendance for this class yet">' +
+                    '<i class="fas fa-lock mr-1"></i> Not Started</span>';
+            }
+        }
+
+        // Poll the server for (a) attendance just marked in another tab/device, and
+        // (b) whether the teacher has started/stopped a session for any class —
+        // and update the buttons + countdown banner live, with no page reload.
+        function pollAttendanceStatus() {
+            fetch('/student/attendance-status')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data || !data.ok) return;
+                    var markedIds = Array.isArray(data.marked_class_ids) ? data.marked_class_ids : [];
+                    var activeSessions = Array.isArray(data.active_sessions) ? data.active_sessions : [];
+                    var markedSet = {};
+                    markedIds.forEach(function(cid) { markedSet[cid] = true; });
+                    var activeMap = {};
+                    activeSessions.forEach(function(s) { activeMap[s.class_id] = s; });
+
+                    // Update every "Mark Present" / "Not Started" button on the page
+                    document.querySelectorAll('[data-role="checkin-cell"]').forEach(function(cell) {
+                        var cid = parseInt(cell.getAttribute('data-class-id'), 10);
+                        setRowButtonState(cid, !!activeMap[cid]);
+                    });
+
+                    // Add/refresh countdown rows for newly-opened sessions
+                    activeSessions.forEach(function(s) {
+                        if (markedSet[s.class_id]) { removeRow(s.class_id); return; }
+                        upsertSessionRow(s.class_id, s.class_name, s.expires_at);
+                    });
+
+                    // Drop rows for sessions the teacher has since stopped, or that
+                    // just got marked present
+                    document.querySelectorAll('[data-role="session-row"]').forEach(function(row) {
+                        var cid = parseInt(row.getAttribute('data-class-id'), 10);
+                        if (!activeMap[cid] || markedSet[cid]) removeRow(cid);
+                    });
+                })
+                .catch(function() { /* silent — non-critical background poll */ });
+        }
+
+        tick();
+        setInterval(tick, 1000);
+        pollAttendanceStatus();
+        setInterval(pollAttendanceStatus, 5000);
+    })();
+    </script>
+    """
 
     return page_wrapper("Student Personal Hub Portal", body, is_student=True, student_context=student_ctx)
 
