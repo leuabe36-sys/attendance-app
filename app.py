@@ -14,6 +14,8 @@ import os
 import base64
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
+import threading
 from datetime import datetime, timedelta, timezone
 import requests as http_requests
 import smtplib
@@ -402,17 +404,111 @@ known_students = []
 
 
 # =========================================================
-# DATABASE
+# DATABASE  (pooled — see notes below)
 # =========================================================
+# The app previously opened a brand-new psycopg2 connection (fresh TCP +
+# TLS + Postgres auth handshake) on every single get_db() call, and there
+# are 100+ call sites. A single QR check-in request chains through many
+# helper functions (session lookup, GPS check, WiFi check, class lookup,
+# mark_attendance, ...), each grabbing its own connection — so one tap on
+# "Scan QR" could trigger 8-10+ handshakes to the database, which is what
+# was causing the multi-second delay after scanning.
+#
+# Fix: keep a small pool of already-open connections around and hand them
+# out instantly. To avoid touching every one of the ~106 existing
+# `conn = get_db(); ...; conn.close()` call sites, get_db() returns a thin
+# wrapper whose .close() RETURNS the connection to the pool instead of
+# actually closing it. Everything else (cur = conn.cursor(), conn.commit(),
+# row dicts via RealDictCursor, etc.) behaves exactly as before.
+_db_pool = None
+_db_pool_lock = threading.Lock()
+
+
+def _get_pool():
+    global _db_pool
+    if _db_pool is None:
+        with _db_pool_lock:
+            if _db_pool is None:
+                _db_pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=2,
+                    maxconn=20,
+                    dsn=DATABASE_URL,
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                    connect_timeout=10,
+                )
+    return _db_pool
+
+
+class _PooledConnection:
+    """Wraps a pooled psycopg2 connection so existing code (which calls
+    conn.close() when it's done) returns the connection to the pool
+    instead of tearing down the TCP/TLS session."""
+
+    def __init__(self, conn, pool):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_pool", pool)
+        object.__setattr__(self, "_returned", False)
+
+    def close(self):
+        if self._returned:
+            return
+        object.__setattr__(self, "_returned", True)
+        try:
+            # Never hand back a connection mid-transaction — leftover
+            # uncommitted work from a caller that errored out before
+            # calling commit() would otherwise leak into the next request
+            # that picks up this connection from the pool.
+            self._conn.rollback()
+            self._pool.putconn(self._conn)
+        except Exception:
+            try:
+                self._pool.putconn(self._conn, close=True)
+            except Exception:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._conn, name, value)
+
+    def __enter__(self):
+        return self._conn.__enter__()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return self._conn.__exit__(exc_type, exc_val, exc_tb)
+
+
 def get_db():
+    pool = _get_pool()
     last_err = None
     for attempt in range(2):
         try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor, connect_timeout=10)
-            return conn
+            raw_conn = pool.getconn()
+            # A connection can go stale (DB restart, idle timeout from the
+            # DB host, network blip) while sitting in the pool. Detect that
+            # and discard it rather than handing back a dead connection.
+            if raw_conn.closed:
+                try:
+                    pool.putconn(raw_conn, close=True)
+                except Exception:
+                    pass
+                continue
+            try:
+                raw_conn.rollback()
+            except Exception:
+                try:
+                    pool.putconn(raw_conn, close=True)
+                except Exception:
+                    pass
+                continue
+            return _PooledConnection(raw_conn, pool)
         except Exception as e:
             last_err = e
-            print(f"get_db connection attempt {attempt + 1} failed:", repr(e), flush=True)
+            print(f"get_db pool getconn attempt {attempt + 1} failed:", repr(e), flush=True)
     raise last_err
 
 
