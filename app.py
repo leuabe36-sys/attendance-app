@@ -1395,7 +1395,7 @@ def student_belongs_to_class(student_db_id, class_id):
     return row is not None
 
 
-def mark_attendance(student_row, class_row, status="Present", student_lat=None, student_lng=None, distance_meters=None):
+def mark_attendance(student_row, class_row, status="Present", student_lat=None, student_lng=None, distance_meters=None, force=False):
     # Fetches local system date and time
     today = datetime.now().strftime("%Y-%m-%d")
     now_time = datetime.now().strftime("%I:%M:%S %p")
@@ -1412,8 +1412,11 @@ def mark_attendance(student_row, class_row, status="Present", student_lat=None, 
 
     teacher_name = class_row["teacher_display_name"] or class_row["teacher_name"] or ""
 
-    # ── Block re-scan: if already marked Present today, do not overwrite ──
-    if existing and existing["status"] == "Present":
+    # ── Block re-scan: if already marked Present today, don't let a student's own
+    # re-scan silently overwrite it. A teacher-initiated correction (force=True)
+    # is always allowed to override, e.g. to mark a student Absent after they
+    # already self-marked Present. ──
+    if existing and existing["status"] == "Present" and not force:
         conn.close()
         return {"already_marked": True, "status": "Present", "time": existing["time"]}
 
@@ -4272,6 +4275,15 @@ def teacher_view_class(class_id):
 
     students = get_students_in_class(class_id)
     today_str = datetime.now().strftime("%B %d, %Y")
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+
+    # Look up what's already recorded today so the sheet reflects reality —
+    # e.g. a student who self-checked-in shows as Present (with a badge),
+    # and the teacher can still uncheck them to override to Absent.
+    today_status = {
+        row["student_id"]: row for row in get_attendance_for_class(class_id)
+        if row["date"] == today_iso
+    }
 
     body = f"""
     <div class="space-y-6">
@@ -4310,6 +4322,16 @@ def teacher_view_class(class_id):
     if students:
         for idx, s in enumerate(students, 1):
             pct = get_percentage(s["student_id"], class_id)
+            existing_today = today_status.get(s["student_id"])
+            # Default to checked (Present) if there's no record yet, otherwise
+            # reflect whatever is actually recorded for today.
+            is_checked = existing_today is None or existing_today["status"] == "Present"
+            checked_attr = "checked" if is_checked else ""
+            self_marked_badge = ""
+            if existing_today is not None and existing_today["status"] == "Present":
+                self_marked_badge = f' <span class="text-emerald-600 font-bold">· recorded {format_time_12hr(existing_today["time"])}</span>'
+            elif existing_today is not None and existing_today["status"] == "Absent":
+                self_marked_badge = ' <span class="text-rose-500 font-bold">· recorded Absent</span>'
             body += f"""
                     <div class="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50 transition-colors">
                         <div class="flex items-center gap-4">
@@ -4317,13 +4339,13 @@ def teacher_view_class(class_id):
                             <img class="w-10 h-10 object-cover rounded-xl border bg-slate-50" src="{supabase_public_url(s["image_file"])}">
                             <div>
                                 <h4 class="font-bold text-slate-800 text-sm">{s["full_name"]}</h4>
-                                <p class="text-[11px] font-mono text-slate-400">ID: #{s["student_id"]} | Agg. Ratio Score: <span class="text-blue-600 font-bold">{pct}%</span></p>
+                                <p class="text-[11px] font-mono text-slate-400">ID: #{s["student_id"]} | Agg. Ratio Score: <span class="text-blue-600 font-bold">{pct}%</span>{self_marked_badge}</p>
                             </div>
                         </div>
 
                         <div class="flex items-center gap-6">
                             <label class="relative inline-flex items-center cursor-pointer select-none">
-                                <input type="checkbox" name="present_students" value="{s["student_id"]}" class="sr-only peer" checked>
+                                <input type="checkbox" name="present_students" value="{s["student_id"]}" class="sr-only peer" {checked_attr}>
                                 <div class="w-14 h-7 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[4px] after:left-[4px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
                                 <span class="ml-3 text-xs font-bold text-slate-500 peer-checked:text-emerald-600 uppercase tracking-wider w-16">Present</span>
                             </label>
@@ -4379,7 +4401,7 @@ def teacher_manual_submit_batch(class_id):
 
     for s in students:
         status = "Present" if s["student_id"] in ticked_present_ids else "Absent"
-        mark_attendance(s, class_row, status=status)
+        mark_attendance(s, class_row, status=status, force=True)
 
     if is_ajax(): return ajax_ok("Attendance submitted successfully!", redirect_url="/teacher")
     return "<script>alert('Attendance roster processing batch committed successfully!'); window.location.href='/teacher';</script>"
@@ -4401,7 +4423,7 @@ def teacher_manual_mark_override(class_id, student_db_id, status):
 
     student_row = get_student_row_by_db_id(student_db_id)
     if student_row:
-        mark_attendance(student_row, class_row, status)
+        mark_attendance(student_row, class_row, status, force=True)
     return f"<script>alert('Manually forced student record to {status}!');window.location.href='/teacher/class/{class_id}';</script>"
 
 
